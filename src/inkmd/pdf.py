@@ -406,6 +406,7 @@ def _styled_page_content_stream(page: Page) -> bytes:
     parts.append(b"BT")
     current_font = None
     current_size = None
+    current_text_rg: tuple[float, float, float] | None = None
     for line in page.lines:
         for run in line.runs:
             if run.font != current_font or run.size != current_size:
@@ -413,6 +414,12 @@ def _styled_page_content_stream(page: Page) -> bytes:
                 parts.append(f"/{slot} {_fmt(run.size)} Tf".encode("ascii"))
                 current_font = run.font
                 current_size = run.size
+            run_color = getattr(run, "color", None)
+            target_rg = run_color if run_color is not None else (0.0, 0.0, 0.0)
+            if target_rg != current_text_rg:
+                r, g, b = target_rg
+                parts.append(f"{_fmt(r)} {_fmt(g)} {_fmt(b)} rg".encode("ascii"))
+                current_text_rg = target_rg
             parts.append(
                 f"1 0 0 1 {_fmt(run.x)} {_fmt(run.y)} Tm".encode("ascii")
             )
@@ -454,17 +461,29 @@ def styled_pdf(
 
     catalog_n = 1
     pages_tree_n = 2
-    # Four font objects, one per face. F1..F4 → object numbers 3..6.
-    font_obj_nums: dict[str, int] = {}
-    fixed_objects = 2  # catalog + pages tree, before fonts
+
+    # Pre-compute object numbers for each page's per-page objects:
+    # page object, contents object, and one annotation object per link
+    # rectangle on that page. We assign numbers up-front so the page
+    # object's /Annots array can reference them by number.
+    fixed_objects = 2  # catalog + pages tree
+    n_fonts = len(FONT_SLOTS)
+    cursor = fixed_objects + n_fonts + 1
+
+    n_pages = len(pages)
+    page_obj_nums: list[int] = []
+    contents_obj_nums: list[int] = []
+    page_annot_obj_nums: list[list[int]] = []
+    for page in pages:
+        page_obj_nums.append(cursor); cursor += 1
+        contents_obj_nums.append(cursor); cursor += 1
+        annot_nums = []
+        for _ann in getattr(page, "annotations", ()):
+            annot_nums.append(cursor); cursor += 1
+        page_annot_obj_nums.append(annot_nums)
 
     # Catalog.
     writer.add_object(f"<< /Type /Catalog /Pages {pages_tree_n} 0 R >>".encode("ascii"))
-
-    n_pages = len(pages)
-    n_fonts = len(FONT_SLOTS)
-    page_obj_nums = [fixed_objects + n_fonts + 1 + i * 2 for i in range(n_pages)]
-    contents_obj_nums = [fixed_objects + n_fonts + 2 + i * 2 for i in range(n_pages)]
 
     # Pages tree.
     kids = " ".join(f"{n} 0 R" for n in page_obj_nums)
@@ -473,6 +492,7 @@ def styled_pdf(
     )
 
     # Font objects, in a deterministic order matching FONT_SLOTS.
+    font_obj_nums: dict[str, int] = {}
     for font_name in FONT_SLOTS:
         obj_n = writer.add_object(
             (
@@ -488,12 +508,18 @@ def styled_pdf(
         for name, slot in FONT_SLOTS.items()
     )
 
-    for page, page_n, contents_n in zip(pages, page_obj_nums, contents_obj_nums):
+    for page, page_n, contents_n, annot_nums in zip(
+        pages, page_obj_nums, contents_obj_nums, page_annot_obj_nums
+    ):
+        annots_array = ""
+        if annot_nums:
+            refs = " ".join(f"{n} 0 R" for n in annot_nums)
+            annots_array = f" /Annots [{refs}]"
         page_obj = (
             f"<< /Type /Page /Parent {pages_tree_n} 0 R "
             f"/MediaBox [0 0 {page.width} {page.height}] "
             f"/Resources << /Font << {font_resource} >> >> "
-            f"/Contents {contents_n} 0 R >>"
+            f"/Contents {contents_n} 0 R{annots_array} >>"
         ).encode("ascii")
         writer.add_object(page_obj)
 
@@ -502,4 +528,30 @@ def styled_pdf(
         )
         writer.add_object(_content_stream(stream_body))
 
+        # Annotation objects for this page.
+        for ann in getattr(page, "annotations", ()):
+            writer.add_object(_link_annotation_object(ann))
+
     return writer.serialise(root_obj_num=catalog_n)
+
+
+def _link_annotation_object(ann) -> bytes:
+    """Build the body of a /Link annotation PDF object.
+
+    Format:
+        << /Type /Annot /Subtype /Link
+           /Rect [x1 y1 x2 y2]
+           /Border [0 0 0]              -- invisible border (we draw our own underline)
+           /A << /Type /Action /S /URI /URI (target) >> >>
+    """
+    x1 = _fmt(ann.x)
+    y1 = _fmt(ann.y)
+    x2 = _fmt(ann.x + ann.width)
+    y2 = _fmt(ann.y + ann.height)
+    uri_body = _encode_pdf_literal(ann.url)
+    return (
+        b"<< /Type /Annot /Subtype /Link "
+        b"/Rect [" + f"{x1} {y1} {x2} {y2}".encode("ascii") + b"] "
+        b"/Border [0 0 0] "
+        b"/A << /Type /Action /S /URI /URI (" + uri_body + b") >> >>"
+    )

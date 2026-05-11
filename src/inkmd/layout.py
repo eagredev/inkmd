@@ -50,10 +50,16 @@ class Run:
     Runs are the atomic unit of styled text. ``text`` is the literal
     string; whitespace inside it is preserved (used for the space chars
     that join wrapped lines).
+
+    ``link_url`` is set for runs that are part of an ``[text](url)`` /
+    ``<url>`` link; the layout collects per-line link extents and the
+    PDF layer emits clickable annotations + a blue underline.
     """
     text: str
     font: str
     size: float
+    link_url: str | None = None
+    color: tuple[float, float, float] | None = None  # None means default (black)
 
 
 @dataclass(frozen=True)
@@ -64,6 +70,8 @@ class PositionedRun:
     y: float
     font: str
     size: float
+    link_url: str | None = None
+    color: tuple[float, float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -87,17 +95,34 @@ class Rect:
 
 
 @dataclass(frozen=True)
+class LinkAnnotation:
+    """A clickable link region on a page (PDF Annot of subtype /Link).
+
+    ``url`` is the destination; ``x``, ``y``, ``width``, ``height`` are
+    the clickable bounding box in PDF coordinates. One link that wraps
+    across multiple lines produces multiple annotations (one per line).
+    """
+    url: str
+    x: float
+    y: float
+    width: float
+    height: float
+
+
+@dataclass(frozen=True)
 class Page:
     """A list of lines that share one physical page.
 
     For the single-font path this holds ``Line`` records; for the styled
-    path it holds ``StyledLine`` records. ``shapes`` are optional filled
-    background rectangles drawn before the lines.
+    path it holds ``StyledLine`` records. ``shapes`` are filled background
+    rectangles drawn before the lines. ``annotations`` are clickable link
+    regions emitted as PDF /Link annotations.
     """
     lines: tuple
     width: float
     height: float
     shapes: tuple = ()
+    annotations: tuple = ()
 
 
 def wrap_paragraph(
@@ -224,7 +249,9 @@ def _tokenise_runs(runs: list[Run]) -> list[Run]:
             continue
         # Preserve internal whitespace as separate tokens so we can break
         # on it later. We split on any run of whitespace, keeping the
-        # delimiter via a manual loop.
+        # delimiter via a manual loop. The whitespace token inherits
+        # link_url so an interior space inside a link still has the
+        # underline + annotation.
         i = 0
         text = run.text
         while i < len(text):
@@ -232,11 +259,17 @@ def _tokenise_runs(runs: list[Run]) -> list[Run]:
             if text[i].isspace():
                 while j < len(text) and text[j].isspace():
                     j += 1
-                out.append(Run(text=" ", font=run.font, size=run.size))
+                out.append(Run(
+                    text=" ", font=run.font, size=run.size,
+                    link_url=run.link_url, color=run.color,
+                ))
             else:
                 while j < len(text) and not text[j].isspace():
                     j += 1
-                out.append(Run(text=text[i:j], font=run.font, size=run.size))
+                out.append(Run(
+                    text=text[i:j], font=run.font, size=run.size,
+                    link_url=run.link_url, color=run.color,
+                ))
             i = j
     return out
 
@@ -394,6 +427,7 @@ def paginate_runs(
     pages: list[Page] = []
     current_lines: list[StyledLine] = []
     current_shapes: list[Rect] = []
+    current_annotations: list[LinkAnnotation] = []
     y_cursor = top_y
 
     def flush_page() -> None:
@@ -404,6 +438,7 @@ def paginate_runs(
                     page_width,
                     page_height,
                     shapes=tuple(current_shapes),
+                    annotations=tuple(current_annotations),
                 )
             )
 
@@ -430,6 +465,7 @@ def paginate_runs(
                 flush_page()
                 current_lines = []
                 current_shapes = []
+                current_annotations = []
                 y_cursor = top_y
             table_top_y = y_cursor
             # Translate every relative shape to absolute Rect.
@@ -444,17 +480,24 @@ def paginate_runs(
                 current_shapes.append(rect)
             # Translate every relative positioned-run line.
             for baseline_from_top, runs_record in parts.prepositioned_lines:
-                positioned = tuple(
-                    PositionedRun(
-                        text=pr.text,
-                        x=margin + pr.x_rel,
-                        y=table_top_y - pr.y_from_top,
-                        font=pr.font,
-                        size=pr.size,
+                positioned_list = []
+                for pr in runs_record:
+                    positioned_list.append(
+                        PositionedRun(
+                            text=pr.text,
+                            x=margin + pr.x_rel,
+                            y=table_top_y - pr.y_from_top,
+                            font=pr.font,
+                            size=pr.size,
+                            link_url=getattr(pr, "link_url", None),
+                            color=getattr(pr, "color", None),
+                        )
                     )
-                    for pr in runs_record
-                )
-                current_lines.append(StyledLine(positioned))
+                current_lines.append(StyledLine(tuple(positioned_list)))
+                # Link decorations within table cells.
+                for ul_rect, ann in _link_decorations(positioned_list):
+                    current_shapes.append(ul_rect)
+                    current_annotations.append(ann)
             y_cursor = table_top_y - total_h
             if p_idx < len(paragraphs) - 1:
                 y_cursor -= parts.space_below
@@ -510,6 +553,7 @@ def paginate_runs(
                 flush_page()
                 current_lines = []
                 current_shapes = []
+                current_annotations = []
                 y_cursor = top_y
                 new_y = y_cursor - line_height
             y_cursor = new_y
@@ -541,10 +585,16 @@ def paginate_runs(
                         y=y_cursor,
                         font=run.font,
                         size=run.size,
+                        link_url=run.link_url,
+                        color=run.color,
                     )
                 )
                 x += text_width(run.text, run.font, run.size)
             current_lines.append(StyledLine(tuple(positioned)))
+            # Collect link annotations + underline shapes for this line.
+            for ul_rect, ann in _link_decorations(positioned):
+                current_shapes.append(ul_rect)
+                current_annotations.append(ann)
             # Per-line left rule for blockquotes.
             if parts.left_rule_x is not None:
                 rule_w = 2.0
@@ -572,6 +622,63 @@ def paginate_runs(
 
     flush_page()
     return pages
+
+
+def _link_decorations(
+    positioned: list[PositionedRun],
+) -> list[tuple[Rect, LinkAnnotation]]:
+    """Group adjacent same-URL runs on one line into ``(underline, annot)`` pairs.
+
+    Each contiguous run of same-URL runs yields:
+      - A thin filled rectangle below the baseline (the visible underline).
+      - A LinkAnnotation covering the full text extent + a couple of
+        points of vertical padding (the clickable area).
+
+    Non-adjacent same-URL runs (e.g. ``[a](u) [b](u)``) become separate
+    pairs — that's the correct behaviour for two distinct links that
+    happen to share a URL.
+    """
+    out: list[tuple[Rect, LinkAnnotation]] = []
+    i = 0
+    n = len(positioned)
+    while i < n:
+        run = positioned[i]
+        if run.link_url is None:
+            i += 1
+            continue
+        url = run.link_url
+        start_x = run.x
+        last_run = run
+        j = i + 1
+        while j < n and positioned[j].link_url == url:
+            last_run = positioned[j]
+            j += 1
+        end_x = last_run.x + text_width(last_run.text, last_run.font, last_run.size)
+        baseline_y = run.y
+        size = run.size
+        underline_thickness = max(0.5, size * 0.05)
+        underline_offset = size * 0.12  # below baseline
+        ul = Rect(
+            x=start_x,
+            y=baseline_y - underline_offset - underline_thickness,
+            width=end_x - start_x,
+            height=underline_thickness,
+            fill=run.color or (0.0, 0.0, 0.0),
+        )
+        # Annotation rect: a bit taller than the underline, encompassing
+        # the glyph height. PDF readers usually highlight on hover.
+        ann_h = size * 1.1
+        ann_y = baseline_y - underline_offset - underline_thickness
+        ann = LinkAnnotation(
+            url=url,
+            x=start_x,
+            y=ann_y,
+            width=end_x - start_x,
+            height=ann_h,
+        )
+        out.append((ul, ann))
+        i = j
+    return out
 
 
 def _split_preserved_lines(runs: list[Run]) -> list[list[Run]]:
