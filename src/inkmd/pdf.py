@@ -218,6 +218,59 @@ def _encode_pdf_literal(text: str) -> bytes:
     )
 
 
+def _escape_literal_bytes(b: bytes) -> bytes:
+    """Backslash-escape '(', ')', '\\' inside an already-encoded byte string."""
+    return (
+        b.replace(b"\\", b"\\\\").replace(b"(", b"\\(").replace(b")", b"\\)")
+    )
+
+
+def _show_text_operator(text: str, font: str) -> bytes:
+    """Return the content-stream bytes that draw ``text`` in ``font``.
+
+    Emits ``(...) Tj`` for runs with no kerning pairs, or a TJ array
+    with interleaved kerning offsets when pairs exist. The TJ array
+    operator takes signed integers between strings where positive
+    integers move the cursor *backward* by that many 1/1000 em — i.e.
+    AFM's negative ``KPX`` adjustments become positive TJ numbers.
+    """
+    from inkmd.fonts import kerning_adjustment, to_winansi_byte
+
+    if not text:
+        return b"() Tj"
+
+    # Walk through the text byte-by-byte, splitting on kerning pairs.
+    # Each chunk is a run of bytes with no kerning between adjacent
+    # bytes; kerning offsets sit between chunks.
+    bytes_seq = [to_winansi_byte(ord(ch)) for ch in text]
+    parts: list[tuple[bytes, int]] = []  # (chunk_bytes, kerning_after)
+    chunk = bytearray([bytes_seq[0]])
+    for i in range(1, len(bytes_seq)):
+        adj = kerning_adjustment(font, bytes_seq[i - 1], bytes_seq[i])
+        if adj != 0:
+            # Close out the chunk before the kerning gap.
+            parts.append((bytes(chunk), adj))
+            chunk = bytearray([bytes_seq[i]])
+        else:
+            chunk.append(bytes_seq[i])
+    parts.append((bytes(chunk), 0))
+
+    # If only one chunk and no kerning, the simple Tj form is enough.
+    if len(parts) == 1:
+        return b"(" + _escape_literal_bytes(parts[0][0]) + b") Tj"
+
+    # Otherwise emit a TJ array. Each chunk becomes a (string) literal;
+    # between chunks we put the kerning offset (negated from AFM sign).
+    array_parts: list[bytes] = []
+    for i, (chunk_bytes, kern_after) in enumerate(parts):
+        array_parts.append(b"(" + _escape_literal_bytes(chunk_bytes) + b")")
+        if kern_after != 0 and i < len(parts) - 1:
+            # AFM KPX -120 means "pull right glyph 120 units left", which in
+            # TJ form is "+120 forward-by-negative" = +120 in array notation.
+            array_parts.append(str(-kern_after).encode("ascii"))
+    return b"[" + b" ".join(array_parts) + b"] TJ"
+
+
 def encode_winansi(text: str) -> bytes:
     """Encode a Python string into WinAnsi bytes for use inside a PDF literal.
 
@@ -234,8 +287,7 @@ def _page_content_stream(page: Page) -> bytes:
     """Build a content stream that draws every line in ``page``.
 
     Single-font path. Lines are drawn one at a time via absolute Tm
-    positioning so future irregular spacing (headings, lists) drops in
-    cleanly without offset accumulation.
+    positioning. Kerning pairs are emitted as TJ arrays.
     """
     parts = [b"BT"]
     current_font = None
@@ -246,7 +298,7 @@ def _page_content_stream(page: Page) -> bytes:
             current_font = line.font
             current_size = line.size
         parts.append(f"1 0 0 1 {line.x} {line.y} Tm".encode("ascii"))
-        parts.append(b"(" + _encode_pdf_literal(line.text) + b") Tj")
+        parts.append(_show_text_operator(line.text, line.font))
     parts.append(b"ET")
     return b"\n".join(parts)
 
@@ -334,7 +386,7 @@ def _styled_page_content_stream(page: Page) -> bytes:
             parts.append(
                 f"1 0 0 1 {_fmt(run.x)} {_fmt(run.y)} Tm".encode("ascii")
             )
-            parts.append(b"(" + _encode_pdf_literal(run.text) + b") Tj")
+            parts.append(_show_text_operator(run.text, run.font))
     parts.append(b"ET")
     return b"\n".join(parts)
 

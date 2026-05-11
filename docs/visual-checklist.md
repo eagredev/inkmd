@@ -47,6 +47,16 @@ Sample: `/tmp/multi.pdf` (see `tests/test_text_pdf.py` for the input; or use a p
 - [ ] Top and bottom margins look symmetric (1 inch).
 - [ ] Last page may be partially blank (expected) but not empty.
 
+### Milestone 0.0.3.1 — kerning
+
+After milestone 0.0.3, kerning pair adjustments are applied to consecutive glyphs in the same font. Inspect any styled sample PDF and look at:
+
+- [ ] **"We", "Wo", "Va", "To", "Te", "Ya"** and similar capital-then-lowercase pairs: glyphs should sit visibly closer than they would without kerning, but not overlap. Compare to a screenshot from before 0.0.3.1 if available.
+- [ ] **Within a single word**, no glyphs overlap.
+- [ ] **Across font boundaries** (regular → bold, body → code), spacing looks natural — kerning does not apply across font switches by design.
+- [ ] **Courier text** is unaffected by kerning (monospace fonts have no pairs).
+- [ ] Unkerned pairs (`Py`, `km`, `md`, `te` and others not in the AFM kerning table) look the same as before; they are *not* a regression but inherent to the font's published metrics.
+
 ### Milestone 0.0.3 — styled runs (bold, italic, monospace) + WinAnsi typographic punctuation
 
 Sample: `/tmp/styled-full.pdf` from the styled_pdf demo at the bottom of this file.
