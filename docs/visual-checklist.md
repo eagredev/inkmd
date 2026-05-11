@@ -114,11 +114,21 @@ Sample: `/tmp/md-formatted-times.pdf` (or `-helvetica.pdf`) from `inkmd.compile(
 - [ ] Mixed formatting on one line (plain, then bold, then italic, then code) shows clean font transitions with no overlap.
 - [ ] Backticked content blocks internal formatting: `` `**not bold**` `` renders the asterisks literally in monospace, *as designed*.
 - [ ] Unmatched delimiters (`**` with no closer) appear as literal text — parser is forgiving, not strict.
-- [ ] Known limitation in 0.0.5: nested same-type emphasis like `**bold *italic* inside**` parses but doesn't render the inner italic. Acceptable for 0.0.5; fixed in 0.0.6.
+
+### Milestone 0.0.6 — CommonMark inline completeness
+
+Sample: `/tmp/md-commonmark-times.pdf` from a markdown source mixing nested emphasis, underscore delimiters, intraword underscores, and backslash escapes.
+
+- [ ] **Nested emphasis** works: `**bold containing *italic* inside**` renders the inner span in *bold-italic*, with no stray asterisks visible.
+- [ ] **Underscore delimiters** work: `_italic_` and `__bold__` produce italic and bold respectively, indistinguishable in output from their asterisk counterparts.
+- [ ] **Intraword underscore** is preserved: `snake_case_name` and `my_python_var` appear as literal text with underscores visible.
+- [ ] **Intraword asterisks** DO emphasise: `intra*word*emph` produces `intra<i>word</i>emph` (per CommonMark spec — different from underscores).
+- [ ] **Backslash escapes** work: `\*literal\*`, `\_literal\_`, `` \` `` all preserve their punctuation. `\\` produces a literal backslash.
+- [ ] **Code spans remain opaque**: `` `**not bold**` `` shows literal asterisks in Courier; `` `\*also literal\*` `` keeps the backslashes too.
+- [ ] **Mixed delimiters**: `__strong *emph* end__` and `*emph __strong__ end*` both nest correctly.
 
 ## Pending milestones — append checklists here when the milestone lands
 
-- [ ] **0.0.6 (nested emphasis + escapes)**: `**bold *italic* end**` renders the inner italic span correctly. `\*not emphasised\*` renders the asterisks as literal text. `__bold__` and `_italic_` work alongside the asterisk variants.
 - [ ] **0.0.7 (block constructs)**: `# Heading` renders larger and bold; `- item` renders as a bulleted list; `> quote` renders as a blockquote with indent.
 
 ## Known limitations (NOT bugs)
