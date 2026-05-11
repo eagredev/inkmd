@@ -2,24 +2,34 @@
 
 CommonMark-subset parser, hand-rolled. Two phases:
 
-1. **Block parse**: split input on blank lines into blocks. v0.0.5
-   recognises only paragraphs and blank-line separators — headings,
-   lists, code blocks, blockquotes, and tables arrive in 0.0.7+.
+1. **Block parse**: container-aware walk that maintains a stack of open
+   list containers, splits input into blocks. Handles ATX/Setext
+   headings, ordered/unordered lists (with nesting, tight/loose
+   distinction), and paragraphs.
 
 2. **Inline parse**: walk each block's text and produce inline AST
-   nodes. v0.0.6 implements the canonical CommonMark left/right-
-   flanking delimiter run algorithm so nested emphasis, underscore
-   delimiters, and backslash escapes work correctly.
-
-The two-phase shape is the seam where 0.0.7 will plug in heading and
-list recognition without touching the inline parser.
+   nodes — the canonical CommonMark left/right-flanking delimiter run
+   algorithm so nested emphasis, underscore delimiters, and backslash
+   escapes work correctly.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from inkmd.ast import Block, Code, Document, Emphasis, Heading, Inline, Paragraph, Strong, Text
+from inkmd.ast import (
+    Block,
+    Code,
+    Document,
+    Emphasis,
+    Heading,
+    Inline,
+    List,
+    ListItem,
+    Paragraph,
+    Strong,
+    Text,
+)
 
 
 # --- Public entry --------------------------------------------------------
@@ -44,51 +54,427 @@ def _normalise(text: str) -> str:
     return text
 
 
-def _parse_blocks(text: str) -> list[Block]:
-    """Split ``text`` into blocks: ATX headings, Setext headings, paragraphs.
-
-    Blocks are separated by blank lines. ATX headings (``# foo``) consume
-    their own line. Setext headings are detected by looking ahead: if a
-    paragraph's accumulator is followed by a ``===`` or ``---`` line, the
-    accumulator becomes a Heading instead of a Paragraph.
-    """
-    blocks: list[Block] = []
-    current_lines: list[str] = []
-
-    def flush_paragraph() -> None:
-        if current_lines:
-            joined = " ".join(line.strip() for line in current_lines)
-            blocks.append(Paragraph(inlines=_parse_inlines(joined)))
-            current_lines.clear()
-
-    def flush_setext(level: int) -> None:
-        joined = " ".join(line.strip() for line in current_lines)
-        blocks.append(Heading(level=level, inlines=_parse_inlines(joined)))
-        current_lines.clear()
-
-    for line in text.split("\n"):
-        if line.strip() == "":
-            flush_paragraph()
-            continue
-
-        atx = _try_atx_heading(line)
-        if atx is not None:
-            flush_paragraph()
-            level, body = atx
-            blocks.append(Heading(level=level, inlines=_parse_inlines(body)))
-            continue
-
-        setext_level = _try_setext_underline(line) if current_lines else None
-        if setext_level is not None:
-            flush_setext(setext_level)
-            continue
-
-        current_lines.append(line)
-    flush_paragraph()
-    return blocks
-
-
 _ATX_MAX_INDENT = 3
+
+
+# --- Block parser (container-aware) --------------------------------------
+
+
+@dataclass
+class _ItemCtx:
+    """Open list item: accumulates child blocks and an in-progress paragraph."""
+    blocks: list[Block] = field(default_factory=list)
+    paragraph_lines: list[str] = field(default_factory=list)
+    # Set when a blank line is seen inside this item — used to detect
+    # loose lists (a blank line inside an item forces the parent list loose).
+    had_blank_inside: bool = False
+
+
+@dataclass
+class _ListCtx:
+    """Open list: a sequence of items plus shared marker style + indent.
+
+    ``marker_indent`` is the absolute column the marker character sits at
+    (relative to the original line start). ``content_indent`` is the
+    *relative* offset from marker_indent to the item content column, i.e.
+    how much each continuation line must be indented past the marker
+    column to continue belonging to this list's items.
+    """
+    ordered: bool
+    start: int
+    marker_char: str  # '-', '*', '+', or '.' / ')' for ordered
+    marker_indent: int  # absolute column the marker sits at
+    content_indent: int  # cols of dedent applied at this list's continuation
+    items: list[_ItemCtx] = field(default_factory=list)
+    blank_before_next_item: bool = False  # any blank between last item and current
+    force_loose: bool = False  # set if any item had a blank inside it
+
+
+def _parse_blocks(text: str) -> list[Block]:
+    """Parse ``text`` into a list of block AST nodes.
+
+    Container-aware: maintains a stack of open list containers. Each line
+    walks down the stack to determine which containers it continues; the
+    remainder is interpreted as a block-level construct (heading, list
+    marker, paragraph content, or blank).
+    """
+    parser = _BlockParser()
+    for line in text.split("\n"):
+        parser.feed(line)
+    return parser.finish()
+
+
+class _BlockParser:
+    """Stateful block-level parser.
+
+    ``doc_blocks`` is the output accumulator for top-level blocks.
+    ``list_stack`` is the chain of currently-open lists (deepest last);
+    each list's ``items[-1]`` is the open item that new content goes into.
+    """
+
+    def __init__(self) -> None:
+        self.doc_blocks: list[Block] = []
+        self.list_stack: list[_ListCtx] = []
+        self._doc_paragraph_lines: list[str] = []
+
+    # --- Public driver ---------------------------------------------------
+
+    def feed(self, line: str) -> None:
+        """Process one input line."""
+        if line.strip() == "":
+            self._handle_blank()
+            return
+
+        # Compute the line's leading indent column.
+        stripped_line = line.lstrip(" ")
+        line_indent = len(line) - len(stripped_line)
+
+        # Walk the open list stack outermost-to-innermost. For each list,
+        # determine whether this line:
+        #   (a) continues an item (indent ≥ list's item content column)
+        #   (b) is a sibling marker of that list (indent == marker_indent,
+        #       marker style matches) — closes inner lists, starts new item
+        #   (c) neither — closes that list and all deeper.
+        kept = 0
+        sibling: tuple[int, _MarkerInfo] | None = None
+        for idx, ctx in enumerate(self.list_stack):
+            item_indent = ctx.marker_indent + ctx.content_indent
+            if line_indent >= item_indent:
+                # Continuation of this list's open item; move on inwards.
+                kept = idx + 1
+                continue
+            # Not deep enough to continue the item. Maybe a sibling marker?
+            if line_indent == ctx.marker_indent:
+                # The marker sits at ctx.marker_indent absolute; check the
+                # marker by stripping exactly that much leading space, so
+                # _try_marker sees the marker at column 0 of the remainder.
+                marker = _try_marker(line[ctx.marker_indent:])
+                if marker is not None and _marker_matches_list(marker, ctx):
+                    sibling = (idx, marker)
+                    kept = idx + 1
+                    break
+            # Otherwise this line breaks out of this list (and deeper).
+            kept = idx
+            break
+
+        # Close all lists deeper than the kept depth.
+        while len(self.list_stack) > kept:
+            self._close_top_list()
+
+        if sibling is not None:
+            # Close current item, open a new sibling item.
+            idx, marker = sibling
+            list_ctx = self.list_stack[idx]
+            self._close_top_item()
+            if list_ctx.blank_before_next_item:
+                list_ctx.force_loose = True
+                list_ctx.blank_before_next_item = False
+            list_ctx.items.append(_ItemCtx())
+            if marker.content:
+                self._add_content_line(marker.content)
+            return
+
+        # Dedent the line by the kept lists' total indent so subsequent
+        # block-level checks see the line as if it sat at the inner
+        # container's column-0.
+        if kept > 0:
+            inner = self.list_stack[kept - 1]
+            absolute_inner_content_col = inner.marker_indent + inner.content_indent
+            remaining = line[absolute_inner_content_col:] if line_indent >= absolute_inner_content_col else line.lstrip(" ")
+        else:
+            remaining = line
+
+        self._handle_content_line(remaining)
+
+    def finish(self) -> list[Block]:
+        """Flush any in-progress state and return the top-level blocks."""
+        while self.list_stack:
+            self._close_top_list()
+        self._flush_doc_paragraph()
+        return self.doc_blocks
+
+    # --- Container matching ----------------------------------------------
+
+    # --- Content handling ------------------------------------------------
+
+    def _handle_blank(self) -> None:
+        """Process a blank line."""
+        # Flush an open paragraph in the deepest open item / document.
+        if self.list_stack:
+            top = self.list_stack[-1]
+            if top.items:
+                item = top.items[-1]
+                if item.paragraph_lines:
+                    self._flush_item_paragraph(item)
+                else:
+                    item.had_blank_inside = False  # blank before any block in item
+                # A blank line *between* items inside a list signals loose.
+                # We don't know yet whether next non-blank starts a new item
+                # or just continues; record the blank and check at next line.
+            top.blank_before_next_item = True
+        else:
+            self._flush_doc_paragraph()
+
+    def _handle_content_line(self, remaining: str) -> None:
+        """Process a non-blank line after list-stack matching."""
+        # 1. ATX heading wins always.
+        atx = _try_atx_heading(remaining)
+        if atx is not None:
+            self._flush_current_paragraph()
+            level, body = atx
+            self._add_block(Heading(level=level, inlines=_parse_inlines(body)))
+            return
+
+        # 2. List marker: starts a new list, a new item, or nests.
+        marker = _try_marker(remaining)
+        if marker is not None:
+            # If the marker is at column 0 of the remainder, it's at the
+            # current container's "natural" indent.
+            self._handle_marker(remaining, marker)
+            return
+
+        # 3. Setext underline: if we have an in-progress paragraph in the
+        #    current container, the paragraph becomes a heading.
+        setext_level = _try_setext_underline(remaining)
+        if setext_level is not None and self._has_open_paragraph():
+            self._convert_paragraph_to_heading(setext_level)
+            return
+
+        # 4. Plain paragraph content.
+        self._add_paragraph_line(remaining)
+
+    def _handle_marker(self, remaining: str, marker: "_MarkerInfo") -> None:
+        """Process a marker line not already absorbed as a sibling.
+
+        Either opens a new top-level list (no list on stack) or opens a
+        nested list inside the deepest open item.
+        """
+        # ``remaining`` is already dedented past the enclosing lists.
+        stripped = remaining.lstrip(" ")
+        local_indent = len(remaining) - len(stripped)
+
+        # Flush any open paragraph in the current container before
+        # starting the new list.
+        self._flush_current_paragraph()
+
+        # Marker indent for the new list, in absolute (line-start) terms,
+        # equals the outer-content-column plus the local indent inside it.
+        outer_content_col = sum(
+            c.content_indent for c in self.list_stack
+        ) + sum(c.marker_indent for c in self.list_stack if False)
+        # Simpler: outer absolute column is wherever the innermost item's
+        # content sits, which is the innermost list's marker_indent +
+        # content_indent (or 0 at document level).
+        if self.list_stack:
+            inner = self.list_stack[-1]
+            outer_content_col = inner.marker_indent + inner.content_indent
+        else:
+            outer_content_col = 0
+
+        new_list = _ListCtx(
+            ordered=marker.ordered,
+            start=marker.start,
+            marker_char=marker.marker_char,
+            marker_indent=outer_content_col + local_indent,
+            content_indent=marker.marker_width - local_indent,
+            items=[_ItemCtx()],
+        )
+        self.list_stack.append(new_list)
+        if marker.content:
+            self._add_content_line(marker.content)
+
+    def _add_content_line(self, content: str) -> None:
+        """Add ``content`` (already dedented) to the current container.
+
+        Re-runs content through heading / setext detection because the
+        first line after a marker can be a heading, e.g. ``- # Title``.
+        """
+        atx = _try_atx_heading(content)
+        if atx is not None:
+            level, body = atx
+            self._add_block(Heading(level=level, inlines=_parse_inlines(body)))
+            return
+        self._add_paragraph_line(content)
+
+    # --- Paragraph + block accumulators ----------------------------------
+
+    def _add_paragraph_line(self, line: str) -> None:
+        if self.list_stack:
+            top = self.list_stack[-1]
+            item = top.items[-1]
+            # If a blank was seen since this item's last content, it's a
+            # blank *inside* this item (because we got here without
+            # crossing a sibling marker), so mark loose.
+            if top.blank_before_next_item:
+                top.force_loose = True
+                top.blank_before_next_item = False
+            item.paragraph_lines.append(line.strip())
+        else:
+            self._doc_paragraph_lines.append(line.strip())
+
+    def _add_block(self, block: Block) -> None:
+        self._flush_current_paragraph()
+        if self.list_stack:
+            self.list_stack[-1].items[-1].blocks.append(block)
+        else:
+            self.doc_blocks.append(block)
+
+    def _flush_current_paragraph(self) -> None:
+        if self.list_stack:
+            item = self.list_stack[-1].items[-1]
+            self._flush_item_paragraph(item)
+        else:
+            self._flush_doc_paragraph()
+
+    def _flush_item_paragraph(self, item: _ItemCtx) -> None:
+        if item.paragraph_lines:
+            joined = " ".join(item.paragraph_lines)
+            item.blocks.append(Paragraph(inlines=_parse_inlines(joined)))
+            item.paragraph_lines.clear()
+
+    def _flush_doc_paragraph(self) -> None:
+        if self._doc_paragraph_lines:
+            joined = " ".join(self._doc_paragraph_lines)
+            self.doc_blocks.append(Paragraph(inlines=_parse_inlines(joined)))
+            self._doc_paragraph_lines.clear()
+
+    def _has_open_paragraph(self) -> bool:
+        if self.list_stack:
+            return bool(self.list_stack[-1].items[-1].paragraph_lines)
+        return bool(self._doc_paragraph_lines)
+
+    def _convert_paragraph_to_heading(self, level: int) -> None:
+        """Drain the current paragraph accumulator and emit a Heading."""
+        if self.list_stack:
+            item = self.list_stack[-1].items[-1]
+            joined = " ".join(item.paragraph_lines)
+            item.paragraph_lines.clear()
+            item.blocks.append(Heading(level=level, inlines=_parse_inlines(joined)))
+        else:
+            joined = " ".join(self._doc_paragraph_lines)
+            self._doc_paragraph_lines.clear()
+            self.doc_blocks.append(Heading(level=level, inlines=_parse_inlines(joined)))
+
+    # --- Close items / lists ---------------------------------------------
+
+    def _close_top_item(self) -> None:
+        """Close the open item in the deepest open list.
+
+        Flushes any in-progress paragraph; recursively closes any nested
+        open lists belonging to that item's blocks (handled by caller).
+        """
+        if not self.list_stack:
+            return
+        top = self.list_stack[-1]
+        if not top.items:
+            return
+        item = top.items[-1]
+        self._flush_item_paragraph(item)
+        if item.had_blank_inside:
+            top.force_loose = True
+
+    def _close_top_list(self) -> None:
+        """Close the deepest open list and append its frozen List node."""
+        self._close_top_item()
+        ctx = self.list_stack.pop()
+        # Decide tight vs loose. Loose if any item had an interior blank,
+        # or any pair of items had a blank between them.
+        tight = not ctx.force_loose
+        items = tuple(ListItem(blocks=tuple(it.blocks)) for it in ctx.items)
+        list_node = List(
+            ordered=ctx.ordered,
+            start=ctx.start,
+            tight=tight,
+            items=items,
+        )
+        # Append to parent container.
+        if self.list_stack:
+            parent_item = self.list_stack[-1].items[-1]
+            self._flush_item_paragraph(parent_item)
+            parent_item.blocks.append(list_node)
+        else:
+            self.doc_blocks.append(list_node)
+
+
+def _marker_matches_list(marker: "_MarkerInfo", ctx: _ListCtx) -> bool:
+    """True if a marker can continue an open list as a sibling item."""
+    if marker.ordered != ctx.ordered:
+        return False
+    # Bullet: same marker char (-, *, +). Ordered: same delimiter (. or )).
+    return marker.marker_char == ctx.marker_char
+
+
+# --- Marker recognition ---------------------------------------------------
+
+
+@dataclass
+class _MarkerInfo:
+    """Result of parsing a list marker at the start of a line."""
+    ordered: bool
+    marker_char: str       # for bullet: '-' '*' '+'; for ordered: '.' or ')'
+    start: int             # for ordered: starting number; for bullet: 1
+    marker_width: int      # chars consumed including the trailing space
+    content: str           # remainder of the line after the marker
+
+
+def _try_marker(line: str) -> _MarkerInfo | None:
+    """Parse a list marker at the *start* of ``line`` (post-dedent).
+
+    Returns marker info or None. Up to 3 leading spaces are allowed
+    before the marker; further indent is part of the marker's own
+    content-column placement so the caller's local_indent reflects it.
+    """
+    stripped = line.lstrip(" ")
+    indent = len(line) - len(stripped)
+    if indent > _ATX_MAX_INDENT:
+        return None
+    if not stripped:
+        return None
+
+    # Bullet marker?
+    if stripped[0] in "-*+":
+        ch = stripped[0]
+        rest = stripped[1:]
+        # Must be followed by space or end-of-line.
+        if rest and not rest.startswith(" "):
+            return None
+        content = rest[1:] if rest.startswith(" ") else ""
+        # Marker width: indent + 1 (marker) + 1 (space after) = consumed cols
+        marker_width = indent + 2 if rest else indent + 1
+        return _MarkerInfo(
+            ordered=False,
+            marker_char=ch,
+            start=1,
+            marker_width=marker_width,
+            content=content,
+        )
+
+    # Ordered marker? 1-9 digits then '.' or ')'.
+    i = 0
+    while i < len(stripped) and stripped[i].isdigit():
+        i += 1
+    if 0 < i <= 9 and i < len(stripped) and stripped[i] in ".)":
+        try:
+            start = int(stripped[:i])
+        except ValueError:
+            return None
+        delim = stripped[i]
+        rest = stripped[i + 1:]
+        if rest and not rest.startswith(" "):
+            return None
+        content = rest[1:] if rest.startswith(" ") else ""
+        marker_width = indent + i + 1 + (1 if rest else 0)
+        return _MarkerInfo(
+            ordered=True,
+            marker_char=delim,
+            start=start,
+            marker_width=marker_width,
+            content=content,
+        )
+    return None
+
+
+# --- Heading / Setext recognition ----------------------------------------
 
 
 def _try_atx_heading(line: str) -> tuple[int, str] | None:

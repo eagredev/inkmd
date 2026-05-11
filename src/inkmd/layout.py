@@ -284,18 +284,45 @@ def _line_max_size(line: list[Run]) -> float:
     return max((r.size for r in line), default=DEFAULT_FONT_SIZE)
 
 
-def _block_parts(block) -> tuple[list[Run], float, float]:
-    """Normalise a paginator input element to ``(runs, space_above, space_below)``.
+@dataclass(frozen=True)
+class _BlockParts:
+    """Normalised paginator input: runs, spacing, indent, optional marker."""
+    runs: list[Run]
+    space_above: float
+    space_below: float
+    body_indent: float
+    marker_runs: tuple[Run, ...]
+    marker_x: float
+    compact: bool  # if True, suppress the default paragraph_spacing gap before this block
 
-    Accepts either a bare ``list[Run]`` (treated as a plain paragraph with
-    no extra spacing) or any object exposing ``.runs / .space_above /
-    .space_below`` (e.g. ``render.RenderedBlock``). The layout module
+
+def _block_parts(block) -> _BlockParts:
+    """Normalise a paginator input element.
+
+    Accepts a bare ``list[Run]`` (treated as a plain paragraph with no
+    extra spacing or indent) or any object exposing the relevant
+    attributes (e.g. ``render.RenderedBlock``). The layout module
     deliberately does not import render to keep the layer order clean.
     """
     if hasattr(block, "runs"):
-        runs = list(block.runs)
-        return runs, float(getattr(block, "space_above", 0.0)), float(getattr(block, "space_below", 0.0))
-    return list(block), 0.0, 0.0
+        return _BlockParts(
+            runs=list(block.runs),
+            space_above=float(getattr(block, "space_above", 0.0)),
+            space_below=float(getattr(block, "space_below", 0.0)),
+            body_indent=float(getattr(block, "body_indent", 0.0)),
+            marker_runs=tuple(getattr(block, "marker_runs", ())),
+            marker_x=float(getattr(block, "marker_x", 0.0)),
+            compact=bool(getattr(block, "compact", False)),
+        )
+    return _BlockParts(
+        runs=list(block),
+        space_above=0.0,
+        space_below=0.0,
+        body_indent=0.0,
+        marker_runs=(),
+        marker_x=0.0,
+        compact=False,
+    )
 
 
 def paginate_runs(
@@ -329,19 +356,38 @@ def paginate_runs(
             pages.append(Page(tuple(current_lines), page_width, page_height))
 
     for p_idx, raw_block in enumerate(paragraphs):
-        para_runs, space_above, space_below = _block_parts(raw_block)
-        if p_idx > 0 and space_above and current_lines:
-            y_cursor -= space_above
-        wrapped = wrap_runs(para_runs, column_width)
+        parts = _block_parts(raw_block)
+        if p_idx > 0 and parts.space_above and current_lines:
+            y_cursor -= parts.space_above
+        # Body column is narrower when this block is indented.
+        body_column_width = column_width - parts.body_indent
+        wrapped = wrap_runs(parts.runs, body_column_width) if parts.runs else [[]]
+        first_line = True
         for line in wrapped:
-            line_height = line_height_ratio * _line_max_size(line)
+            line_height = line_height_ratio * (
+                _line_max_size(line) if line else DEFAULT_FONT_SIZE
+            )
             y_cursor -= line_height
             if y_cursor < bottom_y:
                 flush_page()
                 current_lines = []
                 y_cursor = top_y - line_height
-            x = margin
+            x = margin + parts.body_indent
             positioned: list[PositionedRun] = []
+            # On the first wrapped line, render the marker (if any) at marker_x.
+            if first_line and parts.marker_runs:
+                mx = margin + parts.marker_x
+                for mrun in parts.marker_runs:
+                    positioned.append(
+                        PositionedRun(
+                            text=mrun.text,
+                            x=mx,
+                            y=y_cursor,
+                            font=mrun.font,
+                            size=mrun.size,
+                        )
+                    )
+                    mx += text_width(mrun.text, mrun.font, mrun.size)
             for run in line:
                 positioned.append(
                     PositionedRun(
@@ -354,8 +400,18 @@ def paginate_runs(
                 )
                 x += text_width(run.text, run.font, run.size)
             current_lines.append(StyledLine(tuple(positioned)))
+            first_line = False
         if p_idx < len(paragraphs) - 1:
-            y_cursor -= paragraph_spacing + space_below
+            # The default paragraph_spacing applies unless the *next* block
+            # asked to be compact (set on next iteration via space_above
+            # check). For simplicity, always add paragraph_spacing + this
+            # block's space_below; the next block's space_above (which may
+            # be negative for compact lists) corrects it.
+            y_cursor -= parts.space_below
+            # Look at next block for compactness.
+            next_parts = _block_parts(paragraphs[p_idx + 1])
+            if not next_parts.compact:
+                y_cursor -= paragraph_spacing
 
     flush_page()
     return pages
