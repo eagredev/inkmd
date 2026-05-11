@@ -250,3 +250,72 @@ def test_compile_autolinks_emit_annotations():
 def test_compile_email_autolink_emits_mailto_annotation():
     out = inkmd.compile("Email dylan@example.com please.")
     assert b"mailto:dylan@example.com" in out
+
+
+# --- Bare host.tld/path (CV-style URLs) ----------------------------------
+#
+# Added 0.0.11.3 after CV mobile render showed `linkedin.com/in/dylanmoir`
+# stayed black/plain. Strict GFM doesn't link these — but real-world docs
+# (especially CVs and emails) need them. The path requirement keeps false
+# positives like `e.g.` and `Mr. Smith` safe.
+
+
+def test_bare_host_with_path_is_autolinked():
+    inlines = _inlines("linkedin.com/in/dylanmoir")
+    assert inlines == (AutoLink(url="http://linkedin.com/in/dylanmoir"),)
+
+
+def test_bare_host_with_path_inline():
+    inlines = _inlines("see github.com/eagredev for code")
+    autos = [i for i in inlines if isinstance(i, AutoLink)]
+    assert autos[0].url == "http://github.com/eagredev"
+
+
+def test_cv_header_line_all_three_links():
+    """A line from a CV with email, LinkedIn, GitHub — all should link."""
+    md = "Email | eagre.dev@gmail.com | linkedin.com/in/dylan | github.com/dylan"
+    inlines = _inlines(md)
+    autos = [i for i in inlines if isinstance(i, AutoLink)]
+    urls = [a.url for a in autos]
+    assert "mailto:eagre.dev@gmail.com" in urls
+    assert "http://linkedin.com/in/dylan" in urls
+    assert "http://github.com/dylan" in urls
+
+
+def test_bare_host_without_path_not_linked():
+    """`linkedin.com` alone (no path) stays as text — avoids ambiguity."""
+    inlines = _inlines("Just linkedin.com without path")
+    assert all(not isinstance(i, AutoLink) for i in inlines)
+
+
+def test_abbreviation_not_linked():
+    """`e.g.`, `i.e.`, `Mr. Smith`, `Inc.` etc. must NOT autolink."""
+    for src in ("e.g. example", "i.e. another", "Mr. Smith", "Inc. of"):
+        inlines = _inlines(src)
+        assert all(not isinstance(i, AutoLink) for i in inlines), src
+
+
+def test_bare_host_trailing_period_stripped():
+    inlines = _inlines("Visit linkedin.com/in/dylanmoir.")
+    autos = [i for i in inlines if isinstance(i, AutoLink)]
+    assert autos[0].url == "http://linkedin.com/in/dylanmoir"
+
+
+def test_bare_host_in_parens():
+    inlines = _inlines("See (github.com/eagredev) for code.")
+    autos = [i for i in inlines if isinstance(i, AutoLink)]
+    assert autos[0].url == "http://github.com/eagredev"
+
+
+def test_compile_bare_host_emits_annotation():
+    out = inkmd.compile("Visit linkedin.com/in/dylan today.")
+    assert b"/Subtype /Link" in out
+    assert b"http://linkedin.com/in/dylan" in out
+
+
+def test_bare_host_disabled_inside_link_text():
+    """Inside [text](url), bare hosts stay as text."""
+    inlines = _inlines("[my linkedin.com/in/dylan profile](https://other.com)")
+    link = inlines[0]
+    assert isinstance(link, Link)
+    assert all(not isinstance(i, AutoLink) for i in link.inlines)

@@ -20,7 +20,7 @@ from inkmd.pdf import styled_pdf
 from inkmd.render import FAMILIES, render_document
 
 
-__version__ = "0.0.11.2"
+__version__ = "0.0.11.3"
 
 
 def compile(
