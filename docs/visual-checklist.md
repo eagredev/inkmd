@@ -91,8 +91,9 @@ Sample: `/tmp/styled-full.pdf` from the styled_pdf demo at the bottom of this fi
 
 ## Known limitations (NOT bugs)
 
+- **Font substitution.** v0.1 references PDF's 14 base fonts by name (Helvetica, Times, Courier, …) and does not embed font files. Readers without genuine Adobe Helvetica installed (most Linux systems, including Steam Deck) substitute a clone — typically **Nimbus Sans** on Ghostscript-based readers. Advance widths match, so layout positions are correct, but **glyph side-bearings differ slightly**, which makes spacing between visible ink look subtly different from Adobe Helvetica's published metrics. The same PDF on macOS Preview or Adobe Reader (which ship real Helvetica) will render closer to inkmd's intended spacing. This lifts in v0.2 with font embedding. **Verifying inkmd output on a Linux Steam Deck is testing rendering through Nimbus Sans, not through Helvetica.**
 - Text extracted by `pdftotext` from base-font PDFs *without* an explicit `ToUnicode` CMap can lose typographic punctuation in the extraction (em dash becomes blank in extracted text). This is a `pdftotext` limitation, not a rendering bug. The PDF *renders* correctly. **Adding ToUnicode CMaps is a v0.2 task** — for v0.1 we accept that copy/paste of em dashes may not survive perfectly in all readers.
-- Codepoints outside WinAnsi (CJK, full emoji, most non-Latin scripts) render as `?`. Documented as a v0.1 limitation in README; lifts in v0.2/0.3 with TTF embedding.
+- Codepoints outside WinAnsi (CJK, full emoji, most non-Latin scripts) render as `?`. Documented as a v0.1 limitation in README; lifts in v0.2 with TTF embedding.
 
 ## How to regenerate
 
