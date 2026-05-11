@@ -41,15 +41,33 @@ from inkmd.ast import (
 # --- Public entry --------------------------------------------------------
 
 
-def parse(text: str) -> Document:
+# When True, the inline tokeniser detects bare URLs (http/https/ftp/www.)
+# and email addresses and turns them into AutoLink nodes — the GFM
+# autolink extension. Disabled inside `[text](url)` link text since
+# CommonMark forbids nested links. Set by ``parse(md, autolinks=...)``;
+# read by ``_parse_inlines``.
+_AUTOLINKS_ENABLED = True
+
+
+def parse(text: str, *, autolinks: bool = True) -> Document:
     """Parse a markdown string into an AST.
 
     Public entry point. Normalises line endings (CRLF / CR → LF),
     expands tabs to 4 spaces, then runs the two-phase pipeline.
+
+    ``autolinks`` controls GFM-style autolinking of bare URLs and email
+    addresses. Default True (matches GitHub / common docs sites). Set
+    False for strict CommonMark — bare URLs render as plain text.
     """
-    normalised = _normalise(text)
-    blocks = _parse_blocks(normalised)
-    return Document(blocks=tuple(blocks))
+    global _AUTOLINKS_ENABLED
+    prev = _AUTOLINKS_ENABLED
+    _AUTOLINKS_ENABLED = autolinks
+    try:
+        normalised = _normalise(text)
+        blocks = _parse_blocks(normalised)
+        return Document(blocks=tuple(blocks))
+    finally:
+        _AUTOLINKS_ENABLED = prev
 
 
 def _normalise(text: str) -> str:
@@ -1021,11 +1039,183 @@ def _tokenise(text: str) -> list[_Tok]:
             i = j
             continue
 
+        # GFM autolinks: bare URL or email at a word boundary. Disabled
+        # inside `[text](url)` link text (CommonMark forbids nested links)
+        # — `parse(autolinks=False)` also turns this off.
+        if _AUTOLINKS_ENABLED and _is_autolink_boundary(text, i, buf):
+            auto = _try_bare_autolink(text, i)
+            if auto is not None:
+                auto_node, end_pos = auto
+                flush_text()
+                tokens.append(_Tok(autolink=auto_node))
+                i = end_pos
+                continue
+
         buf += ch
         i += 1
 
     flush_text()
     return tokens
+
+
+# Boundary chars that may precede a bare autolink (GFM): start of input,
+# whitespace, or one of these "soft" markdown delimiters / punctuation.
+_AUTOLINK_PREV_OK = " \t\n([{*_~"
+
+
+def _is_autolink_boundary(text: str, i: int, buf: str) -> bool:
+    """True if position ``i`` is at a valid GFM autolink boundary.
+
+    Either the start of the inline run, or preceded by whitespace /
+    soft punctuation. We check `buf` (which holds in-progress text not
+    yet flushed) for the previous character if it's non-empty;
+    otherwise the previous token in the stream is the last delimiter
+    run or the start.
+    """
+    prev = buf[-1] if buf else (text[i - 1] if i > 0 else " ")
+    return prev in _AUTOLINK_PREV_OK
+
+
+# GFM autolink URL schemes we recognise without explicit `<...>`.
+_BARE_URL_SCHEMES = ("https://", "http://", "ftp://")
+_BARE_URL_PREFIX = "www."
+
+# Trailing punctuation stripped from a bare URL match (GFM § "extended
+# autolinks"). Semicolons aren't in GFM's official list but I find they
+# almost always belong to surrounding text not the URL itself.
+_BARE_URL_TRAILING_PUNCT = "?!.,:;*_~"
+
+# Chars valid inside a URL body (loose set, RFC 3986-ish).
+_URL_BODY_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "0123456789"
+    "._~:/?#[]@!$&'()*+,;=-%"
+)
+
+# Email local-part / domain chars.
+_EMAIL_LOCAL_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "0123456789._%+-"
+)
+_EMAIL_DOMAIN_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "0123456789.-"
+)
+
+
+def _try_bare_autolink(text: str, start: int) -> tuple["AutoLink", int] | None:
+    """Detect a GFM autolink at ``text[start:]``.
+
+    Returns ``(AutoLink, end_pos)`` or None. Handles three cases:
+      1. Scheme-prefixed URL (``https://``, ``http://``, ``ftp://``)
+      2. ``www.``-prefixed URL (auto-prefixed with ``http://``)
+      3. Bare email address (auto-prefixed with ``mailto:``)
+    """
+    # 1. Scheme-prefixed.
+    for scheme in _BARE_URL_SCHEMES:
+        if text.startswith(scheme, start):
+            end = _scan_url_body(text, start + len(scheme))
+            if end is None:
+                return None
+            url = text[start:end]
+            return AutoLink(url=url), end
+
+    # 2. www.-prefixed.
+    if text.startswith(_BARE_URL_PREFIX, start):
+        end = _scan_url_body(text, start + len(_BARE_URL_PREFIX))
+        if end is None:
+            return None
+        url = "http://" + text[start:end]
+        return AutoLink(url=url), end
+
+    # 3. Email — must have @ within reach and a TLD-like ending.
+    if start < len(text) and text[start] in _EMAIL_LOCAL_CHARS:
+        end = _scan_email(text, start)
+        if end is not None:
+            email = text[start:end]
+            return AutoLink(url="mailto:" + email), end
+
+    return None
+
+
+def _scan_url_body(text: str, start: int) -> int | None:
+    """Scan a URL body starting at ``start`` (after the scheme).
+
+    Honours GFM's balanced-paren rule and trailing-punctuation strip.
+    Returns the end index, or None if no valid URL body found
+    (e.g. scheme followed immediately by whitespace).
+    """
+    n = len(text)
+    if start >= n or text[start] not in _URL_BODY_CHARS:
+        return None
+    # Require at least one '.' in the host portion (e.g. https://x is
+    # not a valid autolink — needs a dotted host).
+    i = start
+    host_end = i
+    saw_dot = False
+    while host_end < n and text[host_end] in _URL_BODY_CHARS and text[host_end] not in "/?#":
+        if text[host_end] == ".":
+            saw_dot = True
+        host_end += 1
+    if not saw_dot:
+        return None
+    # Continue past path/query/fragment.
+    i = host_end
+    paren_depth = 0
+    while i < n and text[i] in _URL_BODY_CHARS:
+        if text[i] == "(":
+            paren_depth += 1
+        elif text[i] == ")":
+            if paren_depth == 0:
+                break  # unmatched ) belongs to surrounding text
+            paren_depth -= 1
+        i += 1
+    # Trim trailing punctuation per GFM (period, comma, etc).
+    while i > start + 1 and text[i - 1] in _BARE_URL_TRAILING_PUNCT:
+        i -= 1
+    # Trim trailing ')' beyond what the URL opened.
+    closes = sum(1 for c in text[start:i] if c == ")")
+    opens = sum(1 for c in text[start:i] if c == "(")
+    while i > start and closes > opens and text[i - 1] == ")":
+        i -= 1
+        closes -= 1
+    return i
+
+
+def _scan_email(text: str, start: int) -> int | None:
+    """Scan a bare email address starting at ``start``.
+
+    Returns the end index, or None if not an email. Requires
+    local-part chars, an @, domain chars containing at least one dot,
+    and a TLD of 2+ alpha chars. Trailing `.` etc. (sentence punctuation
+    after the email) is stripped, mirroring _scan_url_body.
+    """
+    n = len(text)
+    # Local-part.
+    i = start
+    while i < n and text[i] in _EMAIL_LOCAL_CHARS:
+        i += 1
+    if i == start or i >= n or text[i] != "@":
+        return None
+    local_end = i
+    local = text[start:local_end]
+    if local.startswith(".") or local.endswith(".") or ".." in local:
+        return None
+    # Domain — eat greedily, then trim trailing punctuation.
+    i += 1  # past @
+    domain_start = i
+    while i < n and text[i] in _EMAIL_DOMAIN_CHARS:
+        i += 1
+    # Strip trailing '.' and ',' etc. (sentence punctuation).
+    while i > domain_start and text[i - 1] in ".,;:!?":
+        i -= 1
+    domain = text[domain_start:i]
+    if "." not in domain or domain.startswith("."):
+        return None
+    tld = domain.rsplit(".", 1)[-1]
+    if len(tld) < 2 or not tld.isalpha():
+        return None
+    return i
 
 
 # --- Link recognition ----------------------------------------------------
@@ -1094,7 +1284,16 @@ def _try_inline_link(text: str, start: int) -> tuple[Link, int] | None:
     if j >= n or text[j] != ")":
         return None
     link_text = text[text_start:text_end]
-    inner_inlines = _parse_inlines(link_text)
+    # CommonMark forbids nested links — disable autolinks during the
+    # inner parse so a bare URL inside link text doesn't become a
+    # second annotation overlapping the outer one.
+    global _AUTOLINKS_ENABLED
+    prev = _AUTOLINKS_ENABLED
+    _AUTOLINKS_ENABLED = False
+    try:
+        inner_inlines = _parse_inlines(link_text)
+    finally:
+        _AUTOLINKS_ENABLED = prev
     return Link(inlines=inner_inlines, url=url, title=title), j + 1
 
 
