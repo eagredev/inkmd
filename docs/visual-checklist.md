@@ -85,9 +85,21 @@ Sample: `/tmp/styled-full.pdf` from the styled_pdf demo at the bottom of this fi
 - [ ] Text remains crisp and selectable; copy/paste from the viewer recovers the original characters (modulo the U+2014/0x97 ToUnicode caveat — see *Known limitations* below).
 - [ ] All pages have consistent margins (1 inch).
 
-### Pending milestones — append checklists here when the milestone lands
+#### Milestone 0.0.4 — markdown parser (paragraphs only)
 
-- [ ] **0.0.4 (markdown parser)**: when the input is `**bold**`, the output renders as bold. When `*italic*`, it renders italic. When `` `code` ``, it renders monospace. No stray asterisks or backticks visible. Headings render with appropriate size hierarchy (eventually). Etc.
+Sample: `/tmp/md-first.pdf` from `inkmd.compile(md_text)` where `md_text` contains 3-4 paragraphs separated by blank lines.
+
+- [ ] Each `\n\n`-separated source paragraph appears as its own paragraph in the output.
+- [ ] Internal newlines within a source paragraph flatten to single spaces (soft breaks).
+- [ ] Multiple blank lines between paragraphs render the same as one (no extra spacing).
+- [ ] Markdown literals that 0.0.4 doesn't yet interpret (`**bold**`, `*italic*`, `` `code` ``, `# heading`, `- list`) appear in the output **as literal characters**. This is expected for 0.0.4 — formatting recognition arrives in 0.0.5.
+- [ ] Em dashes, curly quotes, ellipses still render correctly (regression from 0.0.3.1).
+- [ ] `inkmd.compile(md_text)` and `inkmd.render_file(in_path, out_path)` both work without raising.
+
+## Pending milestones — append checklists here when the milestone lands
+
+- [ ] **0.0.5 (inline formatting)**: when the input is `**bold**`, the output renders as bold (no stray asterisks visible). When `*italic*`, it renders italic. When `` `code` ``, it renders in Courier.
+- [ ] **0.0.6 (block constructs)**: `# Heading` renders larger and bold; `- item` renders as a bulleted list; `> quote` renders as a blockquote with indent.
 
 ## Known limitations (NOT bugs)
 
