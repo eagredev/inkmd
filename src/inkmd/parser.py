@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from inkmd.ast import Code, Document, Emphasis, Inline, Paragraph, Strong, Text
+from inkmd.ast import Block, Code, Document, Emphasis, Heading, Inline, Paragraph, Strong, Text
 
 
 # --- Public entry --------------------------------------------------------
@@ -44,25 +44,101 @@ def _normalise(text: str) -> str:
     return text
 
 
-def _parse_blocks(text: str) -> list[Paragraph]:
-    """Split ``text`` into paragraphs separated by blank lines."""
-    blocks: list[Paragraph] = []
+def _parse_blocks(text: str) -> list[Block]:
+    """Split ``text`` into blocks: ATX headings, Setext headings, paragraphs.
+
+    Blocks are separated by blank lines. ATX headings (``# foo``) consume
+    their own line. Setext headings are detected by looking ahead: if a
+    paragraph's accumulator is followed by a ``===`` or ``---`` line, the
+    accumulator becomes a Heading instead of a Paragraph.
+    """
+    blocks: list[Block] = []
     current_lines: list[str] = []
 
-    def flush() -> None:
+    def flush_paragraph() -> None:
         if current_lines:
             joined = " ".join(line.strip() for line in current_lines)
-            inlines = _parse_inlines(joined)
-            blocks.append(Paragraph(inlines=inlines))
+            blocks.append(Paragraph(inlines=_parse_inlines(joined)))
             current_lines.clear()
+
+    def flush_setext(level: int) -> None:
+        joined = " ".join(line.strip() for line in current_lines)
+        blocks.append(Heading(level=level, inlines=_parse_inlines(joined)))
+        current_lines.clear()
 
     for line in text.split("\n"):
         if line.strip() == "":
-            flush()
-        else:
-            current_lines.append(line)
-    flush()
+            flush_paragraph()
+            continue
+
+        atx = _try_atx_heading(line)
+        if atx is not None:
+            flush_paragraph()
+            level, body = atx
+            blocks.append(Heading(level=level, inlines=_parse_inlines(body)))
+            continue
+
+        setext_level = _try_setext_underline(line) if current_lines else None
+        if setext_level is not None:
+            flush_setext(setext_level)
+            continue
+
+        current_lines.append(line)
+    flush_paragraph()
     return blocks
+
+
+_ATX_MAX_INDENT = 3
+
+
+def _try_atx_heading(line: str) -> tuple[int, str] | None:
+    """Return ``(level, body)`` if ``line`` is an ATX heading, else None.
+
+    CommonMark §4.2: 0-3 spaces of indent, 1-6 ``#``, then either end of
+    line or a space before the body. Optional trailing run of ``#``
+    (preceded by space) is stripped — interior ``#`` is preserved.
+    """
+    stripped = line.lstrip(" ")
+    indent = len(line) - len(stripped)
+    if indent > _ATX_MAX_INDENT:
+        return None
+    i = 0
+    while i < len(stripped) and stripped[i] == "#":
+        i += 1
+    if i == 0 or i > 6:
+        return None
+    rest = stripped[i:]
+    if rest and rest[0] != " ":
+        return None
+    body = rest.strip()
+    # Strip optional trailing closing hashes (must be space-separated).
+    if body:
+        j = len(body)
+        while j > 0 and body[j - 1] == "#":
+            j -= 1
+        if j < len(body) and (j == 0 or body[j - 1] == " "):
+            body = body[:j].rstrip()
+    return i, body
+
+
+def _try_setext_underline(line: str) -> int | None:
+    """Return 1 if ``line`` is an H1 setext underline, 2 for H2, else None.
+
+    CommonMark §4.3: 0-3 spaces of indent, then a run of ``=`` (H1) or
+    ``-`` (H2), with no other non-whitespace characters.
+    """
+    stripped = line.lstrip(" ")
+    indent = len(line) - len(stripped)
+    if indent > _ATX_MAX_INDENT:
+        return None
+    body = stripped.rstrip()
+    if not body:
+        return None
+    if all(c == "=" for c in body):
+        return 1
+    if all(c == "-" for c in body):
+        return 2
+    return None
 
 
 # --- Inline parsing (CommonMark emphasis algorithm) ----------------------

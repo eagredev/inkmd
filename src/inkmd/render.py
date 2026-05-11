@@ -1,23 +1,20 @@
 """Lower a parsed AST into the layout's run-based model.
 
 The seam between markdown semantics (AST) and PDF layout (Run / paginate).
-``render_document`` walks blocks, dispatches on type, and yields the
-list-of-Run-lists that ``paginate_runs`` expects.
+``render_document`` walks blocks, dispatches on type, and yields a list
+of ``RenderedBlock`` records: a run list plus per-block spacing hints
+that the paginator honours when stacking blocks on a page.
 
-v0.0.4: Paragraph → list[Run] with everything in the family's body
-font. The font family is selectable so demo scripts can render samples
-in Times (closer match to Nimbus on Linux for visual review) while
-the library default stays Helvetica.
-
-0.0.5+ will use the family quadruple's bold / italic / monospace slots
-to render Strong, Emphasis, Code, Heading, etc.
+The font family is selectable so demo scripts can render samples in
+Times (closer match to Nimbus on Linux for visual review) while the
+library default stays Helvetica.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from inkmd.ast import Code, Document, Emphasis, Inline, Paragraph, Strong, Text
+from inkmd.ast import Code, Document, Emphasis, Heading, Inline, Paragraph, Strong, Text
 from inkmd.layout import Run
 
 
@@ -70,15 +67,42 @@ BODY_SIZE = 12.0
 BODY_FONT = DEFAULT_FAMILY.regular
 
 
-def render_document(doc: Document, family: FontFamily = DEFAULT_FAMILY) -> list[list[Run]]:
-    """Lower a Document into the list-of-paragraphs-of-runs that paginate_runs eats."""
-    paragraphs: list[list[Run]] = []
+# Heading size table (level 1..6). Values chosen for visual hierarchy at
+# typical document scale; bold across the board.
+HEADING_SIZES: dict[int, float] = {
+    1: 24.0,
+    2: 18.0,
+    3: 14.0,
+    4: 13.0,
+    5: 12.0,
+    6: 11.0,
+}
+
+
+@dataclass(frozen=True)
+class RenderedBlock:
+    """A paginatable unit: runs plus per-block vertical breathing room.
+
+    ``space_above`` and ``space_below`` are in points and are *added* to
+    the paginator's default inter-block spacing. Headings request more
+    space above than below so they bind visually to their following body.
+    """
+    runs: tuple[Run, ...]
+    space_above: float = 0.0
+    space_below: float = 0.0
+
+
+def render_document(doc: Document, family: FontFamily = DEFAULT_FAMILY) -> list[RenderedBlock]:
+    """Lower a Document into a list of ``RenderedBlock``."""
+    blocks: list[RenderedBlock] = []
     for block in doc.blocks:
-        if isinstance(block, Paragraph):
-            paragraphs.append(_render_paragraph(block, family))
+        if isinstance(block, Heading):
+            blocks.append(_render_heading(block, family))
+        elif isinstance(block, Paragraph):
+            blocks.append(RenderedBlock(runs=tuple(_render_paragraph(block, family))))
         else:
             raise NotImplementedError(f"render: unsupported block {type(block).__name__}")
-    return paragraphs
+    return blocks
 
 
 def _render_paragraph(p: Paragraph, family: FontFamily) -> list[Run]:
@@ -89,43 +113,55 @@ def _render_paragraph(p: Paragraph, family: FontFamily) -> list[Run]:
     return runs
 
 
+def _render_heading(h: Heading, family: FontFamily) -> RenderedBlock:
+    """Lower a Heading: bold face at the level-specific size, with spacing."""
+    size = HEADING_SIZES[h.level]
+    runs: list[Run] = []
+    for inline in h.inlines:
+        runs.extend(_render_inline(inline, family, font=family.bold, size=size))
+    # H1 gets the most breathing room; subordinate levels get progressively less.
+    space_above = max(size * 0.6, 6.0)
+    space_below = max(size * 0.25, 3.0)
+    return RenderedBlock(runs=tuple(runs), space_above=space_above, space_below=space_below)
+
+
 def _render_inline(
-    inline: Inline, family: FontFamily, font: str
+    inline: Inline, family: FontFamily, font: str, size: float = BODY_SIZE
 ) -> list[Run]:
     """Lower one inline node to one or more runs.
 
     ``font`` is the *current* font (carried through nesting) so that an
     Emphasis inside a Strong picks the family's ``bold_italic`` face
-    instead of dropping back to plain italic. v0.0.5 supports one level
-    of nesting per branch (bold → bold-italic, italic → bold-italic);
-    deeper nesting falls back to bold-italic too.
+    instead of dropping back to plain italic. ``size`` is carried
+    through nesting too — heading inlines stay at heading size when
+    they contain Strong/Emphasis.
     """
     if isinstance(inline, Text):
-        return [Run(text=inline.content, font=font, size=BODY_SIZE)]
+        return [Run(text=inline.content, font=font, size=size)]
 
     if isinstance(inline, Code):
-        return [Run(text=inline.content, font=family.monospace, size=BODY_SIZE)]
+        return [Run(text=inline.content, font=family.monospace, size=size)]
 
     if isinstance(inline, Strong):
         next_font = (
             family.bold_italic if font == family.italic else family.bold
         )
-        return _flatten(inline.inlines, family, next_font)
+        return _flatten(inline.inlines, family, next_font, size)
 
     if isinstance(inline, Emphasis):
         next_font = (
             family.bold_italic if font == family.bold else family.italic
         )
-        return _flatten(inline.inlines, family, next_font)
+        return _flatten(inline.inlines, family, next_font, size)
 
     raise NotImplementedError(f"render: unsupported inline {type(inline).__name__}")
 
 
 def _flatten(
-    inlines: tuple[Inline, ...], family: FontFamily, font: str
+    inlines: tuple[Inline, ...], family: FontFamily, font: str, size: float = BODY_SIZE
 ) -> list[Run]:
-    """Render a tuple of inline children, carrying the active font through."""
+    """Render a tuple of inline children, carrying font + size through."""
     runs: list[Run] = []
     for inline in inlines:
-        runs.extend(_render_inline(inline, family, font=font))
+        runs.extend(_render_inline(inline, family, font=font, size=size))
     return runs

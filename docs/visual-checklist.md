@@ -127,9 +127,23 @@ Sample: `/tmp/md-commonmark-times.pdf` from a markdown source mixing nested emph
 - [ ] **Code spans remain opaque**: `` `**not bold**` `` shows literal asterisks in Courier; `` `\*also literal\*` `` keeps the backslashes too.
 - [ ] **Mixed delimiters**: `__strong *emph* end__` and `*emph __strong__ end*` both nest correctly.
 
+### Milestone 0.0.7 — headings (ATX + Setext)
+
+Sample: `/tmp/inkmd-0.0.7-times.pdf` and `/tmp/inkmd-0.0.7-helvetica.pdf`.
+
+- [ ] **H1 is visibly larger than H2**, H2 than H3, etc. The body text is 12pt; H1 should be roughly twice that height.
+- [ ] **Headings are bold** in both Helvetica and Times families.
+- [ ] **Headings have vertical breathing room above** — they don't crash into the preceding paragraph's last line.
+- [ ] **ATX trailing hashes are stripped**: `## Title ##` renders as `Title`, not `Title ##`.
+- [ ] **Inline emphasis inside a heading stays at heading size**: `## Hello *world*` should NOT shrink the `world` part to body size.
+- [ ] **Setext H1 (`Title\n===`)** renders identically to `# Title`.
+- [ ] **Setext H2 (`Title\n---`)** renders identically to `## Title`.
+- [ ] **Page break before an H1** that wouldn't fit: spacing-above isn't doubled at the top of a fresh page.
+
 ## Pending milestones — append checklists here when the milestone lands
 
-- [ ] **0.0.7 (block constructs)**: `# Heading` renders larger and bold; `- item` renders as a bulleted list; `> quote` renders as a blockquote with indent.
+- [ ] **0.0.8 (lists)**: ordered and unordered, nested by indent.
+- [ ] **0.0.9 (blockquotes + fenced code)**: indent + vertical rule for blockquotes; tinted background for fenced code blocks.
 
 ## Known limitations (NOT bugs)
 
