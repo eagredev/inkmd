@@ -235,3 +235,40 @@ def test_unmatched_underscore_is_literal():
 
 def test_plain_text_unchanged():
     assert _inlines("just plain text") == (Text("just plain text"),)
+
+
+# --- Triple-delimiter (compound bold-italic) ------------------------------
+#
+# Fixed in torture-test triage 2026-05-12. Before the fix, `***x***`
+# emitted `Strong(x)` with stray literal `*` chars on each side, because
+# the resolver advanced past the closer after consuming the first 2 chars
+# instead of retrying with the residual 1-char openers/closers as a new
+# pairing.
+
+
+def test_triple_asterisk_is_emphasis_around_strong():
+    inlines = _inlines("***x***")
+    assert inlines == (Emphasis(inlines=(Strong(inlines=(Text("x"),)),)),)
+
+
+def test_triple_underscore_is_emphasis_around_strong():
+    inlines = _inlines("___x___")
+    assert inlines == (Emphasis(inlines=(Strong(inlines=(Text("x"),)),)),)
+
+
+def test_triple_asterisk_in_middle_of_paragraph():
+    inlines = _inlines("Visit ***both at once*** done")
+    assert inlines == (
+        Text("Visit "),
+        Emphasis(inlines=(Strong(inlines=(Text("both at once"),)),)),
+        Text(" done"),
+    )
+
+
+def test_two_triple_groups_in_one_paragraph():
+    inlines = _inlines("***a*** plain ***b***")
+    assert inlines == (
+        Emphasis(inlines=(Strong(inlines=(Text("a"),)),)),
+        Text(" plain "),
+        Emphasis(inlines=(Strong(inlines=(Text("b"),)),)),
+    )

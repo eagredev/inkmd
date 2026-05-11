@@ -1275,26 +1275,44 @@ def _resolve_emphasis(tokens: list[_Tok]) -> None:
         opener.length -= eat
         d.length -= eat
 
-        # Replace the span of tokens (opener_idx .. i inclusive) with:
-        # - the opener's remaining delim chars (if any) as literal text
-        # - the span node
-        # - the closer's remaining delim chars (if any) as literal text
-        opener_remainder = opener.char * opener.length
-        closer_remainder = d.char * d.length
-
+        # Build the replacement slice. Remainders on either side keep
+        # their `_Delim` metadata (with reduced length) so the iterative
+        # walk can pair them again — e.g. ``***x***`` first emits a
+        # Strong consuming 2 chars per side, leaving a 1-char opener and
+        # 1-char closer that the next pass pairs as Emphasis around the
+        # Strong, producing the correct ``<em><strong>x</strong></em>``.
         new_tokens: list[_Tok] = []
-        if opener_remainder:
-            new_tokens.append(_Tok(text=opener_remainder))
-        new_tokens.append(_Tok(text=None, code=None, delim=None))  # placeholder
-        new_tokens[-1].span = span  # type: ignore[attr-defined]
-        if closer_remainder:
-            new_tokens.append(_Tok(text=closer_remainder))
+        if opener.length > 0:
+            opener_tok = _Tok(text=opener.char * opener.length)
+            opener_tok.delim = _Delim(
+                char=opener.char,
+                length=opener.length,
+                text_idx=0,  # unused after rewrite
+                can_open=opener.can_open,
+                can_close=opener.can_close,
+            )
+            new_tokens.append(opener_tok)
+        span_tok = _Tok()
+        span_tok.span = span  # type: ignore[attr-defined]
+        new_tokens.append(span_tok)
+        if d.length > 0:
+            closer_tok = _Tok(text=d.char * d.length)
+            closer_tok.delim = _Delim(
+                char=d.char,
+                length=d.length,
+                text_idx=0,
+                can_open=d.can_open,
+                can_close=d.can_close,
+            )
+            new_tokens.append(closer_tok)
 
-        # If openers/closers are fully consumed, the delim is gone.
-        # Replace tokens[opener_idx .. i+1] with new_tokens.
         tokens[opener_idx:i + 1] = new_tokens
-        # Re-walk from just after the new span.
-        i = opener_idx + len(new_tokens)
+        # Re-walk from the opener position so a still-active opener
+        # remainder can be matched by the *current* closer remainder
+        # (which is now inside ``new_tokens`` at the original closer's
+        # new index). Conceptually we just retry the whole resolution
+        # from where the span landed.
+        i = opener_idx
 
 
 def _can_pair(opener: _Delim, closer: _Delim) -> bool:
