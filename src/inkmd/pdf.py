@@ -12,7 +12,25 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from inkmd.layout import Page, paginate, split_paragraphs
+from inkmd.layout import (
+    Page,
+    PositionedRun,
+    Run,
+    StyledLine,
+    paginate,
+    paginate_runs,
+    split_paragraphs,
+)
+
+
+# Font slot assignments for the styled path. F1 is regular body text
+# so single-font PDFs (text_pdf) need no slot changes when emitting.
+FONT_SLOTS: dict[str, str] = {
+    "Helvetica": "F1",
+    "Helvetica-Bold": "F2",
+    "Helvetica-Oblique": "F3",
+    "Courier": "F4",
+}
 
 
 # PDF uses points throughout. 1 inch = 72 points. A4 and Letter are the
@@ -175,37 +193,81 @@ def hello_world_pdf(text: str = "Hello, world!", page_size: str = "letter") -> b
 def _escape_pdf_string(s: str) -> str:
     """Escape (, ), and \\ inside a PDF literal string.
 
-    PDF string literals are delimited by parentheses, so the delimiters
-    themselves and the escape char need backslash-escaping. Everything
-    else passes through as-is in v0.1's ASCII-only world.
+    Kept for hello_world_pdf and tests that work in pure ASCII. The
+    multi-page emitters use ``_encode_pdf_literal`` which goes via the
+    WinAnsi byte path.
     """
     return s.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+def _encode_pdf_literal(text: str) -> bytes:
+    """Encode a string for direct insertion between parens in a content stream.
+
+    Returns the byte sequence that goes between ``(`` and ``)``: the
+    text WinAnsi-encoded with parens and backslashes escaped.
+    """
+    encoded = encode_winansi(text)
+    return (
+        encoded
+        .replace(b"\\", b"\\\\")
+        .replace(b"(", b"\\(")
+        .replace(b")", b"\\)")
+    )
+
+
+# WinAnsi remaps these typographic codepoints into the 0x80..0x9F range
+# of single bytes. Without this, em dashes / curly quotes / ellipses
+# would have no byte representation in v0.1's WinAnsi-only output.
+_WINANSI_REMAP: dict[int, int] = {
+    0x20AC: 0x80, 0x201A: 0x82, 0x0192: 0x83, 0x201E: 0x84,
+    0x2026: 0x85, 0x2020: 0x86, 0x2021: 0x87, 0x02C6: 0x88,
+    0x2030: 0x89, 0x0160: 0x8A, 0x2039: 0x8B, 0x0152: 0x8C,
+    0x017D: 0x8E, 0x2018: 0x91, 0x2019: 0x92, 0x201C: 0x93,
+    0x201D: 0x94, 0x2022: 0x95, 0x2013: 0x96, 0x2014: 0x97,
+    0x02DC: 0x98, 0x2122: 0x99, 0x0161: 0x9A, 0x203A: 0x9B,
+    0x0153: 0x9C, 0x017E: 0x9E, 0x0178: 0x9F,
+}
+
+
+def encode_winansi(text: str) -> bytes:
+    """Encode a Python string into WinAnsi bytes for use inside a PDF literal.
+
+    Codepoints 0x00..0xFF that exist in WinAnsi pass through directly.
+    The remapped punctuation block (em/en dash, curly quotes, ellipsis,
+    etc.) is translated into its WinAnsi byte. Anything else falls back
+    to a ``?`` — v0.1 is a Latin-1 / WinAnsi-only product and we
+    document that limitation; once TTF embedding lands in v0.2/0.3 the
+    fallback path goes away.
+    """
+    out = bytearray()
+    for ch in text:
+        cp = ord(ch)
+        if cp in _WINANSI_REMAP:
+            out.append(_WINANSI_REMAP[cp])
+        elif cp <= 0xFF:
+            out.append(cp)
+        else:
+            out.append(ord("?"))
+    return bytes(out)
 
 
 def _page_content_stream(page: Page) -> bytes:
     """Build a content stream that draws every line in ``page``.
 
-    We use absolute positioning (``Td`` after a ``Tm`` reset) for each
-    line rather than the relative ``TL``/``T*`` shortcuts, because the
-    line spacing inside a paragraph and between paragraphs may differ
-    once headings and lists arrive in later milestones. Absolute is
-    boring but easy to extend.
+    Single-font path. Lines are drawn one at a time via absolute Tm
+    positioning so future irregular spacing (headings, lists) drops in
+    cleanly without offset accumulation.
     """
     parts = [b"BT"]
     current_font = None
     current_size = None
     for line in page.lines:
-        # Tf only when the font or size actually changes.
         if line.font != current_font or line.size != current_size:
             parts.append(f"/F1 {line.size} Tf".encode("ascii"))
             current_font = line.font
             current_size = line.size
-        # Tm resets the text matrix to identity, then we move to (x, y).
-        # Using Tm rather than Td between lines avoids accumulated
-        # offsets when text on a page has irregular spacing.
         parts.append(f"1 0 0 1 {line.x} {line.y} Tm".encode("ascii"))
-        safe = _escape_pdf_string(line.text)
-        parts.append(f"({safe}) Tj".encode("ascii"))
+        parts.append(b"(" + _encode_pdf_literal(line.text) + b") Tj")
     parts.append(b"ET")
     return b"\n".join(parts)
 
@@ -263,6 +325,116 @@ def text_pdf(text: str, page_size: str = "letter") -> bytes:
         writer.add_object(page_obj)
 
         stream_body = _page_content_stream(page) if page.lines else b"BT\nET"
+        writer.add_object(_content_stream(stream_body))
+
+    return writer.serialise(root_obj_num=catalog_n)
+
+
+# --- Styled emission path (milestone 0.0.3) -------------------------------
+
+
+def _styled_page_content_stream(page: Page) -> bytes:
+    """Build a content stream for a page of ``StyledLine`` records.
+
+    Each run is positioned absolutely via Tm; font switches emit a Tf
+    only when font or size actually changes (cheaper output bytes).
+    """
+    parts = [b"BT"]
+    current_font = None
+    current_size = None
+    for line in page.lines:
+        for run in line.runs:
+            if run.font != current_font or run.size != current_size:
+                slot = FONT_SLOTS[run.font]
+                parts.append(f"/{slot} {_fmt(run.size)} Tf".encode("ascii"))
+                current_font = run.font
+                current_size = run.size
+            parts.append(
+                f"1 0 0 1 {_fmt(run.x)} {_fmt(run.y)} Tm".encode("ascii")
+            )
+            parts.append(b"(" + _encode_pdf_literal(run.text) + b") Tj")
+    parts.append(b"ET")
+    return b"\n".join(parts)
+
+
+def _fmt(n: float) -> str:
+    """Format a float for PDF output: drop the trailing .0 on integers.
+
+    PDF accepts both, but keeping integer coords as integers makes the
+    byte output more compact and easier to read.
+    """
+    if n == int(n):
+        return str(int(n))
+    # Round to 3 decimal places — sub-millipoint precision is more than
+    # any renderer cares about and keeps determinism trivial.
+    return f"{n:.3f}".rstrip("0").rstrip(".")
+
+
+def styled_pdf(
+    paragraphs: list[list[Run]],
+    page_size: str = "letter",
+) -> bytes:
+    """Emit a multi-page PDF from styled paragraph runs.
+
+    Each paragraph is a list of ``Run`` objects. The four supported
+    fonts (Helvetica, Helvetica-Bold, Helvetica-Oblique, Courier) are
+    each declared as a font resource on every page.
+    """
+    width, height = PAGE_SIZES[page_size]
+    pages = paginate_runs(paragraphs, page_width=width, page_height=height)
+
+    if not pages:
+        pages = [Page(lines=(), width=width, height=height)]
+
+    writer = PDFWriter()
+
+    catalog_n = 1
+    pages_tree_n = 2
+    # Four font objects, one per face. F1..F4 → object numbers 3..6.
+    font_obj_nums: dict[str, int] = {}
+    fixed_objects = 2  # catalog + pages tree, before fonts
+
+    # Catalog.
+    writer.add_object(f"<< /Type /Catalog /Pages {pages_tree_n} 0 R >>".encode("ascii"))
+
+    n_pages = len(pages)
+    n_fonts = len(FONT_SLOTS)
+    page_obj_nums = [fixed_objects + n_fonts + 1 + i * 2 for i in range(n_pages)]
+    contents_obj_nums = [fixed_objects + n_fonts + 2 + i * 2 for i in range(n_pages)]
+
+    # Pages tree.
+    kids = " ".join(f"{n} 0 R" for n in page_obj_nums)
+    writer.add_object(
+        f"<< /Type /Pages /Kids [{kids}] /Count {n_pages} >>".encode("ascii")
+    )
+
+    # Font objects, in a deterministic order matching FONT_SLOTS.
+    for font_name in FONT_SLOTS:
+        obj_n = writer.add_object(
+            (
+                f"<< /Type /Font /Subtype /Type1 /BaseFont /{font_name} >>"
+            ).encode("ascii")
+        )
+        font_obj_nums[font_name] = obj_n
+
+    # Resource dict: every font slot maps to its object.
+    font_resource = " ".join(
+        f"/{slot} {font_obj_nums[name]} 0 R"
+        for name, slot in FONT_SLOTS.items()
+    )
+
+    for page, page_n, contents_n in zip(pages, page_obj_nums, contents_obj_nums):
+        page_obj = (
+            f"<< /Type /Page /Parent {pages_tree_n} 0 R "
+            f"/MediaBox [0 0 {page.width} {page.height}] "
+            f"/Resources << /Font << {font_resource} >> >> "
+            f"/Contents {contents_n} 0 R >>"
+        ).encode("ascii")
+        writer.add_object(page_obj)
+
+        stream_body = (
+            _styled_page_content_stream(page) if page.lines else b"BT\nET"
+        )
         writer.add_object(_content_stream(stream_body))
 
     return writer.serialise(root_obj_num=catalog_n)
