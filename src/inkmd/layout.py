@@ -284,21 +284,37 @@ def _line_max_size(line: list[Run]) -> float:
     return max((r.size for r in line), default=DEFAULT_FONT_SIZE)
 
 
+def _block_parts(block) -> tuple[list[Run], float, float]:
+    """Normalise a paginator input element to ``(runs, space_above, space_below)``.
+
+    Accepts either a bare ``list[Run]`` (treated as a plain paragraph with
+    no extra spacing) or any object exposing ``.runs / .space_above /
+    .space_below`` (e.g. ``render.RenderedBlock``). The layout module
+    deliberately does not import render to keep the layer order clean.
+    """
+    if hasattr(block, "runs"):
+        runs = list(block.runs)
+        return runs, float(getattr(block, "space_above", 0.0)), float(getattr(block, "space_below", 0.0))
+    return list(block), 0.0, 0.0
+
+
 def paginate_runs(
-    paragraphs: list[list[Run]],
+    paragraphs,
     page_width: float,
     page_height: float,
     margin: float = DEFAULT_MARGIN,
     line_height_ratio: float = 1.2,
     paragraph_spacing: float = 6.0,
 ) -> list[Page]:
-    """Wrap and paginate styled paragraphs into ``Page`` records.
+    """Wrap and paginate styled blocks into ``Page`` records.
 
-    Each paragraph is a list of ``Run``. Line height is set per-line as
-    ``line_height_ratio * max font size on the line``, so a line that
-    mixes 12pt body text with no larger glyphs uses 14.4pt leading. Page
-    breaks fire when the next line's baseline would fall below the
-    bottom margin.
+    Each element of ``paragraphs`` is either a bare ``list[Run]`` (plain
+    paragraph) or a ``RenderedBlock``-like carrier with optional
+    ``space_above`` / ``space_below`` hints (additive to the default
+    inter-block spacing). Line height is set per-line as
+    ``line_height_ratio * max font size on the line``. Page breaks fire
+    when the next line's baseline would fall below the bottom margin;
+    space-above before a block is suppressed at the top of a fresh page.
     """
     column_width = page_width - 2 * margin
     top_y = page_height - margin
@@ -312,7 +328,10 @@ def paginate_runs(
         if current_lines:
             pages.append(Page(tuple(current_lines), page_width, page_height))
 
-    for p_idx, para_runs in enumerate(paragraphs):
+    for p_idx, raw_block in enumerate(paragraphs):
+        para_runs, space_above, space_below = _block_parts(raw_block)
+        if p_idx > 0 and space_above and current_lines:
+            y_cursor -= space_above
         wrapped = wrap_runs(para_runs, column_width)
         for line in wrapped:
             line_height = line_height_ratio * _line_max_size(line)
@@ -321,7 +340,6 @@ def paginate_runs(
                 flush_page()
                 current_lines = []
                 y_cursor = top_y - line_height
-            # Position each run sequentially along the line.
             x = margin
             positioned: list[PositionedRun] = []
             for run in line:
@@ -335,12 +353,9 @@ def paginate_runs(
                     )
                 )
                 x += text_width(run.text, run.font, run.size)
-                # Single space between runs that came from word-separation;
-                # the tokeniser preserved spaces explicitly so we don't
-                # add extra here.
             current_lines.append(StyledLine(tuple(positioned)))
         if p_idx < len(paragraphs) - 1:
-            y_cursor -= paragraph_spacing
+            y_cursor -= paragraph_spacing + space_below
 
     flush_page()
     return pages

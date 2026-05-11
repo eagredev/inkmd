@@ -57,8 +57,14 @@ class Paragraph:
     inlines: tuple[Inline, ...]
 
 
-# Type alias for block-level nodes; widens as 0.0.6 adds Heading, List, CodeBlock, etc.
-Block = Paragraph
+@dataclass(frozen=True)
+class Heading:
+    """An ATX or Setext heading. ``level`` is 1..6."""
+    level: int
+    inlines: tuple[Inline, ...]
+
+
+Block = Union[Paragraph, Heading]
 
 
 # --- Document root --------------------------------------------------------

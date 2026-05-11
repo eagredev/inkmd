@@ -22,7 +22,8 @@ def test_empty_document_renders_empty_list():
 def test_single_paragraph_one_run():
     doc = Document(blocks=(Paragraph(inlines=(Text("Hello."),)),))
     out = render_document(doc)
-    assert out == [[Run(text="Hello.", font=BODY_FONT, size=BODY_SIZE)]]
+    assert len(out) == 1
+    assert out[0].runs == (Run(text="Hello.", font=BODY_FONT, size=BODY_SIZE),)
 
 
 def test_multiple_paragraphs_produce_separate_run_lists():
@@ -32,13 +33,13 @@ def test_multiple_paragraphs_produce_separate_run_lists():
     ))
     out = render_document(doc)
     assert len(out) == 2
-    assert out[0][0].text == "One."
-    assert out[1][0].text == "Two."
+    assert out[0].runs[0].text == "One."
+    assert out[1].runs[0].text == "Two."
 
 
 def test_runs_use_body_font_and_size():
     doc = Document(blocks=(Paragraph(inlines=(Text("Body."),)),))
-    run = render_document(doc)[0][0]
+    run = render_document(doc)[0].runs[0]
     assert run.font == BODY_FONT
     assert run.size == BODY_SIZE
 
@@ -62,20 +63,20 @@ def _para(*inlines):
 
 def test_strong_renders_in_bold_face():
     doc = _para(Strong(inlines=(Text("bold"),)))
-    runs = render_document(doc)[0]
-    assert runs == [Run(text="bold", font=HELVETICA_FAMILY.bold, size=BODY_SIZE)]
+    runs = render_document(doc)[0].runs
+    assert runs == (Run(text="bold", font=HELVETICA_FAMILY.bold, size=BODY_SIZE),)
 
 
 def test_emphasis_renders_in_italic_face():
     doc = _para(Emphasis(inlines=(Text("italic"),)))
-    runs = render_document(doc)[0]
-    assert runs == [Run(text="italic", font=HELVETICA_FAMILY.italic, size=BODY_SIZE)]
+    runs = render_document(doc)[0].runs
+    assert runs == (Run(text="italic", font=HELVETICA_FAMILY.italic, size=BODY_SIZE),)
 
 
 def test_code_renders_in_monospace_face():
     doc = _para(Code(content="print"))
-    runs = render_document(doc)[0]
-    assert runs == [Run(text="print", font=HELVETICA_FAMILY.monospace, size=BODY_SIZE)]
+    runs = render_document(doc)[0].runs
+    assert runs == (Run(text="print", font=HELVETICA_FAMILY.monospace, size=BODY_SIZE),)
 
 
 def test_mixed_inlines_produce_multiple_runs():
@@ -87,7 +88,7 @@ def test_mixed_inlines_produce_multiple_runs():
         Text(" e "),
         Code(content="f"),
     )
-    runs = render_document(doc)[0]
+    runs = render_document(doc)[0].runs
     fonts = [r.font for r in runs]
     assert fonts == [
         HELVETICA_FAMILY.regular,
@@ -105,8 +106,7 @@ def test_strong_within_emphasis_uses_bold_italic():
         Text("emph "),
         Strong(inlines=(Text("inner"),)),
     )))
-    runs = render_document(doc)[0]
-    # First run is italic, second is bold-italic.
+    runs = render_document(doc)[0].runs
     assert runs[0].font == HELVETICA_FAMILY.italic
     assert runs[1].font == HELVETICA_FAMILY.bold_italic
 
@@ -116,7 +116,7 @@ def test_emphasis_within_strong_uses_bold_italic():
         Text("strong "),
         Emphasis(inlines=(Text("inner"),)),
     )))
-    runs = render_document(doc)[0]
+    runs = render_document(doc)[0].runs
     assert runs[0].font == HELVETICA_FAMILY.bold
     assert runs[1].font == HELVETICA_FAMILY.bold_italic
 
@@ -124,18 +124,18 @@ def test_emphasis_within_strong_uses_bold_italic():
 def test_times_family_routes_to_times_fonts():
     """When the family is Times, Strong → Times-Bold etc."""
     doc = _para(Strong(inlines=(Text("bold"),)))
-    runs = render_document(doc, family=TIMES_FAMILY)[0]
+    runs = render_document(doc, family=TIMES_FAMILY)[0].runs
     assert runs[0].font == "Times-Bold"
 
 
 def test_emphasis_in_times_family():
     doc = _para(Emphasis(inlines=(Text("ital"),)))
-    runs = render_document(doc, family=TIMES_FAMILY)[0]
+    runs = render_document(doc, family=TIMES_FAMILY)[0].runs
     assert runs[0].font == "Times-Italic"
 
 
 def test_code_in_times_family_uses_courier():
     """Code spans always use Courier regardless of body family."""
     doc = _para(Code(content="ls"))
-    runs = render_document(doc, family=TIMES_FAMILY)[0]
+    runs = render_document(doc, family=TIMES_FAMILY)[0].runs
     assert runs[0].font == "Courier"
