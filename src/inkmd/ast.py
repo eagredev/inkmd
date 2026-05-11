@@ -105,7 +105,32 @@ class CodeBlock:
     info: str = ""
 
 
-Block = Union[Paragraph, Heading, List, BlockQuote, CodeBlock]
+# Column alignment for tables. None means "no explicit alignment".
+Alignment = str  # one of "left", "center", "right", or None
+
+
+@dataclass(frozen=True)
+class TableCell:
+    """One cell in a table row; holds inline content."""
+    inlines: tuple[Inline, ...]
+
+
+@dataclass(frozen=True)
+class Table:
+    """A GFM pipe table.
+
+    ``headers`` is the single header row (one TableCell per column).
+    ``alignments`` is a per-column alignment string ('left', 'center',
+    'right', or None for default/no-explicit). ``rows`` is the body —
+    each row is a tuple of TableCells, padded/truncated to match the
+    header column count if the source row was shorter or longer.
+    """
+    headers: tuple[TableCell, ...]
+    alignments: tuple[str | None, ...]
+    rows: tuple[tuple[TableCell, ...], ...]
+
+
+Block = Union[Paragraph, Heading, List, BlockQuote, CodeBlock, Table]
 
 
 # --- Document root --------------------------------------------------------

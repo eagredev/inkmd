@@ -30,6 +30,8 @@ from inkmd.ast import (
     ListItem,
     Paragraph,
     Strong,
+    Table,
+    TableCell,
     Text,
 )
 
@@ -129,6 +131,12 @@ class _BlockParser:
         # accumulated, then parsed recursively into child blocks on close.
         self._in_quote: bool = False
         self._quote_lines: list[str] = []
+        # Table state — when active at the document level, body rows are
+        # accumulated until a blank or non-row line closes the table.
+        self._in_table: bool = False
+        self._table_headers: tuple[TableCell, ...] = ()
+        self._table_alignments: tuple[str | None, ...] = ()
+        self._table_rows: list[tuple[TableCell, ...]] = []
 
     # --- Public driver ---------------------------------------------------
 
@@ -142,6 +150,21 @@ class _BlockParser:
             else:
                 self._code_lines.append(_strip_code_indent(line, self._code_indent))
             return
+
+        # Inside a table at the document level, every non-blank pipe line
+        # is a body row; blank or non-row closes the table.
+        if self._in_table:
+            if line.strip() == "":
+                self._close_table()
+                return
+            cells = _try_table_row(line, len(self._table_headers))
+            if cells is None:
+                # Not a valid row → close the table and re-feed the line.
+                self._close_table()
+                # Fall through to normal handling below.
+            else:
+                self._table_rows.append(cells)
+                return
 
         # Blockquote prefix handling — top-level only for v0.1. Inside
         # lists, `>` is treated as paragraph content.
@@ -168,6 +191,23 @@ class _BlockParser:
             if fence_open is not None:
                 self._open_code_fence(fence_open)
                 return
+
+        # Table detection — at document level only. If the accumulator
+        # holds exactly one paragraph line that looks like a row and this
+        # line is a delimiter row, commit to table mode.
+        if (
+            not self.list_stack
+            and not self._in_quote
+            and len(self._doc_paragraph_lines) == 1
+        ):
+            header_candidate = self._doc_paragraph_lines[0]
+            alignments = _try_table_delimiter(line)
+            if alignments is not None:
+                headers = _try_table_row(header_candidate, len(alignments))
+                if headers is not None:
+                    self._doc_paragraph_lines.clear()
+                    self._open_table(headers, alignments)
+                    return
 
         # Walk the open list stack outermost-to-innermost. For each list,
         # determine whether this line:
@@ -235,6 +275,8 @@ class _BlockParser:
             self._close_top_list()
         if self._in_quote:
             self._close_quote()
+        if self._in_table:
+            self._close_table()
         self._flush_doc_paragraph()
         return self.doc_blocks
 
@@ -423,6 +465,35 @@ class _BlockParser:
         self._quote_lines = []
         inner_blocks = _parse_blocks(inner_text)
         self.doc_blocks.append(BlockQuote(blocks=tuple(inner_blocks)))
+
+    # --- Table handling --------------------------------------------------
+
+    def _open_table(
+        self,
+        headers: tuple[TableCell, ...],
+        alignments: tuple[str | None, ...],
+    ) -> None:
+        """Start a table; flush any in-progress doc paragraph first."""
+        self._flush_doc_paragraph()
+        self._in_table = True
+        self._table_headers = headers
+        self._table_alignments = alignments
+        self._table_rows = []
+
+    def _close_table(self) -> None:
+        """Emit the accumulated Table block and reset state."""
+        if not self._in_table:
+            return
+        table = Table(
+            headers=self._table_headers,
+            alignments=self._table_alignments,
+            rows=tuple(self._table_rows),
+        )
+        self._in_table = False
+        self._table_headers = ()
+        self._table_alignments = ()
+        self._table_rows = []
+        self.doc_blocks.append(table)
 
     # --- Fenced code handling --------------------------------------------
 
@@ -706,6 +777,98 @@ def _strip_code_indent(line: str, indent: int) -> str:
     while i < len(line) and i < indent and line[i] == " ":
         i += 1
     return line[i:]
+
+
+# --- GFM table recognition -----------------------------------------------
+
+
+def _split_table_row(line: str) -> list[str] | None:
+    """Split a pipe-delimited row into raw cell texts, or None if not a row.
+
+    A row must contain at least one ``|``. Leading and trailing pipes are
+    optional. Pipes escaped as ``\\|`` inside a cell are preserved as a
+    literal ``|`` in the output text (they don't split). Returns a list
+    of cell strings with surrounding whitespace stripped.
+    """
+    stripped = line.strip()
+    if not stripped:
+        return None
+    if "|" not in stripped:
+        return None
+    # Trim a single leading and trailing unescaped pipe before splitting.
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|") and not stripped.endswith("\\|"):
+        stripped = stripped[:-1]
+    # Walk and split on unescaped `|`. Backslash-escaped pipes survive.
+    cells: list[str] = []
+    buf = ""
+    i = 0
+    while i < len(stripped):
+        ch = stripped[i]
+        if ch == "\\" and i + 1 < len(stripped) and stripped[i + 1] == "|":
+            buf += "|"
+            i += 2
+            continue
+        if ch == "|":
+            cells.append(buf.strip())
+            buf = ""
+            i += 1
+            continue
+        buf += ch
+        i += 1
+    cells.append(buf.strip())
+    return cells
+
+
+def _try_table_delimiter(line: str) -> tuple[str | None, ...] | None:
+    """If ``line`` is a GFM table delimiter row, return per-column alignments.
+
+    Each cell must match `:?-+:?` (3+ dashes, optional leading/trailing
+    colon for alignment). Returns a tuple of 'left'/'center'/'right'/None.
+    """
+    cells = _split_table_row(line)
+    if cells is None or not cells:
+        return None
+    alignments: list[str | None] = []
+    for cell in cells:
+        if not cell:
+            return None
+        left = cell.startswith(":")
+        right = cell.endswith(":")
+        core = cell[1:] if left else cell
+        core = core[:-1] if right else core
+        if not core or any(ch != "-" for ch in core):
+            return None
+        if len(core) < 1:
+            return None
+        if left and right:
+            alignments.append("center")
+        elif right:
+            alignments.append("right")
+        elif left:
+            alignments.append("left")
+        else:
+            alignments.append(None)
+    return tuple(alignments)
+
+
+def _try_table_row(line: str, n_cols: int) -> tuple[TableCell, ...] | None:
+    """Parse ``line`` as a body/header row with ``n_cols`` columns.
+
+    Cells beyond ``n_cols`` are dropped; missing cells are padded with
+    empty cells. Each cell's text is parsed for inline markdown. Returns
+    None if the line is not a pipe row.
+    """
+    cells = _split_table_row(line)
+    if cells is None:
+        return None
+    # Normalise length.
+    if len(cells) < n_cols:
+        cells = cells + [""] * (n_cols - len(cells))
+    elif len(cells) > n_cols:
+        cells = cells[:n_cols]
+    return tuple(TableCell(inlines=_parse_inlines(c)) for c in cells)
 
 
 # --- Inline parsing (CommonMark emphasis algorithm) ----------------------

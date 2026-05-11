@@ -169,6 +169,19 @@ Sample: `/tmp/inkmd-0.0.9-times.pdf` and `/tmp/inkmd-0.0.9-helvetica.pdf`. **Fir
 - [ ] **Code block + body text alternation**: text below a code block resumes at full body column width (the background ends cleanly above it).
 - [ ] **Validator coverage**: `pdftotext` extracts code body text verbatim including indents (whitespace fidelity check).
 
+### Milestone 0.0.10 — tables (GFM pipe)
+
+Sample: `/tmp/inkmd-0.0.10-times.pdf` and `/tmp/inkmd-0.0.10-helvetica.pdf`.
+
+- [ ] **Full grid**: every cell has horizontal lines above and below, vertical lines left and right, including outer perimeter.
+- [ ] **Header bold + tinted**: header row is bold and has a light grey background fill.
+- [ ] **Column widths fit content**: a table with three short columns sizes each just wide enough; doesn't stretch to full page width.
+- [ ] **Alignments respected**: `:---` left-aligns, `:---:` centers, `---:` right-aligns. Visible difference between three columns of single-char content.
+- [ ] **Inline formatting inside cells**: `**bold**`, `*italic*`, `` `code` `` all render correctly inside cells without breaking the grid.
+- [ ] **Mixed-width content**: a table whose cells vary widely in length (e.g. `longer text` vs `42`) sizes each column to its widest cell, not uniformly.
+- [ ] **Tables alternate with body**: paragraph → table → paragraph works; no spacing collisions; body resumes at full column width.
+- [ ] **Header text appears in `pdftotext`**: extraction round-trips the header strings without loss.
+
 ## Pending milestones — append checklists here when the milestone lands
 
 ## Known limitations (NOT bugs)

@@ -26,9 +26,12 @@ from inkmd.ast import (
     ListItem,
     Paragraph,
     Strong,
+    Table,
+    TableCell,
     Text,
 )
-from inkmd.layout import Run
+from inkmd.fonts import text_width
+from inkmd.layout import Rect, Run, wrap_runs
 
 
 @dataclass(frozen=True)
@@ -123,6 +126,16 @@ class RenderedBlock:
     bg_padding: float = 4.0
     # Code blocks set this to suppress wrapping (lines are preserved as-is).
     preserve_lines: bool = False
+    # Table support: when ``prepositioned`` is True, the block carries
+    # already-positioned content. ``runs`` is empty; the paginator places
+    # ``prepositioned_lines`` (one inner tuple per output line, in
+    # top-down order) at the current y_cursor, advancing by ``line_heights``
+    # per line, and drops ``prepositioned_shapes`` into the page shapes.
+    # The layout treats the entire block as atomic for page-break purposes.
+    prepositioned: bool = False
+    prepositioned_lines: tuple = ()      # tuple of tuples of "PositionedRun"-like (relative y)
+    prepositioned_line_heights: tuple = ()  # one float per line
+    prepositioned_shapes: tuple = ()     # tuple of shape dicts with relative y
 
 
 # Layout constants for lists. ``LIST_INDENT_PT`` is the horizontal step per
@@ -145,6 +158,15 @@ CODE_BG_FILL = (0.95, 0.95, 0.95)
 CODE_PADDING_PT = 4.0
 CODE_FONT_SIZE = 10.5
 
+# Table layout.
+TABLE_CELL_PADDING_X = 6.0
+TABLE_CELL_PADDING_Y = 3.0
+TABLE_GRID_FILL = (0.5, 0.5, 0.5)
+TABLE_GRID_WIDTH = 0.5
+TABLE_HEADER_BG = (0.95, 0.95, 0.95)
+TABLE_AVAILABLE_WIDTH = 468.0  # letter width minus default margins
+TABLE_LINE_HEIGHT_RATIO = 1.2
+
 
 def render_document(doc: Document, family: FontFamily = DEFAULT_FAMILY) -> list[RenderedBlock]:
     """Lower a Document into a list of ``RenderedBlock``."""
@@ -166,6 +188,8 @@ def _render_block(block, family: FontFamily, depth: int) -> list[RenderedBlock]:
         return _render_blockquote(block, family, depth)
     if isinstance(block, CodeBlock):
         return [_render_code_block(block, family)]
+    if isinstance(block, Table):
+        return [_render_table(block, family)]
     raise NotImplementedError(f"render: unsupported block {type(block).__name__}")
 
 
@@ -193,6 +217,217 @@ def _render_blockquote(quote: BlockQuote, family: FontFamily, depth: int) -> lis
             )
         )
     return out
+
+
+def _render_table(table: Table, family: FontFamily) -> RenderedBlock:
+    """Lower a Table to a pre-positioned RenderedBlock.
+
+    Strategy: compute per-column widths from natural content widths,
+    shrinking proportionally when needed; wrap each cell to its column;
+    measure row heights; lay out positions (relative to table top-left,
+    y=0 being the top); emit grid-line shapes and the header background.
+    The layout layer translates everything to absolute page coordinates
+    at pagination time.
+    """
+    n_cols = len(table.headers)
+    if n_cols == 0:
+        return RenderedBlock(runs=())
+
+    # Lower every cell's inlines to a list of Runs. Headers are bold.
+    def cell_runs(cell: TableCell, bold: bool) -> list[Run]:
+        font = family.bold if bold else family.regular
+        runs: list[Run] = []
+        for inline in cell.inlines:
+            runs.extend(_render_inline(inline, family, font=font))
+        return runs
+
+    header_runs = [cell_runs(c, bold=True) for c in table.headers]
+    body_runs = [
+        [cell_runs(c, bold=False) for c in row] for row in table.rows
+    ]
+
+    # 1. Natural column widths: max over header + body, of the unwrapped
+    #    cell width (no padding, no border).
+    def runs_natural_width(runs: list[Run]) -> float:
+        return sum(text_width(r.text, r.font, r.size) for r in runs)
+
+    natural = [0.0] * n_cols
+    for i, runs in enumerate(header_runs):
+        natural[i] = max(natural[i], runs_natural_width(runs))
+    for row in body_runs:
+        for i, runs in enumerate(row):
+            natural[i] = max(natural[i], runs_natural_width(runs))
+
+    # 2. Available content width per cell = column_width - 2 × padding.
+    #    Total cell content width budget = available - n_cols × 2 padding.
+    available_total = TABLE_AVAILABLE_WIDTH
+    padding_total = n_cols * 2 * TABLE_CELL_PADDING_X
+    content_budget = available_total - padding_total
+    natural_sum = sum(natural)
+    if natural_sum <= content_budget or natural_sum == 0:
+        content_widths = list(natural)
+        # Distribute remaining space proportionally — but keep natural
+        # widths unless any cell needs more. Simplest: leave at natural.
+    else:
+        # Shrink proportionally to fit.
+        scale = content_budget / natural_sum
+        content_widths = [w * scale for w in natural]
+    # Column widths include left + right padding.
+    col_widths = [w + 2 * TABLE_CELL_PADDING_X for w in content_widths]
+    # x positions: left edge of each column, relative to table left edge.
+    col_x: list[float] = []
+    x = 0.0
+    for cw in col_widths:
+        col_x.append(x)
+        x += cw
+    table_width = x
+
+    # 3. Wrap every cell to its column's content width and measure row heights.
+    def wrap_cell(runs: list[Run], col_idx: int) -> list[list[Run]]:
+        if not runs:
+            return [[]]
+        return wrap_runs(runs, content_widths[col_idx]) or [[]]
+
+    header_lines = [wrap_cell(header_runs[i], i) for i in range(n_cols)]
+    body_lines = [
+        [wrap_cell(row[i], i) for i in range(n_cols)] for row in body_runs
+    ]
+
+    line_height = BODY_SIZE * TABLE_LINE_HEIGHT_RATIO
+
+    def row_height(cell_lines_per_col: list[list[list[Run]]]) -> float:
+        max_lines = max((len(c) for c in cell_lines_per_col), default=1)
+        return max_lines * line_height + 2 * TABLE_CELL_PADDING_Y
+
+    header_h = row_height(header_lines)
+    body_heights = [row_height(row) for row in body_lines]
+
+    # 4. Compute y positions (relative to table top, y growing downward
+    #    here; we'll flip when handed to the layout).
+    row_tops = [0.0]  # header top
+    row_tops.append(header_h)  # first body row top
+    for h in body_heights[:-1]:
+        row_tops.append(row_tops[-1] + h)
+    total_height = header_h + sum(body_heights)
+
+    # 5. Emit positioned content. We produce a flat list of "line records":
+    #    each is (offset_y_baseline_from_top, tuple_of_PositionedRunLike).
+    #    The layout reads these in order, advancing the page y_cursor by
+    #    the y deltas implied by their baselines.
+    PR = _PR  # local alias
+
+    positioned_lines: list[tuple[float, tuple]] = []
+    shapes: list[dict] = []
+
+    # Header background tint.
+    shapes.append({
+        "kind": "fill",
+        "rel_y_top": 0.0,
+        "height": header_h,
+        "x_offset": 0.0,
+        "width": table_width,
+        "fill": TABLE_HEADER_BG,
+    })
+
+    # Build positioned runs for one cell.
+    def emit_cell(
+        cell_lines: list[list[Run]],
+        col_idx: int,
+        row_top: float,
+        alignment: str | None,
+        is_header: bool,
+    ) -> None:
+        cw = col_widths[col_idx]
+        x_left = col_x[col_idx] + TABLE_CELL_PADDING_X
+        cell_content_w = content_widths[col_idx]
+        # Baseline of first line: row_top + padding_y + ascent (~ line_height).
+        # Use line_height as effective ascent for now (good enough at body size).
+        baseline_y_from_top = row_top + TABLE_CELL_PADDING_Y + line_height
+        for li, line in enumerate(cell_lines):
+            # Compute aligned x offset for this line's content.
+            line_w = sum(text_width(r.text, r.font, r.size) for r in line)
+            if alignment == "center":
+                x_start = x_left + (cell_content_w - line_w) / 2.0
+            elif alignment == "right":
+                x_start = x_left + (cell_content_w - line_w)
+            else:
+                x_start = x_left
+            # Emit positioned runs for the line.
+            runs_record: list[_PR] = []
+            cx = x_start
+            for run in line:
+                runs_record.append(
+                    PR(text=run.text, x_rel=cx, y_from_top=baseline_y_from_top + li * line_height, font=run.font, size=run.size)
+                )
+                cx += text_width(run.text, run.font, run.size)
+            if runs_record:
+                positioned_lines.append((baseline_y_from_top + li * line_height, tuple(runs_record)))
+
+    # Headers.
+    for i in range(n_cols):
+        emit_cell(header_lines[i], i, 0.0, table.alignments[i], is_header=True)
+
+    # Body rows.
+    for row_idx, row in enumerate(body_lines):
+        row_top = row_tops[row_idx + 1]
+        for i in range(n_cols):
+            emit_cell(row[i], i, row_top, table.alignments[i], is_header=False)
+
+    # 6. Grid lines as thin filled rectangles. Horizontal: top, below
+    #    header, between body rows, bottom. Vertical: between columns + edges.
+    h_lines_y: list[float] = []
+    h_lines_y.append(0.0)
+    h_lines_y.append(header_h)
+    cumulative = header_h
+    for h in body_heights:
+        cumulative += h
+        h_lines_y.append(cumulative)
+    for y_top in h_lines_y:
+        shapes.append({
+            "kind": "fill",
+            "rel_y_top": y_top - TABLE_GRID_WIDTH / 2.0,
+            "height": TABLE_GRID_WIDTH,
+            "x_offset": 0.0,
+            "width": table_width,
+            "fill": TABLE_GRID_FILL,
+        })
+
+    # Vertical grid lines: left edge of each column, plus right edge.
+    v_lines_x = list(col_x) + [table_width]
+    for vx in v_lines_x:
+        shapes.append({
+            "kind": "fill",
+            "rel_y_top": 0.0,
+            "height": total_height,
+            "x_offset": vx - TABLE_GRID_WIDTH / 2.0,
+            "width": TABLE_GRID_WIDTH,
+            "fill": TABLE_GRID_FILL,
+        })
+
+    return RenderedBlock(
+        runs=(),
+        space_above=6.0,
+        space_below=6.0,
+        prepositioned=True,
+        prepositioned_lines=tuple(positioned_lines),
+        prepositioned_line_heights=(line_height,) * len(positioned_lines),
+        prepositioned_shapes=tuple(shapes),
+        # Stash total height in body_indent slot? No — use a custom attribute.
+    )
+
+
+# Lightweight namedtuple-ish for relative-positioned runs inside a table.
+# We use a frozen dataclass so the renderer can stash these and the
+# layout can read them as duck-typed records.
+from dataclasses import dataclass as _dc
+
+@_dc(frozen=True)
+class _PR:
+    text: str
+    x_rel: float
+    y_from_top: float
+    font: str
+    size: float
 
 
 def _render_code_block(cb: CodeBlock, family: FontFamily) -> RenderedBlock:

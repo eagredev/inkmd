@@ -314,6 +314,10 @@ class _BlockParts:
     background_fill: tuple[float, float, float] | None
     bg_padding: float
     preserve_lines: bool
+    prepositioned: bool
+    prepositioned_lines: tuple
+    prepositioned_line_heights: tuple
+    prepositioned_shapes: tuple
 
 
 def _block_parts(block) -> _BlockParts:
@@ -340,6 +344,10 @@ def _block_parts(block) -> _BlockParts:
             background_fill=tuple(bg) if bg is not None else None,
             bg_padding=float(getattr(block, "bg_padding", 4.0)),
             preserve_lines=bool(getattr(block, "preserve_lines", False)),
+            prepositioned=bool(getattr(block, "prepositioned", False)),
+            prepositioned_lines=tuple(getattr(block, "prepositioned_lines", ())),
+            prepositioned_line_heights=tuple(getattr(block, "prepositioned_line_heights", ())),
+            prepositioned_shapes=tuple(getattr(block, "prepositioned_shapes", ())),
         )
     return _BlockParts(
         runs=list(block),
@@ -354,6 +362,10 @@ def _block_parts(block) -> _BlockParts:
         background_fill=None,
         bg_padding=4.0,
         preserve_lines=False,
+        prepositioned=False,
+        prepositioned_lines=(),
+        prepositioned_line_heights=(),
+        prepositioned_shapes=(),
     )
 
 
@@ -399,6 +411,57 @@ def paginate_runs(
         parts = _block_parts(raw_block)
         if p_idx > 0 and parts.space_above and current_lines:
             y_cursor -= parts.space_above
+
+        # Prepositioned content (tables): atomic placement, translate
+        # relative coordinates to absolute.
+        if parts.prepositioned:
+            # Compute the table's total height from the deepest line / shape.
+            total_h = 0.0
+            for shape_dict in parts.prepositioned_shapes:
+                bottom = shape_dict["rel_y_top"] + shape_dict["height"]
+                if bottom > total_h:
+                    total_h = bottom
+            for line_record in parts.prepositioned_lines:
+                _baseline_from_top, _runs = line_record
+                if _baseline_from_top > total_h:
+                    total_h = _baseline_from_top
+            # If the table doesn't fit on the current page, flush and start fresh.
+            if y_cursor - total_h < bottom_y and current_lines:
+                flush_page()
+                current_lines = []
+                current_shapes = []
+                y_cursor = top_y
+            table_top_y = y_cursor
+            # Translate every relative shape to absolute Rect.
+            for shape_dict in parts.prepositioned_shapes:
+                rect = Rect(
+                    x=margin + shape_dict["x_offset"],
+                    y=table_top_y - shape_dict["rel_y_top"] - shape_dict["height"],
+                    width=shape_dict["width"],
+                    height=shape_dict["height"],
+                    fill=shape_dict["fill"],
+                )
+                current_shapes.append(rect)
+            # Translate every relative positioned-run line.
+            for baseline_from_top, runs_record in parts.prepositioned_lines:
+                positioned = tuple(
+                    PositionedRun(
+                        text=pr.text,
+                        x=margin + pr.x_rel,
+                        y=table_top_y - pr.y_from_top,
+                        font=pr.font,
+                        size=pr.size,
+                    )
+                    for pr in runs_record
+                )
+                current_lines.append(StyledLine(positioned))
+            y_cursor = table_top_y - total_h
+            if p_idx < len(paragraphs) - 1:
+                y_cursor -= parts.space_below
+                next_parts = _block_parts(paragraphs[p_idx + 1])
+                if not next_parts.compact:
+                    y_cursor -= paragraph_spacing
+            continue
 
         body_column_width = column_width - parts.body_indent
 
