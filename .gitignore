@@ -33,3 +33,4 @@ htmlcov/
 # Project-local
 *.pdf
 !tests/fixtures/expected/*.pdf
+SESSION-HANDOFF.md
