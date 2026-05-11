@@ -25,11 +25,19 @@ from inkmd.layout import (
 
 # Font slot assignments for the styled path. F1 is regular body text
 # so single-font PDFs (text_pdf) need no slot changes when emitting.
+# Eight faces declared per page: Helvetica family (regular/bold/oblique),
+# Courier, and Times family (roman/bold/italic/bolditalic). The cost is
+# tiny (~150 bytes of font dict per face × N pages) and lets demos and
+# user code pick any face without re-emitting the structure.
 FONT_SLOTS: dict[str, str] = {
     "Helvetica": "F1",
     "Helvetica-Bold": "F2",
     "Helvetica-Oblique": "F3",
     "Courier": "F4",
+    "Times-Roman": "F5",
+    "Times-Bold": "F6",
+    "Times-Italic": "F7",
+    "Times-BoldItalic": "F8",
 }
 
 

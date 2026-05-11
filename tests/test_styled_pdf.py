@@ -144,11 +144,11 @@ def test_font_dict_declares_winansi_encoding():
     the fix in place.
     """
     data = styled_pdf([[Run("hello", "Helvetica", 12)]])
-    # Every BaseFont declaration must be followed by a WinAnsiEncoding.
+    # Every BaseFont declaration must be paired with a WinAnsiEncoding.
     base_fonts = re.findall(rb"/BaseFont /(\S+)", data)
-    assert len(base_fonts) == 4, base_fonts
+    assert len(base_fonts) >= 1
     # Count WinAnsiEncoding occurrences — must match font count.
-    assert data.count(b"/Encoding /WinAnsiEncoding") == 4
+    assert data.count(b"/Encoding /WinAnsiEncoding") == len(base_fonts)
 
 
 # --- external validators ---------------------------------------------------

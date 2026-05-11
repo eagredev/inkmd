@@ -2,6 +2,14 @@
 
 Automated tests verify *bytes on the page*, not *what humans see*. They are necessary but insufficient for a rendering tool. Every milestone produces a sample PDF; this file lists what to look for when opening it in a real viewer.
 
+**Tip for visual review on Linux**: render samples in **Times** family rather than Helvetica. The Linux fallback (Nimbus Roman) is metrically much closer to real Adobe Times than Nimbus Sans is to Adobe Helvetica, so review on a Steam Deck / Linux laptop will look closer to what Mac/Windows users will see:
+
+```python
+inkmd.compile(md_text, family="times")
+```
+
+The library default stays Helvetica.
+
 The discipline:
 
 1. After each milestone, run the sample-generation script (see "How to regenerate").
