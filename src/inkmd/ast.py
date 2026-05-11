@@ -44,8 +44,26 @@ class Code:
     content: str
 
 
-# Type alias for inline-level nodes; widens as 0.0.6+ adds Link, Image.
-Inline = Union[Text, Strong, Emphasis, Code]
+@dataclass(frozen=True)
+class Link:
+    """``[text](url)`` style link with optional title.
+
+    The link text ``inlines`` may itself contain Strong/Emphasis/Code
+    (but not nested Link per CommonMark). ``url`` is the destination;
+    ``title`` is the optional tooltip-style string from ``[text](url "title")``.
+    """
+    inlines: tuple["Inline", ...]
+    url: str
+    title: str = ""
+
+
+@dataclass(frozen=True)
+class AutoLink:
+    """``<https://example.com>`` style autolink — URL is both target and display."""
+    url: str
+
+
+Inline = Union[Text, Strong, Emphasis, Code, Link, AutoLink]
 
 
 # --- Block nodes ----------------------------------------------------------

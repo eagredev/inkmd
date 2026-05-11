@@ -182,6 +182,22 @@ Sample: `/tmp/inkmd-0.0.10-times.pdf` and `/tmp/inkmd-0.0.10-helvetica.pdf`.
 - [ ] **Tables alternate with body**: paragraph → table → paragraph works; no spacing collisions; body resumes at full column width.
 - [ ] **Header text appears in `pdftotext`**: extraction round-trips the header strings without loss.
 
+### Milestone 0.0.11 — links
+
+Sample: `/tmp/inkmd-0.0.11-times.pdf` and `/tmp/inkmd-0.0.11-helvetica.pdf`.
+
+- [ ] **Inline links render in blue** with an underline beneath the text.
+- [ ] **Autolinks** (`<https://example.com>`) display the URL as the visible text, in blue + underlined.
+- [ ] **Email autolinks** (`<dylan@example.com>`) display the email as text but the click target is `mailto:dylan@example.com`.
+- [ ] **Links are clickable in a real viewer** (Okular, Preview, Adobe). Hovering shows a pointer cursor; clicking opens the URL in the default browser.
+- [ ] **Inline formatting inside link text**: `[**bold** *italic* `code`](url)` renders each child span in its proper face (bold / italic / monospace) AND with the blue colour + underline.
+- [ ] **Multiple links on one line** each have separate underlines and separate clickable regions.
+- [ ] **Link wrapping**: a long link that breaks across two lines produces one click region per line. *(Skip if your sample doesn't exercise this — manually test by writing a link with text long enough to wrap.)*
+- [ ] **Links in lists** retain blue + underline, sit alongside the bullet/marker correctly.
+- [ ] **Links in blockquotes** render blue + underlined alongside the left rule.
+- [ ] **Links in table cells** also render blue + underlined and remain clickable.
+- [ ] **No `Syntax Error` from `pdftotext`** — annotation objects must be valid (URI in parens, /Subtype /Link, /Rect with four numbers).
+
 ## Pending milestones — append checklists here when the milestone lands
 
 ## Known limitations (NOT bugs)

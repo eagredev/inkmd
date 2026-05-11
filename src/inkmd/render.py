@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from inkmd.ast import (
+    AutoLink,
     BlockQuote,
     Code,
     CodeBlock,
@@ -22,6 +23,7 @@ from inkmd.ast import (
     Emphasis,
     Heading,
     Inline,
+    Link,
     List,
     ListItem,
     Paragraph,
@@ -157,6 +159,9 @@ QUOTE_RULE_FILL = (0.7, 0.7, 0.7)
 CODE_BG_FILL = (0.95, 0.95, 0.95)
 CODE_PADDING_PT = 4.0
 CODE_FONT_SIZE = 10.5
+
+# Link styling.
+LINK_COLOR = (0.0, 0.2, 0.8)  # blue, slightly desaturated for print-friendliness
 
 # Table layout.
 TABLE_CELL_PADDING_X = 6.0
@@ -357,7 +362,15 @@ def _render_table(table: Table, family: FontFamily) -> RenderedBlock:
             cx = x_start
             for run in line:
                 runs_record.append(
-                    PR(text=run.text, x_rel=cx, y_from_top=baseline_y_from_top + li * line_height, font=run.font, size=run.size)
+                    PR(
+                        text=run.text,
+                        x_rel=cx,
+                        y_from_top=baseline_y_from_top + li * line_height,
+                        font=run.font,
+                        size=run.size,
+                        link_url=run.link_url,
+                        color=run.color,
+                    )
                 )
                 cx += text_width(run.text, run.font, run.size)
             if runs_record:
@@ -428,6 +441,8 @@ class _PR:
     y_from_top: float
     font: str
     size: float
+    link_url: str | None = None
+    color: tuple[float, float, float] | None = None
 
 
 def _render_code_block(cb: CodeBlock, family: FontFamily) -> RenderedBlock:
@@ -528,42 +543,68 @@ def _render_heading(h: Heading, family: FontFamily) -> RenderedBlock:
 
 
 def _render_inline(
-    inline: Inline, family: FontFamily, font: str, size: float = BODY_SIZE
+    inline: Inline,
+    family: FontFamily,
+    font: str,
+    size: float = BODY_SIZE,
+    link_url: str | None = None,
 ) -> list[Run]:
     """Lower one inline node to one or more runs.
 
     ``font`` is the *current* font (carried through nesting) so that an
     Emphasis inside a Strong picks the family's ``bold_italic`` face
-    instead of dropping back to plain italic. ``size`` is carried
-    through nesting too — heading inlines stay at heading size when
-    they contain Strong/Emphasis.
+    instead of dropping back to plain italic. ``size`` and ``link_url``
+    are carried through nesting — heading inlines stay at heading size,
+    and a Strong inside a Link inherits the link annotation.
     """
+    color = LINK_COLOR if link_url is not None else None
+
     if isinstance(inline, Text):
-        return [Run(text=inline.content, font=font, size=size)]
+        return [Run(text=inline.content, font=font, size=size, link_url=link_url, color=color)]
 
     if isinstance(inline, Code):
-        return [Run(text=inline.content, font=family.monospace, size=size)]
+        return [Run(
+            text=inline.content, font=family.monospace, size=size,
+            link_url=link_url, color=color,
+        )]
 
     if isinstance(inline, Strong):
         next_font = (
             family.bold_italic if font == family.italic else family.bold
         )
-        return _flatten(inline.inlines, family, next_font, size)
+        return _flatten(inline.inlines, family, next_font, size, link_url=link_url)
 
     if isinstance(inline, Emphasis):
         next_font = (
             family.bold_italic if font == family.bold else family.italic
         )
-        return _flatten(inline.inlines, family, next_font, size)
+        return _flatten(inline.inlines, family, next_font, size, link_url=link_url)
+
+    if isinstance(inline, Link):
+        # Link children render at the same font/size but with link_url
+        # propagated. CommonMark forbids nested links so we don't worry
+        # about Link-inside-Link.
+        return _flatten(inline.inlines, family, font, size, link_url=inline.url)
+
+    if isinstance(inline, AutoLink):
+        # AutoLink: URL is both the display text and the destination.
+        return [Run(
+            text=inline.url, font=font, size=size,
+            link_url=inline.url, color=LINK_COLOR,
+        )]
 
     raise NotImplementedError(f"render: unsupported inline {type(inline).__name__}")
 
 
 def _flatten(
-    inlines: tuple[Inline, ...], family: FontFamily, font: str, size: float = BODY_SIZE
+    inlines: tuple[Inline, ...],
+    family: FontFamily,
+    font: str,
+    size: float = BODY_SIZE,
+    link_url: str | None = None,
 ) -> list[Run]:
-    """Render a tuple of inline children, carrying font + size through."""
+    """Render a tuple of inline children, carrying font + size + link_url."""
     runs: list[Run] = []
     for inline in inlines:
-        runs.extend(_render_inline(inline, family, font=font, size=size))
+        runs.extend(_render_inline(inline, family, font=font, size=size, link_url=link_url))
     return runs

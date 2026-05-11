@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from inkmd.ast import (
+    AutoLink,
     Block,
     BlockQuote,
     Code,
@@ -26,6 +27,7 @@ from inkmd.ast import (
     Emphasis,
     Heading,
     Inline,
+    Link,
     List,
     ListItem,
     Paragraph,
@@ -900,15 +902,16 @@ class _Delim:
 class _Tok:
     """A token in the inline stream.
 
-    Exactly one of ``text`` / ``code`` / ``delim`` is set.
-
-    Text and code-span tokens become Text and Code AST nodes verbatim.
-    Delimiter tokens may be consumed and replaced with Strong/Emphasis
-    spans during resolution, or revert to literal text if unpaired.
+    Exactly one of ``text`` / ``code`` / ``delim`` / ``link`` / ``autolink``
+    is set. Link tokens carry a pre-parsed ``Link`` AST node; emphasis
+    resolution skips over them as atomic units (CommonMark forbids nested
+    links anyway).
     """
     text: str | None = None
     code: str | None = None
     delim: _Delim | None = None
+    link: "Link | None" = None
+    autolink: "AutoLink | None" = None
 
 
 def _parse_inlines(text: str) -> tuple[Inline, ...]:
@@ -973,6 +976,26 @@ def _tokenise(text: str) -> list[_Tok]:
                 i = close + 1
                 continue
 
+        # Inline link: [text](url) or [text](url "title").
+        if ch == "[":
+            link_match = _try_inline_link(text, i)
+            if link_match is not None:
+                link_node, end_pos = link_match
+                flush_text()
+                tokens.append(_Tok(link=link_node))
+                i = end_pos
+                continue
+
+        # Autolink: <url> where url looks like a scheme: or email.
+        if ch == "<":
+            auto_match = _try_autolink(text, i)
+            if auto_match is not None:
+                auto_node, end_pos = auto_match
+                flush_text()
+                tokens.append(_Tok(autolink=auto_node))
+                i = end_pos
+                continue
+
         # Delimiter run: * or _, one or more of the same char.
         if ch in "*_":
             j = i
@@ -1003,6 +1026,162 @@ def _tokenise(text: str) -> list[_Tok]:
 
     flush_text()
     return tokens
+
+
+# --- Link recognition ----------------------------------------------------
+
+
+def _try_inline_link(text: str, start: int) -> tuple[Link, int] | None:
+    """If ``text[start:]`` starts with ``[text](url[ "title"])``, parse it.
+
+    Returns ``(Link, end_pos)`` where end_pos is the index just after the
+    closing ``)``. Returns None if the pattern doesn't match. Brackets
+    inside link text must be backslash-escaped; nested brackets are not
+    supported in v0.1.
+    """
+    if text[start] != "[":
+        return None
+    # 1. Find the matching ']'. Backslash escapes pass; nested [ not allowed.
+    i = start + 1
+    n = len(text)
+    text_start = i
+    while i < n:
+        if text[i] == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if text[i] == "]":
+            break
+        if text[i] == "[":
+            # Nested bracket — bail (v0.1 simplification).
+            return None
+        i += 1
+    if i >= n or text[i] != "]":
+        return None
+    text_end = i
+    # 2. Must be followed by '('.
+    if i + 1 >= n or text[i + 1] != "(":
+        return None
+    j = i + 2
+    # 3. Skip optional whitespace before URL.
+    while j < n and text[j] in " \t":
+        j += 1
+    # 4. Parse URL: either <...> form or bare-up-to-whitespace-or-).
+    url, j = _parse_link_url(text, j)
+    if url is None:
+        return None
+    # 5. Optional title in "..." or '...' or (...).
+    while j < n and text[j] in " \t":
+        j += 1
+    title = ""
+    if j < n and text[j] in '"\'':
+        quote = text[j]
+        j += 1
+        title_buf = ""
+        while j < n and text[j] != quote:
+            if text[j] == "\\" and j + 1 < n:
+                title_buf += text[j + 1]
+                j += 2
+                continue
+            title_buf += text[j]
+            j += 1
+        if j >= n or text[j] != quote:
+            return None
+        title = title_buf
+        j += 1
+    # 6. Skip whitespace before closing ')'.
+    while j < n and text[j] in " \t":
+        j += 1
+    if j >= n or text[j] != ")":
+        return None
+    link_text = text[text_start:text_end]
+    inner_inlines = _parse_inlines(link_text)
+    return Link(inlines=inner_inlines, url=url, title=title), j + 1
+
+
+def _parse_link_url(text: str, start: int) -> tuple[str | None, int]:
+    """Parse the URL portion of an inline link. Returns ``(url, next_idx)``.
+
+    Supports the ``<url>`` form (everything until ``>``) and the bare form
+    (everything until whitespace or ``)``). Backslash escapes are
+    honoured per CommonMark.
+    """
+    n = len(text)
+    if start >= n:
+        return None, start
+    if text[start] == "<":
+        i = start + 1
+        buf = ""
+        while i < n and text[i] != ">":
+            if text[i] == "\n":
+                return None, start
+            if text[i] == "\\" and i + 1 < n:
+                buf += text[i + 1]
+                i += 2
+                continue
+            buf += text[i]
+            i += 1
+        if i >= n:
+            return None, start
+        return buf, i + 1
+    # Bare URL: until whitespace, ')', or end of text.
+    i = start
+    buf = ""
+    paren_depth = 0
+    while i < n:
+        ch = text[i]
+        if ch in " \t\n":
+            break
+        if ch == "(":
+            paren_depth += 1
+        elif ch == ")":
+            if paren_depth == 0:
+                break
+            paren_depth -= 1
+        if ch == "\\" and i + 1 < n:
+            buf += text[i + 1]
+            i += 2
+            continue
+        buf += ch
+        i += 1
+    if not buf:
+        return None, start
+    return buf, i
+
+
+# CommonMark §6.5 autolink scheme regex (simplified): letter then
+# 2-31 of letter/digit/plus/dot/dash; or an email-shaped address.
+_AUTOLINK_SCHEME = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+_AUTOLINK_SCHEME_TAIL = _AUTOLINK_SCHEME + "0123456789+.-"
+
+
+def _try_autolink(text: str, start: int) -> tuple[AutoLink, int] | None:
+    """If ``text[start:]`` is ``<url>``, parse it. Returns (AutoLink, end_pos)."""
+    if text[start] != "<":
+        return None
+    end = text.find(">", start + 1)
+    if end == -1:
+        return None
+    inner = text[start + 1:end]
+    if not inner:
+        return None
+    if " " in inner or "\n" in inner or "<" in inner:
+        return None
+    # Plausible URI: scheme:rest where scheme starts with a letter and has
+    # 2-32 valid scheme chars.
+    colon = inner.find(":")
+    if colon == -1:
+        # Try email shape: local@domain.tld
+        if "@" in inner:
+            return AutoLink(url="mailto:" + inner), end + 1
+        return None
+    scheme = inner[:colon]
+    if not scheme or scheme[0] not in _AUTOLINK_SCHEME:
+        return None
+    if not all(c in _AUTOLINK_SCHEME_TAIL for c in scheme[1:]):
+        return None
+    if not (2 <= len(scheme) <= 32):
+        return None
+    return AutoLink(url=inner), end + 1
 
 
 def _flanking(ch: str, prev: str, nxt: str) -> tuple[bool, bool]:
@@ -1171,6 +1350,14 @@ def _emit_inner(tokens: list[_Tok]) -> tuple[Inline, ...]:
         if tok.code is not None:
             flush()
             out.append(Code(content=tok.code))
+            continue
+        if tok.link is not None:
+            flush()
+            out.append(tok.link)
+            continue
+        if tok.autolink is not None:
+            flush()
+            out.append(tok.autolink)
             continue
         if tok.text is not None:
             text_buf += tok.text
