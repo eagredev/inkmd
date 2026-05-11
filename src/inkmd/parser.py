@@ -19,7 +19,9 @@ from dataclasses import dataclass, field
 
 from inkmd.ast import (
     Block,
+    BlockQuote,
     Code,
+    CodeBlock,
     Document,
     Emphasis,
     Heading,
@@ -116,11 +118,42 @@ class _BlockParser:
         self.doc_blocks: list[Block] = []
         self.list_stack: list[_ListCtx] = []
         self._doc_paragraph_lines: list[str] = []
+        # Fenced code block state — when active, lines are collected
+        # verbatim until the close fence.
+        self._code_fence_char: str | None = None
+        self._code_fence_len: int = 0
+        self._code_indent: int = 0
+        self._code_info: str = ""
+        self._code_lines: list[str] = []
+        # Blockquote state — when active, lines stripped of `>` prefix are
+        # accumulated, then parsed recursively into child blocks on close.
+        self._in_quote: bool = False
+        self._quote_lines: list[str] = []
 
     # --- Public driver ---------------------------------------------------
 
     def feed(self, line: str) -> None:
         """Process one input line."""
+        # Inside a fenced code block, lines are taken verbatim until the
+        # matching close fence. Nothing else interrupts.
+        if self._code_fence_char is not None:
+            if _is_close_fence(line, self._code_fence_char, self._code_fence_len):
+                self._close_code_fence()
+            else:
+                self._code_lines.append(_strip_code_indent(line, self._code_indent))
+            return
+
+        # Blockquote prefix handling — top-level only for v0.1. Inside
+        # lists, `>` is treated as paragraph content.
+        if not self.list_stack:
+            quote_stripped = _try_blockquote_prefix(line)
+            if quote_stripped is not None:
+                self._handle_quote_line(quote_stripped)
+                return
+            if self._in_quote:
+                # Non-quote line ends the blockquote (no lazy continuation in v0.1).
+                self._close_quote()
+
         if line.strip() == "":
             self._handle_blank()
             return
@@ -128,6 +161,13 @@ class _BlockParser:
         # Compute the line's leading indent column.
         stripped_line = line.lstrip(" ")
         line_indent = len(line) - len(stripped_line)
+
+        # Fence open at top-of-current-container — detect before list logic.
+        if not self.list_stack:
+            fence_open = _try_fence_open(line)
+            if fence_open is not None:
+                self._open_code_fence(fence_open)
+                return
 
         # Walk the open list stack outermost-to-innermost. For each list,
         # determine whether this line:
@@ -188,8 +228,13 @@ class _BlockParser:
 
     def finish(self) -> list[Block]:
         """Flush any in-progress state and return the top-level blocks."""
+        # A fence that's never closed still emits a CodeBlock (EOF closes it).
+        if self._code_fence_char is not None:
+            self._close_code_fence()
         while self.list_stack:
             self._close_top_list()
+        if self._in_quote:
+            self._close_quote()
         self._flush_doc_paragraph()
         return self.doc_blocks
 
@@ -354,6 +399,52 @@ class _BlockParser:
             joined = " ".join(self._doc_paragraph_lines)
             self._doc_paragraph_lines.clear()
             self.doc_blocks.append(Heading(level=level, inlines=_parse_inlines(joined)))
+
+    # --- Blockquote handling ---------------------------------------------
+
+    def _handle_quote_line(self, stripped: str) -> None:
+        """Append a `>`-prefixed line (with prefix already stripped)."""
+        # Close any open list before starting a blockquote (since v0.1
+        # doesn't support blockquote-inside-list).
+        while self.list_stack:
+            self._close_top_list()
+        # Flush any open paragraph; the blockquote starts a new block.
+        if not self._in_quote:
+            self._flush_doc_paragraph()
+            self._in_quote = True
+        self._quote_lines.append(stripped)
+
+    def _close_quote(self) -> None:
+        """Recursively parse the accumulated quote lines and emit a BlockQuote."""
+        if not self._in_quote:
+            return
+        inner_text = "\n".join(self._quote_lines)
+        self._in_quote = False
+        self._quote_lines = []
+        inner_blocks = _parse_blocks(inner_text)
+        self.doc_blocks.append(BlockQuote(blocks=tuple(inner_blocks)))
+
+    # --- Fenced code handling --------------------------------------------
+
+    def _open_code_fence(self, fence: "_FenceInfo") -> None:
+        """Start a fenced code block."""
+        self._flush_current_paragraph()
+        self._code_fence_char = fence.char
+        self._code_fence_len = fence.length
+        self._code_indent = fence.indent
+        self._code_info = fence.info
+        self._code_lines = []
+
+    def _close_code_fence(self) -> None:
+        """Emit the accumulated code lines as a CodeBlock."""
+        content = "\n".join(self._code_lines)
+        block = CodeBlock(content=content, info=self._code_info)
+        self._code_fence_char = None
+        self._code_fence_len = 0
+        self._code_indent = 0
+        self._code_info = ""
+        self._code_lines = []
+        self._add_block(block)
 
     # --- Close items / lists ---------------------------------------------
 
@@ -525,6 +616,96 @@ def _try_setext_underline(line: str) -> int | None:
     if all(c == "-" for c in body):
         return 2
     return None
+
+
+# --- Blockquote + fenced code recognition --------------------------------
+
+
+def _try_blockquote_prefix(line: str) -> str | None:
+    """Return the line with the ``>`` blockquote prefix stripped, else None.
+
+    CommonMark §5.1: up to 3 spaces of indent, then ``>`` optionally
+    followed by one space. The content after the prefix is the
+    blockquote's contribution.
+    """
+    stripped = line.lstrip(" ")
+    indent = len(line) - len(stripped)
+    if indent > _ATX_MAX_INDENT:
+        return None
+    if not stripped or stripped[0] != ">":
+        return None
+    rest = stripped[1:]
+    if rest.startswith(" "):
+        rest = rest[1:]
+    return rest
+
+
+@dataclass
+class _FenceInfo:
+    """Open code fence: marker char, length, indent and info string."""
+    char: str       # '`' or '~'
+    length: int     # number of fence chars (>= 3)
+    indent: int     # leading-space count of the fence line
+    info: str       # remainder of the fence line (typically a language name)
+
+
+def _try_fence_open(line: str) -> _FenceInfo | None:
+    """Return ``_FenceInfo`` if ``line`` opens a fenced code block.
+
+    CommonMark §4.5: 0-3 spaces of indent, then 3 or more of ``` `` ``` or
+    ``~~~``. The optional info string is whatever follows the fence on
+    the same line.
+    """
+    stripped = line.lstrip(" ")
+    indent = len(line) - len(stripped)
+    if indent > _ATX_MAX_INDENT:
+        return None
+    if not stripped or stripped[0] not in "`~":
+        return None
+    ch = stripped[0]
+    i = 0
+    while i < len(stripped) and stripped[i] == ch:
+        i += 1
+    if i < 3:
+        return None
+    info = stripped[i:].strip()
+    # An info string containing a backtick is invalid for backtick fences.
+    if ch == "`" and "`" in info:
+        return None
+    return _FenceInfo(char=ch, length=i, indent=indent, info=info)
+
+
+def _is_close_fence(line: str, fence_char: str, fence_len: int) -> bool:
+    """True if ``line`` is a closing fence for an open block.
+
+    CommonMark §4.5: closing fence is 0-3 spaces of indent, then ``>=
+    fence_len`` of the same fence character, then only whitespace.
+    """
+    stripped = line.lstrip(" ")
+    indent = len(line) - len(stripped)
+    if indent > _ATX_MAX_INDENT:
+        return False
+    if not stripped or stripped[0] != fence_char:
+        return False
+    i = 0
+    while i < len(stripped) and stripped[i] == fence_char:
+        i += 1
+    if i < fence_len:
+        return False
+    return stripped[i:].strip() == ""
+
+
+def _strip_code_indent(line: str, indent: int) -> str:
+    """Strip up to ``indent`` leading spaces from ``line`` (CommonMark §4.5).
+
+    The opening fence's indent is also subtracted from each content line —
+    so a fence indented 2 spaces will have its content stripped of 2
+    leading spaces (but no more), preserving internal indentation.
+    """
+    i = 0
+    while i < len(line) and i < indent and line[i] == " ":
+        i += 1
+    return line[i:]
 
 
 # --- Inline parsing (CommonMark emphasis algorithm) ----------------------

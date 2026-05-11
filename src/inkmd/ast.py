@@ -90,7 +90,22 @@ class List:
     items: tuple[ListItem, ...]
 
 
-Block = Union[Paragraph, Heading, List]
+@dataclass(frozen=True)
+class BlockQuote:
+    """A blockquote — contains a sequence of child blocks."""
+    blocks: tuple["Block", ...]
+
+
+@dataclass(frozen=True)
+class CodeBlock:
+    """A fenced code block. ``content`` is the literal text, ``info`` is
+    the optional info string (typically a language tag).
+    """
+    content: str
+    info: str = ""
+
+
+Block = Union[Paragraph, Heading, List, BlockQuote, CodeBlock]
 
 
 # --- Document root --------------------------------------------------------

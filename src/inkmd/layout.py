@@ -73,16 +73,31 @@ class StyledLine:
 
 
 @dataclass(frozen=True)
+class Rect:
+    """An axis-aligned filled rectangle on a page.
+
+    PDF-coordinate (origin bottom-left). ``fill`` is RGB in 0..1 floats.
+    Drawn *before* lines so text overlays it cleanly.
+    """
+    x: float
+    y: float
+    width: float
+    height: float
+    fill: tuple[float, float, float]
+
+
+@dataclass(frozen=True)
 class Page:
     """A list of lines that share one physical page.
 
     For the single-font path this holds ``Line`` records; for the styled
-    path it holds ``StyledLine`` records. The two are kept separate so
-    the existing PDF emission can branch on type.
+    path it holds ``StyledLine`` records. ``shapes`` are optional filled
+    background rectangles drawn before the lines.
     """
     lines: tuple
     width: float
     height: float
+    shapes: tuple = ()
 
 
 def wrap_paragraph(
@@ -294,6 +309,11 @@ class _BlockParts:
     marker_runs: tuple[Run, ...]
     marker_x: float
     compact: bool  # if True, suppress the default paragraph_spacing gap before this block
+    left_rule_x: float | None
+    left_rule_fill: tuple[float, float, float]
+    background_fill: tuple[float, float, float] | None
+    bg_padding: float
+    preserve_lines: bool
 
 
 def _block_parts(block) -> _BlockParts:
@@ -305,6 +325,8 @@ def _block_parts(block) -> _BlockParts:
     deliberately does not import render to keep the layer order clean.
     """
     if hasattr(block, "runs"):
+        rule_x = getattr(block, "left_rule_x", None)
+        bg = getattr(block, "background_fill", None)
         return _BlockParts(
             runs=list(block.runs),
             space_above=float(getattr(block, "space_above", 0.0)),
@@ -313,6 +335,11 @@ def _block_parts(block) -> _BlockParts:
             marker_runs=tuple(getattr(block, "marker_runs", ())),
             marker_x=float(getattr(block, "marker_x", 0.0)),
             compact=bool(getattr(block, "compact", False)),
+            left_rule_x=float(rule_x) if rule_x is not None else None,
+            left_rule_fill=tuple(getattr(block, "left_rule_fill", (0.6, 0.6, 0.6))),
+            background_fill=tuple(bg) if bg is not None else None,
+            bg_padding=float(getattr(block, "bg_padding", 4.0)),
+            preserve_lines=bool(getattr(block, "preserve_lines", False)),
         )
     return _BlockParts(
         runs=list(block),
@@ -322,6 +349,11 @@ def _block_parts(block) -> _BlockParts:
         marker_runs=(),
         marker_x=0.0,
         compact=False,
+        left_rule_x=None,
+        left_rule_fill=(0.6, 0.6, 0.6),
+        background_fill=None,
+        bg_padding=4.0,
+        preserve_lines=False,
     )
 
 
@@ -349,32 +381,82 @@ def paginate_runs(
 
     pages: list[Page] = []
     current_lines: list[StyledLine] = []
+    current_shapes: list[Rect] = []
     y_cursor = top_y
 
     def flush_page() -> None:
         if current_lines:
-            pages.append(Page(tuple(current_lines), page_width, page_height))
+            pages.append(
+                Page(
+                    tuple(current_lines),
+                    page_width,
+                    page_height,
+                    shapes=tuple(current_shapes),
+                )
+            )
 
     for p_idx, raw_block in enumerate(paragraphs):
         parts = _block_parts(raw_block)
         if p_idx > 0 and parts.space_above and current_lines:
             y_cursor -= parts.space_above
-        # Body column is narrower when this block is indented.
+
         body_column_width = column_width - parts.body_indent
-        wrapped = wrap_runs(parts.runs, body_column_width) if parts.runs else [[]]
+
+        if parts.preserve_lines:
+            wrapped = _split_preserved_lines(parts.runs)
+        else:
+            wrapped = wrap_runs(parts.runs, body_column_width) if parts.runs else [[]]
+
         first_line = True
+        # Track per-page top/bottom for background fill that spans the block.
+        block_top_on_page: float | None = None
+        block_bottom_on_page: float | None = None
+
+        def emit_bg_rect() -> None:
+            nonlocal current_shapes
+            if (
+                parts.background_fill is not None
+                and block_top_on_page is not None
+                and block_bottom_on_page is not None
+            ):
+                x_start = margin
+                width = column_width
+                top = block_top_on_page + parts.bg_padding
+                bottom = block_bottom_on_page - parts.bg_padding
+                current_shapes.append(
+                    Rect(
+                        x=x_start,
+                        y=bottom,
+                        width=width,
+                        height=top - bottom,
+                        fill=parts.background_fill,
+                    )
+                )
+
         for line in wrapped:
             line_height = line_height_ratio * (
                 _line_max_size(line) if line else DEFAULT_FONT_SIZE
             )
-            y_cursor -= line_height
-            if y_cursor < bottom_y:
+            # Tentatively place baseline at y_cursor - line_height.
+            new_y = y_cursor - line_height
+            if new_y < bottom_y:
+                # Emit pending background for the just-completed page region.
+                emit_bg_rect()
+                block_top_on_page = None
+                block_bottom_on_page = None
                 flush_page()
                 current_lines = []
-                y_cursor = top_y - line_height
+                current_shapes = []
+                y_cursor = top_y
+                new_y = y_cursor - line_height
+            y_cursor = new_y
+
+            if block_top_on_page is None:
+                block_top_on_page = y_cursor + line_height  # top of this line
+            block_bottom_on_page = y_cursor  # baseline; bottom-padding accounts for descender
+
             x = margin + parts.body_indent
             positioned: list[PositionedRun] = []
-            # On the first wrapped line, render the marker (if any) at marker_x.
             if first_line and parts.marker_runs:
                 mx = margin + parts.marker_x
                 for mrun in parts.marker_runs:
@@ -400,18 +482,46 @@ def paginate_runs(
                 )
                 x += text_width(run.text, run.font, run.size)
             current_lines.append(StyledLine(tuple(positioned)))
+            # Per-line left rule for blockquotes.
+            if parts.left_rule_x is not None:
+                rule_w = 2.0
+                rule_x = margin + parts.left_rule_x
+                # Rule spans the line's vertical extent (~line_height).
+                current_shapes.append(
+                    Rect(
+                        x=rule_x,
+                        y=y_cursor - 2.0,
+                        width=rule_w,
+                        height=line_height,
+                        fill=parts.left_rule_fill,
+                    )
+                )
             first_line = False
+
+        # Emit background fill for this block on this page.
+        emit_bg_rect()
+
         if p_idx < len(paragraphs) - 1:
-            # The default paragraph_spacing applies unless the *next* block
-            # asked to be compact (set on next iteration via space_above
-            # check). For simplicity, always add paragraph_spacing + this
-            # block's space_below; the next block's space_above (which may
-            # be negative for compact lists) corrects it.
             y_cursor -= parts.space_below
-            # Look at next block for compactness.
             next_parts = _block_parts(paragraphs[p_idx + 1])
             if not next_parts.compact:
                 y_cursor -= paragraph_spacing
 
     flush_page()
     return pages
+
+
+def _split_preserved_lines(runs: list[Run]) -> list[list[Run]]:
+    """Split runs on embedded ``\\n`` for code blocks (no word wrapping)."""
+    lines: list[list[Run]] = []
+    current: list[Run] = []
+    for run in runs:
+        parts = run.text.split("\n")
+        for i, part in enumerate(parts):
+            if i > 0:
+                lines.append(current)
+                current = []
+            if part:
+                current.append(Run(text=part, font=run.font, size=run.size))
+    lines.append(current)
+    return lines

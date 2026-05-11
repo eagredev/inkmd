@@ -154,9 +154,22 @@ Sample: `/tmp/inkmd-0.0.8-times.pdf` and `/tmp/inkmd-0.0.8-helvetica.pdf`.
 - [ ] **Line wrapping inside items**: a long item's continuation line aligns with the body column (hanging indent), not the marker column.
 - [ ] **Inline formatting inside items**: `- *italic* item` and `- **bold** item` render with the emphasis applied to the right span.
 
-## Pending milestones — append checklists here when the milestone lands
+### Milestone 0.0.9 — blockquotes + fenced code blocks
 
-- [ ] **0.0.9 (blockquotes + fenced code)**: indent + vertical rule for blockquotes; tinted background for fenced code blocks.
+Sample: `/tmp/inkmd-0.0.9-times.pdf` and `/tmp/inkmd-0.0.9-helvetica.pdf`. **First milestone emitting non-text PDF graphics** (`re`, `f`, `rg` operators).
+
+- [ ] **Blockquote left rule**: a thin light-grey vertical bar sits in the left margin region; the rule appears for every line of the quoted content, not just the first.
+- [ ] **Blockquote body indent**: text inside `> ...` is visibly indented past the rule, not flush with the surrounding body.
+- [ ] **Multi-paragraph blockquote**: `> P1\n>\n> P2` renders both paragraphs inside the same rule, with paragraph spacing between them.
+- [ ] **Nested blockquote** (`> > inner`): two rules sit side-by-side, with the inner text indented further still.
+- [ ] **Fenced code block background**: light grey fill spans the full body column width, padded a few points around the text.
+- [ ] **Code block monospace**: the body renders in Courier (regardless of family).
+- [ ] **Whitespace preserved in code**: indented lines stay indented, multiple spaces stay multiple, blank lines stay blank.
+- [ ] **No markdown interpretation inside code**: `**not bold**` and `` `not code` `` inside a fenced block render as literal text.
+- [ ] **Code block + body text alternation**: text below a code block resumes at full body column width (the background ends cleanly above it).
+- [ ] **Validator coverage**: `pdftotext` extracts code body text verbatim including indents (whitespace fidelity check).
+
+## Pending milestones — append checklists here when the milestone lands
 
 ## Known limitations (NOT bugs)
 
