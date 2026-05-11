@@ -140,9 +140,22 @@ Sample: `/tmp/inkmd-0.0.7-times.pdf` and `/tmp/inkmd-0.0.7-helvetica.pdf`.
 - [ ] **Setext H2 (`Title\n---`)** renders identically to `## Title`.
 - [ ] **Page break before an H1** that wouldn't fit: spacing-above isn't doubled at the top of a fresh page.
 
+### Milestone 0.0.8 — lists (full CommonMark)
+
+Sample: `/tmp/inkmd-0.0.8-times.pdf` and `/tmp/inkmd-0.0.8-helvetica.pdf`.
+
+- [ ] **Bullet list (`-`, `*`, `+`)** renders with a `•` marker hanging to the left of the body column.
+- [ ] **Ordered list (`1.`)** renders with the running number followed by `.` at the marker column. List with `start=5` (e.g. `5. Five`) starts numbering at 5, not 1.
+- [ ] **Mixed marker styles** at the same indent (e.g. `- a` then `* b`) split into two separate lists, not one mixed list.
+- [ ] **Nested lists** (4-space-indented marker) sit visibly inside the parent item, with the inner marker indented past the outer body column.
+- [ ] **Mixed ordered/unordered nesting** works in either direction (`-` outer, `1.` inner, or vice versa).
+- [ ] **Tight lists** (no blank lines between items) pack items flush vertically — minimal gap between sibling items.
+- [ ] **Loose lists** (blank lines between items) give each item paragraph-like spacing.
+- [ ] **Line wrapping inside items**: a long item's continuation line aligns with the body column (hanging indent), not the marker column.
+- [ ] **Inline formatting inside items**: `- *italic* item` and `- **bold** item` render with the emphasis applied to the right span.
+
 ## Pending milestones — append checklists here when the milestone lands
 
-- [ ] **0.0.8 (lists)**: ordered and unordered, nested by indent.
 - [ ] **0.0.9 (blockquotes + fenced code)**: indent + vertical rule for blockquotes; tinted background for fenced code blocks.
 
 ## Known limitations (NOT bugs)

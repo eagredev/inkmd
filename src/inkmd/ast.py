@@ -64,7 +64,33 @@ class Heading:
     inlines: tuple[Inline, ...]
 
 
-Block = Union[Paragraph, Heading]
+@dataclass(frozen=True)
+class ListItem:
+    """One item in a list; holds a sequence of child blocks.
+
+    Items can contain paragraphs, nested lists, or other block types.
+    Tight-list items typically hold a single Paragraph; loose-list items
+    may hold multiple blocks.
+    """
+    blocks: tuple["Block", ...]
+
+
+@dataclass(frozen=True)
+class List:
+    """An ordered or unordered list.
+
+    ``ordered`` is True for ``1. foo`` style; False for ``- foo``.
+    ``start`` is the starting number for ordered lists (1 if unset).
+    ``tight`` controls vertical spacing — set during block parse based
+    on whether items are blank-separated.
+    """
+    ordered: bool
+    start: int
+    tight: bool
+    items: tuple[ListItem, ...]
+
+
+Block = Union[Paragraph, Heading, List]
 
 
 # --- Document root --------------------------------------------------------
