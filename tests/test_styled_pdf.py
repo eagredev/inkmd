@@ -134,6 +134,23 @@ def test_styled_pdf_with_em_dash():
     assert b"\x97" in data
 
 
+def test_font_dict_declares_winansi_encoding():
+    """All four fonts must declare /Encoding /WinAnsiEncoding.
+
+    Without this, PDF readers default to StandardEncoding, which leaves
+    bytes 0x80..0x9F (em dash, curly quotes, ellipsis, etc.) undefined.
+    Glyphs render as blank instead of as their typographic punctuation.
+    Caught by visual inspection during milestone 0.0.3; this test locks
+    the fix in place.
+    """
+    data = styled_pdf([[Run("hello", "Helvetica", 12)]])
+    # Every BaseFont declaration must be followed by a WinAnsiEncoding.
+    base_fonts = re.findall(rb"/BaseFont /(\S+)", data)
+    assert len(base_fonts) == 4, base_fonts
+    # Count WinAnsiEncoding occurrences — must match font count.
+    assert data.count(b"/Encoding /WinAnsiEncoding") == 4
+
+
 # --- external validators ---------------------------------------------------
 
 

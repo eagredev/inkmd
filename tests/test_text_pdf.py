@@ -142,3 +142,19 @@ def test_long_paragraph_produces_multiple_text_strings():
     data = text_pdf(long)
     n_tj = data.count(b" Tj")
     assert n_tj >= 2, f"expected multiple wrapped lines, got {n_tj}"
+
+
+def test_text_pdf_font_declares_winansi_encoding():
+    """The Helvetica font dict must declare /Encoding /WinAnsiEncoding.
+
+    Without this, typographic punctuation (em dash, curly quotes, etc.)
+    in user text renders as blank glyphs in PDF readers.
+    """
+    data = text_pdf("hello world")
+    assert b"/Encoding /WinAnsiEncoding" in data
+
+
+def test_text_pdf_em_dash_appears_in_stream():
+    """An em dash in the input text must end up as byte 0x97 in the content stream."""
+    data = text_pdf("hello — world")
+    assert b"\x97" in data

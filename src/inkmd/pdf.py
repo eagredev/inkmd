@@ -163,7 +163,10 @@ def hello_world_pdf(text: str = "Hello, world!", page_size: str = "letter") -> b
     # under the resource name /F1. The Type1 + BaseFont pair tells the
     # reader to use its built-in copy of Helvetica; we don't ship the
     # font file because it's one of the 14 spec-mandated base fonts.
-    font = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
+    font = (
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
+        b"/Encoding /WinAnsiEncoding >>"
+    )
     writer.add_object(font)
 
     # Object 5 — Content stream: the drawing instructions for this page.
@@ -312,7 +315,10 @@ def text_pdf(text: str, page_size: str = "letter") -> bytes:
     )
 
     # Font dict (shared by every page).
-    writer.add_object(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    writer.add_object(
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
+        b"/Encoding /WinAnsiEncoding >>"
+    )
 
     # Per-page objects: Page + Contents stream, in lockstep.
     for page, page_n, contents_n in zip(pages, page_obj_nums, contents_obj_nums):
@@ -412,7 +418,8 @@ def styled_pdf(
     for font_name in FONT_SLOTS:
         obj_n = writer.add_object(
             (
-                f"<< /Type /Font /Subtype /Type1 /BaseFont /{font_name} >>"
+                f"<< /Type /Font /Subtype /Type1 /BaseFont /{font_name} "
+                f"/Encoding /WinAnsiEncoding >>"
             ).encode("ascii")
         )
         font_obj_nums[font_name] = obj_n
