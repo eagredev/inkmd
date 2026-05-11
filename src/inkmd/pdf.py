@@ -218,40 +218,16 @@ def _encode_pdf_literal(text: str) -> bytes:
     )
 
 
-# WinAnsi remaps these typographic codepoints into the 0x80..0x9F range
-# of single bytes. Without this, em dashes / curly quotes / ellipses
-# would have no byte representation in v0.1's WinAnsi-only output.
-_WINANSI_REMAP: dict[int, int] = {
-    0x20AC: 0x80, 0x201A: 0x82, 0x0192: 0x83, 0x201E: 0x84,
-    0x2026: 0x85, 0x2020: 0x86, 0x2021: 0x87, 0x02C6: 0x88,
-    0x2030: 0x89, 0x0160: 0x8A, 0x2039: 0x8B, 0x0152: 0x8C,
-    0x017D: 0x8E, 0x2018: 0x91, 0x2019: 0x92, 0x201C: 0x93,
-    0x201D: 0x94, 0x2022: 0x95, 0x2013: 0x96, 0x2014: 0x97,
-    0x02DC: 0x98, 0x2122: 0x99, 0x0161: 0x9A, 0x203A: 0x9B,
-    0x0153: 0x9C, 0x017E: 0x9E, 0x0178: 0x9F,
-}
-
-
 def encode_winansi(text: str) -> bytes:
     """Encode a Python string into WinAnsi bytes for use inside a PDF literal.
 
-    Codepoints 0x00..0xFF that exist in WinAnsi pass through directly.
-    The remapped punctuation block (em/en dash, curly quotes, ellipsis,
-    etc.) is translated into its WinAnsi byte. Anything else falls back
-    to a ``?`` — v0.1 is a Latin-1 / WinAnsi-only product and we
-    document that limitation; once TTF embedding lands in v0.2/0.3 the
-    fallback path goes away.
+    Uses ``fonts.to_winansi_byte`` for the codepoint-to-byte mapping so
+    measurement (in layout) and emission (here) agree on which glyph
+    each character maps to. Latin-1 passes through, typographic
+    punctuation remaps into 0x80..0x9F, anything else falls back to ?.
     """
-    out = bytearray()
-    for ch in text:
-        cp = ord(ch)
-        if cp in _WINANSI_REMAP:
-            out.append(_WINANSI_REMAP[cp])
-        elif cp <= 0xFF:
-            out.append(cp)
-        else:
-            out.append(ord("?"))
-    return bytes(out)
+    from inkmd.fonts import to_winansi_byte
+    return bytes(to_winansi_byte(ord(ch)) for ch in text)
 
 
 def _page_content_stream(page: Page) -> bytes:

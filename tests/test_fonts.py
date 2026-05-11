@@ -106,3 +106,52 @@ def test_courier_text_width_is_monospace_count():
     """At 12pt Courier, 10 chars = (600/1000)*12*10 = 72 points exactly."""
     w = text_width("0123456789", "Courier", 12.0)
     assert abs(w - 72.0) < 1e-9
+
+
+# --- Regression: width measurement must agree with PDF rendering ----------
+
+
+def test_em_dash_width_matches_rendered_glyph():
+    """The em dash measures 1000 units (= 12pt at 12pt) in Helvetica.
+
+    Regression for 0.0.3 visual bug: previously the AFM table was
+    indexed by PostScript StandardEncoding, so the WinAnsi-mapped byte
+    for em dash had no entry and fell back to the 500-unit default,
+    measuring 6pt while the renderer drew 12pt. Letters after em dashes
+    visibly overlapped.
+    """
+    w = text_width("—", "Helvetica", 12.0)
+    assert abs(w - 12.0) < 1e-9, (
+        f"em dash should be 12pt at 12pt, got {w} — width table likely "
+        f"not indexed by WinAnsi byte"
+    )
+
+
+def test_curly_quotes_have_real_widths():
+    """Curly quotes (U+2018..201D) measure their actual Helvetica widths.
+
+    quoteleft / quoteright = 222 units each; quotedblleft / quotedblright = 333.
+    """
+    assert abs(text_width("‘", "Helvetica", 12.0) - 222 * 12 / 1000) < 1e-9
+    assert abs(text_width("’", "Helvetica", 12.0) - 222 * 12 / 1000) < 1e-9
+    assert abs(text_width("“", "Helvetica", 12.0) - 333 * 12 / 1000) < 1e-9
+    assert abs(text_width("”", "Helvetica", 12.0) - 333 * 12 / 1000) < 1e-9
+
+
+def test_ellipsis_has_real_width():
+    """Single-glyph ellipsis (U+2026) is 1000 units in Helvetica."""
+    w = text_width("…", "Helvetica", 12.0)
+    assert abs(w - 12.0) < 1e-9
+
+
+def test_to_winansi_byte_handles_known_cases():
+    """The codepoint→byte mapping covers the common typographic punctuation."""
+    from inkmd.fonts import to_winansi_byte
+    assert to_winansi_byte(ord("A")) == ord("A")  # ASCII identity
+    assert to_winansi_byte(0x2014) == 0x97  # em dash
+    assert to_winansi_byte(0x2013) == 0x96  # en dash
+    assert to_winansi_byte(0x2018) == 0x91  # left single quote
+    assert to_winansi_byte(0x2019) == 0x92  # right single quote
+    assert to_winansi_byte(0x2026) == 0x85  # ellipsis
+    assert to_winansi_byte(0x00E9) == 0xE9  # Latin-1 é
+    assert to_winansi_byte(0x2603) == ord("?")  # snowman → fallback

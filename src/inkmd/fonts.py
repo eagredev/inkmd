@@ -1,103 +1,102 @@
 """Font metric data for the standard PDF fonts.
 
-PDF readers are required by ISO 32000-1 to ship the 14 base fonts
-(Helvetica + 3 variants, Times + 3 variants, Courier + 3 variants,
-Symbol, ZapfDingbats). We don't ship font files — we only need the
-advance-width tables to measure text.
+Width tables are indexed by **WinAnsi byte position**, not by Unicode
+codepoint. Layout and PDF emission both run through ``_to_winansi_byte``
+so measurement and rendering agree on which glyph a character maps to.
 
-Widths are in 1/1000 em units, the AFM convention. To get a glyph's
-rendered width in points: ``(width / 1000) * font_size``.
+Why this matters: a previous version of these tables was indexed by
+PostScript StandardEncoding codes (the AFM file's ``C <code>`` field).
+That made width lookups silently disagree with the renderer for any
+codepoint in the WinAnsi 0x80..0x9F block (em dash, curly quotes,
+ellipsis…). The em dash measured as a 6pt fallback while the reader
+drew it 12pt wide, causing a ~6pt overlap with the next glyph. Fixed
+by re-indexing the tables on WinAnsi byte and routing measurement
+through the same byte mapping used for emission.
 
-Source: Adobe AFM files (public domain since the 14 base fonts are
-spec-mandated). Mirror at github.com/tecnickcom/tc-font-core14-afms.
+Source: Adobe AFM files, parsed by glyph name and re-keyed onto the
+WinAnsi byte range. Public domain. Mirror at
+github.com/tecnickcom/tc-font-core14-afms.
 
 Milestone 0.0.3 ships the four faces needed for inline markdown
 formatting: Helvetica (regular body), Helvetica-Bold (**bold**),
-Helvetica-Oblique (*italic*), and Courier (``code``). The remaining
-ten base fonts arrive when needed.
-
-Note: Helvetica-Oblique has identical advance widths to Helvetica —
-the oblique face is a slanted rendering of the same glyphs, not a
-redrawn typeface. We alias accordingly to avoid duplicating the table.
+Helvetica-Oblique (*italic*), and Courier (``code``). Helvetica-Oblique
+shares Helvetica's widths (the oblique face is a slanted rendering of
+the same outlines).
 """
 
 from __future__ import annotations
 
 
+# Width tables indexed by WinAnsi byte (0x20..0xFF).
 HELVETICA_WIDTHS: dict[int, int] = {
-    32: 278, 33: 278, 34: 355, 35: 556, 36: 556, 37: 889, 38: 667, 39: 222,
-    40: 333, 41: 333, 42: 389, 43: 584, 44: 278, 45: 333, 46: 278, 47: 278,
-    48: 556, 49: 556, 50: 556, 51: 556, 52: 556, 53: 556, 54: 556, 55: 556,
-    56: 556, 57: 556, 58: 278, 59: 278, 60: 584, 61: 584, 62: 584, 63: 556,
-    64: 1015, 65: 667, 66: 667, 67: 722, 68: 722, 69: 667, 70: 611, 71: 778,
-    72: 722, 73: 278, 74: 500, 75: 667, 76: 556, 77: 833, 78: 722, 79: 778,
-    80: 667, 81: 778, 82: 722, 83: 667, 84: 611, 85: 722, 86: 667, 87: 944,
-    88: 667, 89: 667, 90: 611, 91: 278, 92: 278, 93: 278, 94: 469, 95: 556,
-    96: 222, 97: 556, 98: 556, 99: 500, 100: 556, 101: 556, 102: 278, 103: 556,
-    104: 556, 105: 222, 106: 222, 107: 500, 108: 222, 109: 833, 110: 556, 111: 556,
-    112: 556, 113: 556, 114: 333, 115: 500, 116: 278, 117: 556, 118: 500, 119: 722,
-    120: 500, 121: 500, 122: 500, 123: 334, 124: 260, 125: 334, 126: 584, 161: 333,
-    162: 556, 163: 556, 164: 167, 165: 556, 166: 556, 167: 556, 168: 556, 169: 191,
-    170: 333, 171: 556, 172: 333, 173: 333, 174: 500, 175: 500, 177: 556, 178: 556,
-    179: 556, 180: 278, 182: 537, 183: 350, 184: 222, 185: 333, 186: 333, 187: 556,
-    188: 1000, 189: 1000, 191: 611, 193: 333, 194: 333, 195: 333, 196: 333, 197: 333,
-    198: 333, 199: 333, 200: 333, 202: 333, 203: 333, 205: 333, 206: 333, 207: 333,
-    208: 1000, 225: 1000, 227: 370, 232: 556, 233: 778, 234: 1000, 235: 365, 241: 889,
-    245: 278, 248: 222, 249: 611, 250: 944, 251: 611,
+    0x20: 278, 0x21: 278, 0x22: 355, 0x23: 556, 0x24: 556, 0x25: 889, 0x26: 667, 0x27: 222,
+    0x28: 333, 0x29: 333, 0x2A: 389, 0x2B: 584, 0x2C: 278, 0x2D: 333, 0x2E: 278, 0x2F: 278,
+    0x30: 556, 0x31: 556, 0x32: 556, 0x33: 556, 0x34: 556, 0x35: 556, 0x36: 556, 0x37: 556,
+    0x38: 556, 0x39: 556, 0x3A: 278, 0x3B: 278, 0x3C: 584, 0x3D: 584, 0x3E: 584, 0x3F: 556,
+    0x40: 1015, 0x41: 667, 0x42: 667, 0x43: 722, 0x44: 722, 0x45: 667, 0x46: 611, 0x47: 778,
+    0x48: 722, 0x49: 278, 0x4A: 500, 0x4B: 667, 0x4C: 556, 0x4D: 833, 0x4E: 722, 0x4F: 778,
+    0x50: 667, 0x51: 778, 0x52: 722, 0x53: 667, 0x54: 611, 0x55: 722, 0x56: 667, 0x57: 944,
+    0x58: 667, 0x59: 667, 0x5A: 611, 0x5B: 278, 0x5C: 278, 0x5D: 278, 0x5E: 469, 0x5F: 556,
+    0x60: 222, 0x61: 556, 0x62: 556, 0x63: 500, 0x64: 556, 0x65: 556, 0x66: 278, 0x67: 556,
+    0x68: 556, 0x69: 222, 0x6A: 222, 0x6B: 500, 0x6C: 222, 0x6D: 833, 0x6E: 556, 0x6F: 556,
+    0x70: 556, 0x71: 556, 0x72: 333, 0x73: 500, 0x74: 278, 0x75: 556, 0x76: 500, 0x77: 722,
+    0x78: 500, 0x79: 500, 0x7A: 500, 0x7B: 334, 0x7C: 260, 0x7D: 334, 0x7E: 584, 0x80: 556,
+    0x82: 222, 0x83: 556, 0x84: 333, 0x85: 1000, 0x86: 556, 0x87: 556, 0x88: 333, 0x89: 1000,
+    0x8A: 667, 0x8B: 333, 0x8C: 1000, 0x8E: 611, 0x91: 222, 0x92: 222, 0x93: 333, 0x94: 333,
+    0x95: 350, 0x96: 556, 0x97: 1000, 0x98: 333, 0x99: 1000, 0x9A: 500, 0x9B: 333, 0x9C: 944,
+    0x9E: 500, 0x9F: 667, 0xA0: 278, 0xA1: 333, 0xA2: 556, 0xA3: 556, 0xA4: 556, 0xA5: 556,
+    0xA6: 260, 0xA7: 556, 0xA8: 333, 0xA9: 737, 0xAA: 370, 0xAB: 556, 0xAC: 584, 0xAD: 333,
+    0xAE: 737, 0xAF: 333, 0xB0: 400, 0xB1: 584, 0xB2: 333, 0xB3: 333, 0xB4: 333, 0xB5: 556,
+    0xB6: 537, 0xB7: 278, 0xB8: 333, 0xB9: 333, 0xBA: 365, 0xBB: 556, 0xBC: 834, 0xBD: 834,
+    0xBE: 834, 0xBF: 611, 0xC0: 667, 0xC1: 667, 0xC2: 667, 0xC3: 667, 0xC4: 667, 0xC5: 667,
+    0xC6: 1000, 0xC7: 722, 0xC8: 667, 0xC9: 667, 0xCA: 667, 0xCB: 667, 0xCC: 278, 0xCD: 278,
+    0xCE: 278, 0xCF: 278, 0xD0: 722, 0xD1: 722, 0xD2: 778, 0xD3: 778, 0xD4: 778, 0xD5: 778,
+    0xD6: 778, 0xD7: 584, 0xD8: 778, 0xD9: 722, 0xDA: 722, 0xDB: 722, 0xDC: 722, 0xDD: 667,
+    0xDE: 667, 0xDF: 611, 0xE0: 556, 0xE1: 556, 0xE2: 556, 0xE3: 556, 0xE4: 556, 0xE5: 556,
+    0xE6: 889, 0xE7: 500, 0xE8: 556, 0xE9: 556, 0xEA: 556, 0xEB: 556, 0xEC: 278, 0xED: 278,
+    0xEE: 278, 0xEF: 278, 0xF0: 556, 0xF1: 556, 0xF2: 556, 0xF3: 556, 0xF4: 556, 0xF5: 556,
+    0xF6: 556, 0xF7: 584, 0xF8: 611, 0xF9: 556, 0xFA: 556, 0xFB: 556, 0xFC: 556, 0xFD: 500,
+    0xFE: 556, 0xFF: 500,
 }
 
 
 HELVETICA_BOLD_WIDTHS: dict[int, int] = {
-    32: 278, 33: 333, 34: 474, 35: 556, 36: 556, 37: 889, 38: 722, 39: 278,
-    40: 333, 41: 333, 42: 389, 43: 584, 44: 278, 45: 333, 46: 278, 47: 278,
-    48: 556, 49: 556, 50: 556, 51: 556, 52: 556, 53: 556, 54: 556, 55: 556,
-    56: 556, 57: 556, 58: 333, 59: 333, 60: 584, 61: 584, 62: 584, 63: 611,
-    64: 975, 65: 722, 66: 722, 67: 722, 68: 722, 69: 667, 70: 611, 71: 778,
-    72: 722, 73: 278, 74: 556, 75: 722, 76: 611, 77: 833, 78: 722, 79: 778,
-    80: 667, 81: 778, 82: 722, 83: 667, 84: 611, 85: 722, 86: 667, 87: 944,
-    88: 667, 89: 667, 90: 611, 91: 333, 92: 278, 93: 333, 94: 584, 95: 556,
-    96: 278, 97: 556, 98: 611, 99: 556, 100: 611, 101: 556, 102: 333, 103: 611,
-    104: 611, 105: 278, 106: 278, 107: 556, 108: 278, 109: 889, 110: 611, 111: 611,
-    112: 611, 113: 611, 114: 389, 115: 556, 116: 333, 117: 611, 118: 556, 119: 778,
-    120: 556, 121: 556, 122: 500, 123: 389, 124: 280, 125: 389, 126: 584, 161: 333,
-    162: 556, 163: 556, 164: 167, 165: 556, 166: 556, 167: 556, 168: 556, 169: 238,
-    170: 500, 171: 556, 172: 333, 173: 333, 174: 611, 175: 611, 177: 556, 178: 556,
-    179: 556, 180: 278, 182: 556, 183: 350, 184: 278, 185: 500, 186: 500, 187: 556,
-    188: 1000, 189: 1000, 191: 611, 193: 333, 194: 333, 195: 333, 196: 333, 197: 333,
-    198: 333, 199: 333, 200: 333, 202: 333, 203: 333, 205: 333, 206: 333, 207: 333,
-    208: 1000, 225: 1000, 227: 370, 232: 611, 233: 778, 234: 1000, 235: 365, 241: 889,
-    245: 278, 248: 278, 249: 611, 250: 944, 251: 611,
+    0x20: 278, 0x21: 333, 0x22: 474, 0x23: 556, 0x24: 556, 0x25: 889, 0x26: 722, 0x27: 278,
+    0x28: 333, 0x29: 333, 0x2A: 389, 0x2B: 584, 0x2C: 278, 0x2D: 333, 0x2E: 278, 0x2F: 278,
+    0x30: 556, 0x31: 556, 0x32: 556, 0x33: 556, 0x34: 556, 0x35: 556, 0x36: 556, 0x37: 556,
+    0x38: 556, 0x39: 556, 0x3A: 333, 0x3B: 333, 0x3C: 584, 0x3D: 584, 0x3E: 584, 0x3F: 611,
+    0x40: 975, 0x41: 722, 0x42: 722, 0x43: 722, 0x44: 722, 0x45: 667, 0x46: 611, 0x47: 778,
+    0x48: 722, 0x49: 278, 0x4A: 556, 0x4B: 722, 0x4C: 611, 0x4D: 833, 0x4E: 722, 0x4F: 778,
+    0x50: 667, 0x51: 778, 0x52: 722, 0x53: 667, 0x54: 611, 0x55: 722, 0x56: 667, 0x57: 944,
+    0x58: 667, 0x59: 667, 0x5A: 611, 0x5B: 333, 0x5C: 278, 0x5D: 333, 0x5E: 584, 0x5F: 556,
+    0x60: 278, 0x61: 556, 0x62: 611, 0x63: 556, 0x64: 611, 0x65: 556, 0x66: 333, 0x67: 611,
+    0x68: 611, 0x69: 278, 0x6A: 278, 0x6B: 556, 0x6C: 278, 0x6D: 889, 0x6E: 611, 0x6F: 611,
+    0x70: 611, 0x71: 611, 0x72: 389, 0x73: 556, 0x74: 333, 0x75: 611, 0x76: 556, 0x77: 778,
+    0x78: 556, 0x79: 556, 0x7A: 500, 0x7B: 389, 0x7C: 280, 0x7D: 389, 0x7E: 584, 0x80: 556,
+    0x82: 278, 0x83: 556, 0x84: 500, 0x85: 1000, 0x86: 556, 0x87: 556, 0x88: 333, 0x89: 1000,
+    0x8A: 667, 0x8B: 333, 0x8C: 1000, 0x8E: 611, 0x91: 278, 0x92: 278, 0x93: 500, 0x94: 500,
+    0x95: 350, 0x96: 556, 0x97: 1000, 0x98: 333, 0x99: 1000, 0x9A: 556, 0x9B: 333, 0x9C: 944,
+    0x9E: 500, 0x9F: 667, 0xA0: 278, 0xA1: 333, 0xA2: 556, 0xA3: 556, 0xA4: 556, 0xA5: 556,
+    0xA6: 280, 0xA7: 556, 0xA8: 333, 0xA9: 737, 0xAA: 370, 0xAB: 556, 0xAC: 584, 0xAD: 333,
+    0xAE: 737, 0xAF: 333, 0xB0: 400, 0xB1: 584, 0xB2: 333, 0xB3: 333, 0xB4: 333, 0xB5: 611,
+    0xB6: 556, 0xB7: 278, 0xB8: 333, 0xB9: 333, 0xBA: 365, 0xBB: 556, 0xBC: 834, 0xBD: 834,
+    0xBE: 834, 0xBF: 611, 0xC0: 722, 0xC1: 722, 0xC2: 722, 0xC3: 722, 0xC4: 722, 0xC5: 722,
+    0xC6: 1000, 0xC7: 722, 0xC8: 667, 0xC9: 667, 0xCA: 667, 0xCB: 667, 0xCC: 278, 0xCD: 278,
+    0xCE: 278, 0xCF: 278, 0xD0: 722, 0xD1: 722, 0xD2: 778, 0xD3: 778, 0xD4: 778, 0xD5: 778,
+    0xD6: 778, 0xD7: 584, 0xD8: 778, 0xD9: 722, 0xDA: 722, 0xDB: 722, 0xDC: 722, 0xDD: 667,
+    0xDE: 667, 0xDF: 611, 0xE0: 556, 0xE1: 556, 0xE2: 556, 0xE3: 556, 0xE4: 556, 0xE5: 556,
+    0xE6: 889, 0xE7: 556, 0xE8: 556, 0xE9: 556, 0xEA: 556, 0xEB: 556, 0xEC: 278, 0xED: 278,
+    0xEE: 278, 0xEF: 278, 0xF0: 611, 0xF1: 611, 0xF2: 611, 0xF3: 611, 0xF4: 611, 0xF5: 611,
+    0xF6: 611, 0xF7: 584, 0xF8: 611, 0xF9: 611, 0xFA: 611, 0xFB: 611, 0xFC: 611, 0xFD: 556,
+    0xFE: 611, 0xFF: 556,
 }
 
 
-# Courier is monospace: every glyph in the AFM is 600 units wide. We
-# still store the table to keep the lookup path uniform.
-COURIER_WIDTHS: dict[int, int] = {
-    32: 600, 33: 600, 34: 600, 35: 600, 36: 600, 37: 600, 38: 600, 39: 600,
-    40: 600, 41: 600, 42: 600, 43: 600, 44: 600, 45: 600, 46: 600, 47: 600,
-    48: 600, 49: 600, 50: 600, 51: 600, 52: 600, 53: 600, 54: 600, 55: 600,
-    56: 600, 57: 600, 58: 600, 59: 600, 60: 600, 61: 600, 62: 600, 63: 600,
-    64: 600, 65: 600, 66: 600, 67: 600, 68: 600, 69: 600, 70: 600, 71: 600,
-    72: 600, 73: 600, 74: 600, 75: 600, 76: 600, 77: 600, 78: 600, 79: 600,
-    80: 600, 81: 600, 82: 600, 83: 600, 84: 600, 85: 600, 86: 600, 87: 600,
-    88: 600, 89: 600, 90: 600, 91: 600, 92: 600, 93: 600, 94: 600, 95: 600,
-    96: 600, 97: 600, 98: 600, 99: 600, 100: 600, 101: 600, 102: 600, 103: 600,
-    104: 600, 105: 600, 106: 600, 107: 600, 108: 600, 109: 600, 110: 600, 111: 600,
-    112: 600, 113: 600, 114: 600, 115: 600, 116: 600, 117: 600, 118: 600, 119: 600,
-    120: 600, 121: 600, 122: 600, 123: 600, 124: 600, 125: 600, 126: 600, 161: 600,
-    162: 600, 163: 600, 164: 600, 165: 600, 166: 600, 167: 600, 168: 600, 169: 600,
-    170: 600, 171: 600, 172: 600, 173: 600, 174: 600, 175: 600, 177: 600, 178: 600,
-    179: 600, 180: 600, 182: 600, 183: 600, 184: 600, 185: 600, 186: 600, 187: 600,
-    188: 600, 189: 600, 191: 600, 193: 600, 194: 600, 195: 600, 196: 600, 197: 600,
-    198: 600, 199: 600, 200: 600, 202: 600, 203: 600, 205: 600, 206: 600, 207: 600,
-    208: 600, 225: 600, 227: 600, 232: 600, 233: 600, 234: 600, 235: 600, 241: 600,
-    245: 600, 248: 600, 249: 600, 250: 600, 251: 600,
-}
+# Courier is monospace: every glyph is 600 units wide.
+COURIER_WIDTHS: dict[int, int] = {b: 600 for b in range(0x20, 0x100)}
 
 
-# Helvetica-Oblique uses the same advance widths as Helvetica (the
-# oblique face is a slanted rendering of the same outlines, not a
-# redrawn typeface). Alias rather than duplicate.
+# Helvetica-Oblique shares Helvetica's advance widths.
 _WIDTH_TABLES: dict[str, dict[int, int]] = {
     "Helvetica": HELVETICA_WIDTHS,
     "Helvetica-Bold": HELVETICA_BOLD_WIDTHS,
@@ -109,9 +108,69 @@ _WIDTH_TABLES: dict[str, dict[int, int]] = {
 SUPPORTED_FONTS: tuple[str, ...] = tuple(_WIDTH_TABLES)
 
 
-# Fallback width for any character whose code isn't in the table. Picked
-# to be the width of a typical lowercase letter — better to slightly
-# over-wrap than to underestimate and overflow the column.
+# --- Unicode → WinAnsi byte mapping ---------------------------------------
+
+# Typographic punctuation block: Unicode codepoint → WinAnsi byte. These
+# are the chars that get remapped from the U+2000-U+20FF range into the
+# WinAnsi 0x80..0x9F range. Without this mapping these codepoints would
+# have no representation in WinAnsi output.
+_UNICODE_TO_WINANSI_PUNCT: dict[int, int] = {
+    0x20AC: 0x80,  # €
+    0x201A: 0x82,  # ‚
+    0x0192: 0x83,  # ƒ
+    0x201E: 0x84,  # „
+    0x2026: 0x85,  # …
+    0x2020: 0x86,  # †
+    0x2021: 0x87,  # ‡
+    0x02C6: 0x88,  # ˆ
+    0x2030: 0x89,  # ‰
+    0x0160: 0x8A,  # Š
+    0x2039: 0x8B,  # ‹
+    0x0152: 0x8C,  # Œ
+    0x017D: 0x8E,  # Ž
+    0x2018: 0x91,  # '
+    0x2019: 0x92,  # '
+    0x201C: 0x93,  # "
+    0x201D: 0x94,  # "
+    0x2022: 0x95,  # •
+    0x2013: 0x96,  # –
+    0x2014: 0x97,  # —
+    0x02DC: 0x98,  # ˜
+    0x2122: 0x99,  # ™
+    0x0161: 0x9A,  # š
+    0x203A: 0x9B,  # ›
+    0x0153: 0x9C,  # œ
+    0x017E: 0x9E,  # ž
+    0x0178: 0x9F,  # Ÿ
+}
+
+
+# Bytes that exist in WinAnsi but where bytes 0x81, 0x8D, 0x8F, 0x90, 0x9D
+# are undefined. Map them to ? for safety.
+_UNDEFINED_WINANSI_BYTES: frozenset[int] = frozenset({0x81, 0x8D, 0x8F, 0x90, 0x9D})
+
+
+def to_winansi_byte(codepoint: int) -> int:
+    """Map a Unicode codepoint to its WinAnsi byte position.
+
+    - ASCII (0x00..0x7F): identity.
+    - Typographic punctuation (em dash, curly quotes…): remapped into 0x80..0x9F.
+    - Latin-1 upper half (0xA0..0xFF): identity.
+    - Anything else (or an undefined WinAnsi slot): falls back to ord('?').
+    """
+    if codepoint < 0x80:
+        return codepoint
+    if codepoint in _UNICODE_TO_WINANSI_PUNCT:
+        return _UNICODE_TO_WINANSI_PUNCT[codepoint]
+    if 0xA0 <= codepoint <= 0xFF:
+        return codepoint
+    return ord("?")
+
+
+# --- Width lookups --------------------------------------------------------
+
+# Fallback width for any glyph not in the table. Picked to be a typical
+# lowercase letter so over-wrap is more likely than overflow.
 _FALLBACK_WIDTH = 500
 
 
@@ -125,15 +184,21 @@ def _table_for(font: str) -> dict[int, int]:
 
 
 def char_width(codepoint: int, font: str, size: float) -> float:
-    """Return the width of one character, in points, at the given font size."""
-    wx = _table_for(font).get(codepoint, _FALLBACK_WIDTH)
+    """Return the rendered width of one character (Unicode codepoint), in points."""
+    byte = to_winansi_byte(codepoint)
+    if byte in _UNDEFINED_WINANSI_BYTES:
+        return 0.0
+    wx = _table_for(font).get(byte, _FALLBACK_WIDTH)
     return (wx / 1000.0) * size
 
 
 def text_width(text: str, font: str, size: float) -> float:
-    """Return the rendered width of ``text``, in points, at the given font size."""
+    """Return the rendered width of ``text``, in points."""
     table = _table_for(font)
     total = 0
     for ch in text:
-        total += table.get(ord(ch), _FALLBACK_WIDTH)
+        byte = to_winansi_byte(ord(ch))
+        if byte in _UNDEFINED_WINANSI_BYTES:
+            continue
+        total += table.get(byte, _FALLBACK_WIDTH)
     return (total / 1000.0) * size
