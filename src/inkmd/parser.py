@@ -1135,7 +1135,93 @@ def _try_bare_autolink(text: str, start: int) -> tuple["AutoLink", int] | None:
             email = text[start:end]
             return AutoLink(url="mailto:" + email), end
 
+    # 4. Bare host.tld/path — extends GFM with a useful real-world case.
+    # `linkedin.com/in/dylanmoir`, `github.com/eagredev` and similar
+    # should be clickable, but bare hostnames *without* a path stay as
+    # text to avoid false positives like "e.g." or "Inc." Capitalised
+    # first letter is allowed since some real domains use it (rare).
+    if start < len(text) and text[start] in _HOST_CHARS:
+        end = _scan_bare_host_with_path(text, start)
+        if end is not None:
+            url = "http://" + text[start:end]
+            return AutoLink(url=url), end
+
     return None
+
+
+# Characters allowed in a hostname label (RFC 1035-ish).
+_HOST_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-"
+)
+
+
+def _scan_bare_host_with_path(text: str, start: int) -> int | None:
+    """Scan a host.tld/path autolink.
+
+    Requires: one or more dotted DNS-style labels, last one a TLD of
+    2+ alpha chars, followed immediately by '/' and a path. The path
+    requirement avoids false positives like 'e.g.' or 'Mr.Smith'.
+    Returns the end index, or None.
+    """
+    n = len(text)
+    if start >= n or text[start] not in _HOST_CHARS:
+        return None
+    # Walk labels.
+    i = start
+    saw_dot = False
+    last_label_start = start
+    while i < n and text[i] in _HOST_CHARS:
+        i += 1
+    if i == start:
+        return None
+    # We now expect '.' to start the next label.
+    while i < n and text[i] == ".":
+        if i + 1 >= n or text[i + 1] not in _HOST_CHARS:
+            break
+        i += 1  # past the dot
+        saw_dot = True
+        last_label_start = i
+        while i < n and text[i] in _HOST_CHARS:
+            i += 1
+    if not saw_dot:
+        return None
+    # Last label must be a TLD of 2+ alpha chars (no digits, no hyphens).
+    tld = text[last_label_start:i]
+    if len(tld) < 2 or not tld.isalpha():
+        return None
+    # Must be followed by '/' (path requirement).
+    if i >= n or text[i] != "/":
+        return None
+    # Scan the path body using the URL scanner.
+    return _scan_url_body_after_host(text, i)
+
+
+def _scan_url_body_after_host(text: str, start: int) -> int:
+    """Scan path/query/fragment portion of a URL starting at ``start``
+    (which points at the first '/' after the host).
+
+    Trims trailing punctuation and balances parens like _scan_url_body.
+    """
+    n = len(text)
+    i = start
+    paren_depth = 0
+    while i < n and text[i] in _URL_BODY_CHARS:
+        if text[i] == "(":
+            paren_depth += 1
+        elif text[i] == ")":
+            if paren_depth == 0:
+                break
+            paren_depth -= 1
+        i += 1
+    while i > start + 1 and text[i - 1] in _BARE_URL_TRAILING_PUNCT:
+        i -= 1
+    # Trim trailing unbalanced ')'.
+    closes = sum(1 for c in text[start:i] if c == ")")
+    opens = sum(1 for c in text[start:i] if c == "(")
+    while i > start and closes > opens and text[i - 1] == ")":
+        i -= 1
+        closes -= 1
+    return i
 
 
 def _scan_url_body(text: str, start: int) -> int | None:
