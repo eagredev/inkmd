@@ -378,10 +378,32 @@ def text_pdf(text: str, page_size: str = "letter") -> bytes:
 def _styled_page_content_stream(page: Page) -> bytes:
     """Build a content stream for a page of ``StyledLine`` records.
 
-    Each run is positioned absolutely via Tm; font switches emit a Tf
-    only when font or size actually changes (cheaper output bytes).
+    Shapes (background rectangles, blockquote rules) are drawn first so
+    text overlays them cleanly. Each text run is positioned absolutely
+    via Tm; font switches emit a Tf only when font or size actually
+    changes (cheaper output bytes).
     """
-    parts = [b"BT"]
+    parts: list[bytes] = []
+    # 1. Shapes — drawn before text. Each one sets the fill colour, emits
+    #    a rectangle, and fills it. We track the current fill colour so
+    #    consecutive shapes with the same colour skip the redundant ``rg``.
+    current_rg: tuple[float, float, float] | None = None
+    for shape in page.shapes:
+        if shape.fill != current_rg:
+            r, g, b = shape.fill
+            parts.append(f"{_fmt(r)} {_fmt(g)} {_fmt(b)} rg".encode("ascii"))
+            current_rg = shape.fill
+        parts.append(
+            f"{_fmt(shape.x)} {_fmt(shape.y)} "
+            f"{_fmt(shape.width)} {_fmt(shape.height)} re f".encode("ascii")
+        )
+    # Reset to black so text fill is correct (text inherits the current
+    # nonstroking colour by default).
+    if current_rg is not None:
+        parts.append(b"0 0 0 rg")
+
+    # 2. Text.
+    parts.append(b"BT")
     current_font = None
     current_size = None
     for line in page.lines:

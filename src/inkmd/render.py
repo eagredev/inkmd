@@ -15,7 +15,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from inkmd.ast import (
+    BlockQuote,
     Code,
+    CodeBlock,
     Document,
     Emphasis,
     Heading,
@@ -110,6 +112,17 @@ class RenderedBlock:
     marker_runs: tuple[Run, ...] = ()
     marker_x: float = 0.0
     compact: bool = False  # if True, suppress inter-block paragraph_spacing before this block
+    # Blockquote support: if set, draw a thin vertical bar at this x for
+    # every line of this block.
+    left_rule_x: float | None = None
+    left_rule_fill: tuple[float, float, float] = (0.6, 0.6, 0.6)
+    # Code block support: if set, draw a single background rectangle
+    # spanning this block's full vertical extent (top of first line to
+    # bottom of last line) with horizontal padding ``bg_padding``.
+    background_fill: tuple[float, float, float] | None = None
+    bg_padding: float = 4.0
+    # Code blocks set this to suppress wrapping (lines are preserved as-is).
+    preserve_lines: bool = False
 
 
 # Layout constants for lists. ``LIST_INDENT_PT`` is the horizontal step per
@@ -121,6 +134,16 @@ TIGHT_ITEM_SPACING = 0.0
 LOOSE_ITEM_SPACING = 4.0
 LIST_BLOCK_SPACE_ABOVE = 3.0
 LIST_BLOCK_SPACE_BELOW = 3.0
+
+# Blockquote layout.
+QUOTE_INDENT_PT = 16.0          # how far the body is pushed past the rule
+QUOTE_RULE_OFFSET_PT = 4.0      # x offset of the rule inside the indent
+QUOTE_RULE_FILL = (0.7, 0.7, 0.7)
+
+# Code block layout.
+CODE_BG_FILL = (0.95, 0.95, 0.95)
+CODE_PADDING_PT = 4.0
+CODE_FONT_SIZE = 10.5
 
 
 def render_document(doc: Document, family: FontFamily = DEFAULT_FAMILY) -> list[RenderedBlock]:
@@ -139,7 +162,56 @@ def _render_block(block, family: FontFamily, depth: int) -> list[RenderedBlock]:
         return [RenderedBlock(runs=tuple(_render_paragraph(block, family)))]
     if isinstance(block, List):
         return _render_list(block, family, depth)
+    if isinstance(block, BlockQuote):
+        return _render_blockquote(block, family, depth)
+    if isinstance(block, CodeBlock):
+        return [_render_code_block(block, family)]
     raise NotImplementedError(f"render: unsupported block {type(block).__name__}")
+
+
+def _render_blockquote(quote: BlockQuote, family: FontFamily, depth: int) -> list[RenderedBlock]:
+    """Flatten a BlockQuote: render inner blocks with extra indent and a left rule."""
+    inner: list[RenderedBlock] = []
+    for child in quote.blocks:
+        inner.extend(_render_block(child, family, depth))
+    out: list[RenderedBlock] = []
+    for cb in inner:
+        out.append(
+            RenderedBlock(
+                runs=cb.runs,
+                space_above=cb.space_above,
+                space_below=cb.space_below,
+                body_indent=cb.body_indent + QUOTE_INDENT_PT,
+                marker_runs=cb.marker_runs,
+                marker_x=cb.marker_x + QUOTE_INDENT_PT,
+                compact=cb.compact,
+                left_rule_x=QUOTE_RULE_OFFSET_PT,
+                left_rule_fill=QUOTE_RULE_FILL,
+                background_fill=cb.background_fill,
+                bg_padding=cb.bg_padding,
+                preserve_lines=cb.preserve_lines,
+            )
+        )
+    return out
+
+
+def _render_code_block(cb: CodeBlock, family: FontFamily) -> RenderedBlock:
+    """Lower a CodeBlock to a RenderedBlock with monospace + background fill."""
+    # Each line becomes a run with embedded newline marker. The paginator
+    # uses `preserve_lines=True` to split on '\n' rather than wrapping.
+    runs = tuple(
+        Run(text=cb.content, font=family.monospace, size=CODE_FONT_SIZE)
+        for _ in [None]
+    )
+    return RenderedBlock(
+        runs=runs,
+        space_above=6.0,
+        space_below=6.0,
+        body_indent=CODE_PADDING_PT,
+        background_fill=CODE_BG_FILL,
+        bg_padding=CODE_PADDING_PT,
+        preserve_lines=True,
+    )
 
 
 def _render_list(lst: List, family: FontFamily, depth: int) -> list[RenderedBlock]:
