@@ -16,6 +16,17 @@ Background: in milestone 0.0.3, the em dash rendered as a blank glyph because th
 
 A `pdftoppm`-based rasterising test could automate some of this in future, but the cost of building it well is high and the cost of an opened-the-PDF-and-looked check is ~30 seconds per milestone. We keep this manual until the project ships v0.1.
 
+## Validator coverage notes
+
+Not every tool catches every kind of bug.
+
+- **`file <pdf>`**: checks header and trailer markers. Tells you it's a valid PDF *file*. Catches structural-framing damage. Won't notice anything wrong with content streams or rendering.
+- **`qpdf --check <pdf>`**: validates the object graph, xref offsets, stream encodings, encryption integrity. Does *not* validate content-stream operator arity. (Demonstrated during 0.0.3.1: a `Tm` operator with 2 args instead of 6 passed `qpdf --check` cleanly but rendered as a blank page.)
+- **`pdftotext <pdf> -`**: parses the content stream more deeply and emits warnings like `Syntax Error (409): Too few (2) args to 'Tm' operator`. Catches operator-arity bugs `qpdf` misses. Strongly preferred for catching emission mistakes — run it on every sample PDF.
+- **Viewer rendering**: catches encoding-vs-encoding mismatches, font-metric vs renderer-glyph mismatches, and any visual oddity that the parsers tolerate. Irreplaceable.
+
+Rule of thumb: run `pdftotext <pdf> -` on every sample. If it reports any `Syntax Error`, the PDF is malformed even if `qpdf --check` is happy.
+
 ## Per-milestone checklists
 
 ### Milestone 0.0.1 — hello-world PDF
