@@ -509,7 +509,12 @@ def paginate_runs(
         body_column_width = column_width - parts.body_indent
 
         if parts.preserve_lines:
-            wrapped = _split_preserved_lines(parts.runs)
+            # Code-block wrap column: left is body_indent (already in
+            # body_column_width); also reserve bg_padding of right
+            # padding so the rightmost glyph doesn't crash into the
+            # background fill edge.
+            code_column = body_column_width - parts.bg_padding
+            wrapped = _split_preserved_lines(parts.runs, code_column)
         else:
             wrapped = wrap_runs(parts.runs, body_column_width) if parts.runs else [[]]
 
@@ -681,17 +686,105 @@ def _link_decorations(
     return out
 
 
-def _split_preserved_lines(runs: list[Run]) -> list[list[Run]]:
-    """Split runs on embedded ``\\n`` for code blocks (no word wrapping)."""
-    lines: list[list[Run]] = []
+def _split_preserved_lines(
+    runs: list[Run], column_width: float | None = None
+) -> list[list[Run]]:
+    """Split runs on embedded ``\\n`` for code blocks, then soft-wrap.
+
+    Each source line (delimited by ``\\n``) is preserved as a logical
+    unit so whitespace within it stays intact. If ``column_width`` is
+    set and a source line's rendered width exceeds it, the line is
+    soft-wrapped at the last whitespace before the overflow point;
+    if no whitespace exists, the line is hard-broken at the column
+    boundary. Continuation lines are flat (no indent change) so they
+    align with the original line's left edge under the same body_indent.
+    """
+    source_lines: list[list[Run]] = []
     current: list[Run] = []
     for run in runs:
         parts = run.text.split("\n")
         for i, part in enumerate(parts):
             if i > 0:
-                lines.append(current)
+                source_lines.append(current)
                 current = []
             if part:
                 current.append(Run(text=part, font=run.font, size=run.size))
-    lines.append(current)
-    return lines
+    source_lines.append(current)
+
+    if column_width is None:
+        return source_lines
+
+    wrapped: list[list[Run]] = []
+    for line in source_lines:
+        wrapped.extend(_wrap_preserved_line(line, column_width))
+    return wrapped
+
+
+def _wrap_preserved_line(line: list[Run], column_width: float) -> list[list[Run]]:
+    """Wrap a single preserved-whitespace line at the column boundary.
+
+    Walks the line char-by-char, tracking accumulated width. When width
+    exceeds column_width, break at the last whitespace seen if any;
+    otherwise hard-break at the current position. Continues until the
+    whole line is consumed.
+    """
+    if not line:
+        return [[]]
+    # Fast path: does the whole line already fit?
+    total = sum(text_width(r.text, r.font, r.size) for r in line)
+    if total <= column_width:
+        return [line]
+
+    # Flatten the line into (char, font, size) tuples so we can walk
+    # codepoint-by-codepoint while tracking width and run boundaries.
+    chars: list[tuple[str, str, float]] = []
+    for r in line:
+        for ch in r.text:
+            chars.append((ch, r.font, r.size))
+
+    def make_runs(start: int, end: int) -> list[Run]:
+        out: list[Run] = []
+        buf = ""
+        cur_font = chars[start][1]
+        cur_size = chars[start][2]
+        for ch, font, size in chars[start:end]:
+            if font != cur_font or size != cur_size:
+                if buf:
+                    out.append(Run(text=buf, font=cur_font, size=cur_size))
+                buf = ch
+                cur_font = font
+                cur_size = size
+            else:
+                buf += ch
+        if buf:
+            out.append(Run(text=buf, font=cur_font, size=cur_size))
+        return out
+
+    wrapped: list[list[Run]] = []
+    start = 0
+    i = 0
+    last_space = -1
+    width_so_far = 0.0
+    while i < len(chars):
+        ch, font, size = chars[i]
+        w = text_width(ch, font, size)
+        if width_so_far + w > column_width and i > start:
+            # Break point: prefer last_space if found within this segment.
+            if last_space > start:
+                wrapped.append(make_runs(start, last_space))
+                start = last_space + 1  # skip the whitespace itself
+            else:
+                # Hard break — no whitespace available.
+                wrapped.append(make_runs(start, i))
+                start = i
+            i = start
+            last_space = -1
+            width_so_far = 0.0
+            continue
+        if ch == " ":
+            last_space = i
+        width_so_far += w
+        i += 1
+    if start < len(chars):
+        wrapped.append(make_runs(start, len(chars)))
+    return wrapped or [[]]
