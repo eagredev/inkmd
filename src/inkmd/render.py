@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from inkmd.ast import Document, Inline, Paragraph, Text
+from inkmd.ast import Code, Document, Emphasis, Inline, Paragraph, Strong, Text
 from inkmd.layout import Run
 
 
@@ -85,12 +85,47 @@ def _render_paragraph(p: Paragraph, family: FontFamily) -> list[Run]:
     """Turn a Paragraph's inlines into a list of Runs."""
     runs: list[Run] = []
     for inline in p.inlines:
-        runs.extend(_render_inline(inline, family))
+        runs.extend(_render_inline(inline, family, font=family.regular))
     return runs
 
 
-def _render_inline(inline: Inline, family: FontFamily) -> list[Run]:
-    """Lower one inline node to one or more runs."""
+def _render_inline(
+    inline: Inline, family: FontFamily, font: str
+) -> list[Run]:
+    """Lower one inline node to one or more runs.
+
+    ``font`` is the *current* font (carried through nesting) so that an
+    Emphasis inside a Strong picks the family's ``bold_italic`` face
+    instead of dropping back to plain italic. v0.0.5 supports one level
+    of nesting per branch (bold → bold-italic, italic → bold-italic);
+    deeper nesting falls back to bold-italic too.
+    """
     if isinstance(inline, Text):
-        return [Run(text=inline.content, font=family.regular, size=BODY_SIZE)]
+        return [Run(text=inline.content, font=font, size=BODY_SIZE)]
+
+    if isinstance(inline, Code):
+        return [Run(text=inline.content, font=family.monospace, size=BODY_SIZE)]
+
+    if isinstance(inline, Strong):
+        next_font = (
+            family.bold_italic if font == family.italic else family.bold
+        )
+        return _flatten(inline.inlines, family, next_font)
+
+    if isinstance(inline, Emphasis):
+        next_font = (
+            family.bold_italic if font == family.bold else family.italic
+        )
+        return _flatten(inline.inlines, family, next_font)
+
     raise NotImplementedError(f"render: unsupported inline {type(inline).__name__}")
+
+
+def _flatten(
+    inlines: tuple[Inline, ...], family: FontFamily, font: str
+) -> list[Run]:
+    """Render a tuple of inline children, carrying the active font through."""
+    runs: list[Run] = []
+    for inline in inlines:
+        runs.extend(_render_inline(inline, family, font=font))
+    return runs

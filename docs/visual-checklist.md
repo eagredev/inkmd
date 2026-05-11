@@ -104,10 +104,22 @@ Sample: `/tmp/md-first.pdf` from `inkmd.compile(md_text)` where `md_text` contai
 - [ ] Em dashes, curly quotes, ellipses still render correctly (regression from 0.0.3.1).
 - [ ] `inkmd.compile(md_text)` and `inkmd.render_file(in_path, out_path)` both work without raising.
 
+### Milestone 0.0.5 — inline formatting (bold / italic / code)
+
+Sample: `/tmp/md-formatted-times.pdf` (or `-helvetica.pdf`) from `inkmd.compile()` with input containing `**bold**`, `*italic*`, `` `code` `` spans.
+
+- [ ] `**bold**` text renders in **bold weight** with no asterisks visible.
+- [ ] `*italic*` text renders in *italic* with no asterisks visible.
+- [ ] `` `code` `` text renders in monospace (Courier) with no backticks visible.
+- [ ] Mixed formatting on one line (plain, then bold, then italic, then code) shows clean font transitions with no overlap.
+- [ ] Backticked content blocks internal formatting: `` `**not bold**` `` renders the asterisks literally in monospace, *as designed*.
+- [ ] Unmatched delimiters (`**` with no closer) appear as literal text — parser is forgiving, not strict.
+- [ ] Known limitation in 0.0.5: nested same-type emphasis like `**bold *italic* inside**` parses but doesn't render the inner italic. Acceptable for 0.0.5; fixed in 0.0.6.
+
 ## Pending milestones — append checklists here when the milestone lands
 
-- [ ] **0.0.5 (inline formatting)**: when the input is `**bold**`, the output renders as bold (no stray asterisks visible). When `*italic*`, it renders italic. When `` `code` ``, it renders in Courier.
-- [ ] **0.0.6 (block constructs)**: `# Heading` renders larger and bold; `- item` renders as a bulleted list; `> quote` renders as a blockquote with indent.
+- [ ] **0.0.6 (nested emphasis + escapes)**: `**bold *italic* end**` renders the inner italic span correctly. `\*not emphasised\*` renders the asterisks as literal text. `__bold__` and `_italic_` work alongside the asterisk variants.
+- [ ] **0.0.7 (block constructs)**: `# Heading` renders larger and bold; `- item` renders as a bulleted list; `> quote` renders as a blockquote with indent.
 
 ## Known limitations (NOT bugs)
 

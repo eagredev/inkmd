@@ -164,3 +164,78 @@ def test_compile_long_input_paginates(tmp_path: Path):
         m = re.search(r"(\d+)\s+page", result.stdout)
         assert m is not None
         assert int(m.group(1)) >= 2
+
+
+# --- Inline formatting end-to-end (0.0.5) ---------------------------------
+
+
+def test_compile_bold_uses_bold_font_slot():
+    """**bold** input should produce a font switch to F2 (Helvetica-Bold)."""
+    out = inkmd.compile("plain **bold** plain")
+    # F2 = Helvetica-Bold in our slot table.
+    assert b"/F2 12 Tf" in out
+
+
+def test_compile_italic_uses_oblique_font_slot():
+    out = inkmd.compile("plain *italic* plain")
+    # F3 = Helvetica-Oblique.
+    assert b"/F3 12 Tf" in out
+
+
+def test_compile_code_uses_courier_font_slot():
+    out = inkmd.compile("plain `code` plain")
+    # F4 = Courier.
+    assert b"/F4 12 Tf" in out
+
+
+def test_compile_strips_strong_delimiters_from_output():
+    """The literal ** delimiters must NOT appear as content in the stream."""
+    out = inkmd.compile("**bold**")
+    # The word should be present but the asterisks should not be drawn as text.
+    assert b"bold" in out
+    # No '**' inside a Tj/TJ string operator. Crude but effective check:
+    # search for the byte sequence '**' anywhere in the stream area
+    # (PDF structural bytes like 'endobj' don't contain '**').
+    assert b"**" not in out
+
+
+def test_compile_strips_emphasis_delimiters():
+    out = inkmd.compile("plain *italic* plain")
+    assert b"italic" in out
+    # The asterisks should not appear as literal output.
+    # Look inside the content stream for any '(...*...)' substring.
+    import re
+    streams = re.findall(rb"stream\n(.*?)\nendstream", out, re.DOTALL)
+    for s in streams:
+        assert b"*" not in s, f"asterisk leaked into stream: {s!r}"
+
+
+def test_compile_strips_code_delimiters():
+    out = inkmd.compile("see `print()` here")
+    import re
+    streams = re.findall(rb"stream\n(.*?)\nendstream", out, re.DOTALL)
+    # No backticks in the visible stream content.
+    for s in streams:
+        assert b"`" not in s
+
+
+def test_compile_times_family_uses_times_bold_for_strong():
+    out = inkmd.compile("**bold**", family="times")
+    # F6 = Times-Bold.
+    assert b"/F6 12 Tf" in out
+
+
+def test_compile_times_family_uses_times_italic_for_emphasis():
+    out = inkmd.compile("*italic*", family="times")
+    # F7 = Times-Italic.
+    assert b"/F7 12 Tf" in out
+
+
+def test_compile_with_no_formatting_does_not_emit_bold_or_italic_font_switches():
+    """Plain text shouldn't pull F2/F3/F4 into the stream operators."""
+    out = inkmd.compile("just plain text with no formatting.")
+    # F1 should appear (body); F2/F3/F4 shouldn't be selected by Tf.
+    assert b"/F1 12 Tf" in out
+    assert b"/F2 12 Tf" not in out
+    assert b"/F3 12 Tf" not in out
+    assert b"/F4 12 Tf" not in out
