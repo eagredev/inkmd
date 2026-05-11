@@ -1,9 +1,8 @@
-"""Minimum PDF emitter — milestone 0.0.1.
+"""PDF emitter.
 
-Produces a single-page PDF containing fixed text in Helvetica 12pt. No
-markdown, no layout, no fonts beyond Helvetica. This module exists to
-prove the bottom layer (byte-level PDF emission, xref construction,
-deterministic output) works before anything else is built on top of it.
+Milestone 0.0.1 introduced single-page emission (``hello_world_pdf``).
+Milestone 0.0.2 adds multi-page emission (``text_pdf``) and a content-
+stream builder for arbitrary positioned text runs.
 
 The educational comments will be trimmed once the team is comfortable
 reading PDF bytes; for now they document the why of each piece.
@@ -12,6 +11,8 @@ reading PDF bytes; for now they document the why of each piece.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+
+from inkmd.layout import Page, paginate, split_paragraphs
 
 
 # PDF uses points throughout. 1 inch = 72 points. A4 and Letter are the
@@ -179,3 +180,89 @@ def _escape_pdf_string(s: str) -> str:
     else passes through as-is in v0.1's ASCII-only world.
     """
     return s.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+def _page_content_stream(page: Page) -> bytes:
+    """Build a content stream that draws every line in ``page``.
+
+    We use absolute positioning (``Td`` after a ``Tm`` reset) for each
+    line rather than the relative ``TL``/``T*`` shortcuts, because the
+    line spacing inside a paragraph and between paragraphs may differ
+    once headings and lists arrive in later milestones. Absolute is
+    boring but easy to extend.
+    """
+    parts = [b"BT"]
+    current_font = None
+    current_size = None
+    for line in page.lines:
+        # Tf only when the font or size actually changes.
+        if line.font != current_font or line.size != current_size:
+            parts.append(f"/F1 {line.size} Tf".encode("ascii"))
+            current_font = line.font
+            current_size = line.size
+        # Tm resets the text matrix to identity, then we move to (x, y).
+        # Using Tm rather than Td between lines avoids accumulated
+        # offsets when text on a page has irregular spacing.
+        parts.append(f"1 0 0 1 {line.x} {line.y} Tm".encode("ascii"))
+        safe = _escape_pdf_string(line.text)
+        parts.append(f"({safe}) Tj".encode("ascii"))
+    parts.append(b"ET")
+    return b"\n".join(parts)
+
+
+def text_pdf(text: str, page_size: str = "letter") -> bytes:
+    """Emit a (possibly multi-page) PDF from a plain-text input.
+
+    Paragraphs are separated by blank lines; within a paragraph, line
+    breaks are collapsed to spaces. Text is wrapped to fit within the
+    column (page width minus 1-inch margins) and paginated. Helvetica
+    12pt is the only font in milestone 0.0.2.
+    """
+    width, height = PAGE_SIZES[page_size]
+    paragraphs = split_paragraphs(text)
+    pages = paginate(paragraphs, page_width=width, page_height=height)
+
+    # Edge case: input was all whitespace. Emit an empty page so the
+    # output is still a valid PDF.
+    if not pages:
+        pages = [Page(lines=(), width=width, height=height)]
+
+    writer = PDFWriter()
+
+    # Reserve object slots for catalog, pages tree, and the font dict.
+    # Pages and their content streams take the remaining numbers.
+    # Numbering (5 fixed objects + 2 per page) keeps cross-refs simple.
+    catalog_n = 1
+    pages_tree_n = 2
+    font_n = 3
+
+    n_pages = len(pages)
+    page_obj_nums = [4 + i * 2 for i in range(n_pages)]
+    contents_obj_nums = [5 + i * 2 for i in range(n_pages)]
+
+    # Catalog.
+    writer.add_object(f"<< /Type /Catalog /Pages {pages_tree_n} 0 R >>".encode("ascii"))
+
+    # Pages tree.
+    kids = " ".join(f"{n} 0 R" for n in page_obj_nums)
+    writer.add_object(
+        f"<< /Type /Pages /Kids [{kids}] /Count {n_pages} >>".encode("ascii")
+    )
+
+    # Font dict (shared by every page).
+    writer.add_object(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+
+    # Per-page objects: Page + Contents stream, in lockstep.
+    for page, page_n, contents_n in zip(pages, page_obj_nums, contents_obj_nums):
+        page_obj = (
+            f"<< /Type /Page /Parent {pages_tree_n} 0 R "
+            f"/MediaBox [0 0 {page.width} {page.height}] "
+            f"/Resources << /Font << /F1 {font_n} 0 R >> >> "
+            f"/Contents {contents_n} 0 R >>"
+        ).encode("ascii")
+        writer.add_object(page_obj)
+
+        stream_body = _page_content_stream(page) if page.lines else b"BT\nET"
+        writer.add_object(_content_stream(stream_body))
+
+    return writer.serialise(root_obj_num=catalog_n)
