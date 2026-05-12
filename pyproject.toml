@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "inkmd"
-version = "0.0.0"
+version = "0.1.0"
 description = "Pure-Python markdown to PDF compiler. Zero system dependencies. Deterministic."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -14,7 +14,7 @@ authors = [
 ]
 keywords = ["markdown", "pdf", "compiler", "deterministic", "zero-dependencies"]
 classifiers = [
-    "Development Status :: 1 - Planning",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",

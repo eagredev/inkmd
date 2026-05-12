@@ -79,7 +79,7 @@ These are documented v0.1 constraints, not bugs — see the [roadmap](README.md#
 
 ### Tests
 
-497 tests across 23 files, all passing. End-to-end PDF validity verified via `qpdf --check`.
+501 tests across 24 files, all passing. End-to-end PDF validity verified via `qpdf --check`.
 
 [Unreleased]: https://github.com/eagredev/inkmd/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/eagredev/inkmd/releases/tag/v0.1.0
