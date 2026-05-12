@@ -417,7 +417,18 @@ def _render_table(table: Table, family: FontFamily) -> RenderedBlock:
 
     natural_sum = sum(natural)
     if natural_sum <= content_budget or natural_sum == 0:
-        content_widths = list(natural)
+        # Add small slack to each column's natural width so token-by-token
+        # wrap doesn't trigger on borderline-fit content (token widths
+        # measured individually sum slightly higher than the joined-string
+        # natural width because kerning across word boundaries is lost
+        # when splitting on whitespace). 2pt is generous; the table still
+        # fits because we only add when budget allows.
+        slack = 2.0
+        slack_total = slack * n_cols
+        if natural_sum + slack_total <= content_budget:
+            content_widths = [w + slack for w in natural]
+        else:
+            content_widths = list(natural)
     else:
         content_widths = _shrink_to_budget(natural, content_budget, min_widths)
     # Column widths include left + right padding.
