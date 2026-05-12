@@ -175,6 +175,86 @@ TABLE_GRID_WIDTH = 0.5
 TABLE_HEADER_BG = (0.95, 0.95, 0.95)
 TABLE_AVAILABLE_WIDTH = 468.0  # letter width minus default margins
 TABLE_LINE_HEIGHT_RATIO = 1.2
+# Minimum content width per column so the proportional-shrink path
+# can't squeeze short columns to near-zero, jamming text against
+# borders. ~3em at body size (12pt × ~1.75).
+TABLE_MIN_CONTENT_WIDTH = 21.0
+
+
+def _widest_token_width(
+    header_runs: list[Run],
+    body_runs: list[list[list[Run]]],
+    col_idx: int,
+) -> float:
+    """Width of the widest single non-whitespace token in column ``col_idx``.
+
+    Used as the column's lower-bound content width — anything below
+    this can't wrap the longest word and will overflow visually. Header
+    counts as one of the rows for this purpose. Returns at least 1.0
+    to avoid zero-width columns when a column is fully empty.
+    """
+    widest = 1.0
+    def measure(runs: list[Run]) -> float:
+        # Split each run's text on whitespace, measure each token, max.
+        col_widest = 0.0
+        for r in runs:
+            for token in r.text.split():
+                w = text_width(token, r.font, r.size)
+                if w > col_widest:
+                    col_widest = w
+        return col_widest
+    widest = max(widest, measure(header_runs))
+    for row in body_runs:
+        widest = max(widest, measure(row[col_idx]))
+    return widest
+
+
+def _shrink_to_budget(
+    natural: list[float], budget: float, min_widths: list[float]
+) -> list[float]:
+    """Distribute ``budget`` across columns proportionally, enforcing
+    per-column ``min_widths`` (typically widest-token-width per column).
+
+    Algorithm:
+      1. Compute the proportional share for each column.
+      2. Clamp any below its min to the min.
+      3. Recompute the remaining budget for unclamped columns and
+         redistribute proportionally. Iterate until stable.
+      4. If even the minima alone exceed the budget, fall back to plain
+         proportional — the table will overflow but at least each column
+         gets a fair share.
+    """
+    n = len(natural)
+    if n == 0:
+        return []
+    if sum(min_widths) > budget:
+        total = sum(natural) or 1.0
+        return [w * budget / total for w in natural]
+
+    natural_sum = sum(natural) or 1.0
+    widths = [w * budget / natural_sum for w in natural]
+    for _ in range(n + 1):
+        clamped_idx = [i for i, w in enumerate(widths) if w < min_widths[i]]
+        if not clamped_idx:
+            break
+        free = [i for i in range(n) if i not in set(clamped_idx)]
+        if not free:
+            # Every column is clamped — done.
+            for i in clamped_idx:
+                widths[i] = min_widths[i]
+            break
+        clamped_total = sum(min_widths[i] for i in clamped_idx)
+        remaining = budget - clamped_total
+        free_natural_sum = sum(natural[i] for i in free) or 1.0
+        new_widths = list(widths)
+        for i in clamped_idx:
+            new_widths[i] = min_widths[i]
+        for i in free:
+            new_widths[i] = natural[i] * remaining / free_natural_sum
+        if new_widths == widths:
+            break
+        widths = new_widths
+    return widths
 
 
 def render_document(doc: Document, family: FontFamily = DEFAULT_FAMILY) -> list[RenderedBlock]:
@@ -328,15 +408,18 @@ def _render_table(table: Table, family: FontFamily) -> RenderedBlock:
     available_total = TABLE_AVAILABLE_WIDTH
     padding_total = n_cols * 2 * TABLE_CELL_PADDING_X
     content_budget = available_total - padding_total
+
+    # Each column's minimum is the width of its widest single token —
+    # below that, wrapping can't help and the longest word overflows
+    # the cell. This is the only minimum the shrinker MUST respect.
+    min_widths = [_widest_token_width(header_runs[i], body_runs, i)
+                  for i in range(n_cols)]
+
     natural_sum = sum(natural)
     if natural_sum <= content_budget or natural_sum == 0:
         content_widths = list(natural)
-        # Distribute remaining space proportionally — but keep natural
-        # widths unless any cell needs more. Simplest: leave at natural.
     else:
-        # Shrink proportionally to fit.
-        scale = content_budget / natural_sum
-        content_widths = [w * scale for w in natural]
+        content_widths = _shrink_to_budget(natural, content_budget, min_widths)
     # Column widths include left + right padding.
     col_widths = [w + 2 * TABLE_CELL_PADDING_X for w in content_widths]
     # x positions: left edge of each column, relative to table left edge.
