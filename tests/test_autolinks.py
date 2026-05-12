@@ -47,7 +47,7 @@ def test_www_prefix_gets_http_added():
     inlines = _inlines("Site at www.example.com online.")
     assert inlines == (
         Text("Site at "),
-        AutoLink(url="http://www.example.com"),
+        AutoLink(url="http://www.example.com", text="www.example.com"),
         Text(" online."),
     )
 
@@ -262,7 +262,9 @@ def test_compile_email_autolink_emits_mailto_annotation():
 
 def test_bare_host_with_path_is_autolinked():
     inlines = _inlines("linkedin.com/in/dylanmoir")
-    assert inlines == (AutoLink(url="http://linkedin.com/in/dylanmoir"),)
+    assert inlines == (
+        AutoLink(url="http://linkedin.com/in/dylanmoir", text="linkedin.com/in/dylanmoir"),
+    )
 
 
 def test_bare_host_with_path_inline():

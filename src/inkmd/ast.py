@@ -65,8 +65,26 @@ class Link:
 
 @dataclass(frozen=True)
 class AutoLink:
-    """``<https://example.com>`` style autolink — URL is both target and display."""
+    """A bare URL, ``<url>``, or ``www.``-prefixed link.
+
+    ``url`` is the resolved destination (what a click follows — may be
+    prefixed with ``http://`` or ``mailto:`` if the source omitted one).
+    ``text`` is what to display — the literal characters from the source.
+
+    For ``<https://example.com>`` the two are identical. For a bare
+    ``www.commonmark.org`` the url is ``http://www.commonmark.org`` and
+    the text is ``www.commonmark.org``. For an email the url is
+    ``mailto:foo@bar.baz`` and the text is ``foo@bar.baz``.
+    """
     url: str
+    text: str = ""
+
+    def __post_init__(self) -> None:
+        # Default the display text to the resolved URL only when the
+        # caller did not supply one (covers existing tests that build
+        # AutoLink(url=...) directly).
+        if not self.text:
+            object.__setattr__(self, "text", self.url)
 
 
 Inline = Union[Text, Strong, Emphasis, Strikethrough, Code, Link, AutoLink]

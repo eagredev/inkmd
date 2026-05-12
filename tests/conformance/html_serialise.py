@@ -113,7 +113,7 @@ def render_inline(node) -> str:
             f"{render_inlines(node.inlines)}</a>"
         )
     if isinstance(node, AutoLink):
-        return f'<a href="{escape_url(node.url)}">{escape_html(node.url)}</a>'
+        return f'<a href="{escape_url(node.url)}">{escape_html(node.text)}</a>'
     raise TypeError(f"unknown inline node: {type(node).__name__}")
 
 
