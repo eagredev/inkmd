@@ -15,6 +15,7 @@ CommonMark-subset parser, hand-rolled. Two phases:
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass, field
 
 from inkmd.ast import (
@@ -936,11 +937,28 @@ def _try_table_row(line: str, n_cols: int) -> tuple[TableCell, ...] | None:
 
 # --- Inline parsing (CommonMark emphasis algorithm) ----------------------
 
-# ASCII punctuation per CommonMark §6.2.
+# ASCII punctuation per CommonMark §6.1 (backslash-escapable).
 _ASCII_PUNCT = frozenset("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
 
 # Characters that can be backslash-escaped per CommonMark §6.1.
 _ESCAPABLE = _ASCII_PUNCT
+
+
+def _is_punctuation(c: str) -> bool:
+    """Per CommonMark 0.31.2 §6.2, a punctuation character for emphasis
+    flanking is any ASCII punctuation OR any character in Unicode general
+    categories P* (punctuation) or S* (symbols).
+
+    The S* part is what makes currency symbols like ``$``, ``£``, ``€``,
+    ``¥`` count as punctuation — which means ``*$*alpha`` does NOT open
+    emphasis, even though ``*x*alpha`` does.
+    """
+    if not c:
+        return False
+    if c in _ASCII_PUNCT:
+        return True
+    cat = unicodedata.category(c)
+    return cat[0] in ("P", "S")
 
 
 @dataclass
@@ -1534,8 +1552,8 @@ def _flanking(ch: str, prev: str, nxt: str) -> tuple[bool, bool]:
     """
     prev_ws = prev.isspace() or prev == " "
     nxt_ws = nxt.isspace() or nxt == " "
-    prev_punct = prev in _ASCII_PUNCT
-    nxt_punct = nxt in _ASCII_PUNCT
+    prev_punct = _is_punctuation(prev)
+    nxt_punct = _is_punctuation(nxt)
 
     left_flanking = (not nxt_ws) and (not nxt_punct or prev_ws or prev_punct)
     right_flanking = (not prev_ws) and (not prev_punct or nxt_ws or nxt_punct)
