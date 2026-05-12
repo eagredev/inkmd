@@ -23,17 +23,24 @@ from inkmd.ast import (
     CodeBlock,
     Document,
     Emphasis,
+    HardBreak,
     Heading,
+    HtmlInline,
     Image,
+    Kbd,
     Link,
     List,
     ListItem,
+    Mark,
     Paragraph,
     Strikethrough,
     Strong,
+    Subscript,
+    Superscript,
     Table,
     Text,
     ThematicBreak,
+    Underline,
 )
 
 
@@ -126,6 +133,22 @@ def render_inline(node) -> str:
             f'<img src="{escape_url(node.url)}" alt="{escape_html(alt)}"'
             f"{title_attr} />"
         )
+    if isinstance(node, HtmlInline):
+        # CommonMark passes inline HTML through verbatim. Each
+        # recognised HTML construct emits the literal source bytes.
+        return node.raw
+    if isinstance(node, HardBreak):
+        return "<br />"
+    if isinstance(node, Subscript):
+        return f"<sub>{render_inlines(node.inlines)}</sub>"
+    if isinstance(node, Superscript):
+        return f"<sup>{render_inlines(node.inlines)}</sup>"
+    if isinstance(node, Underline):
+        return f"<u>{render_inlines(node.inlines)}</u>"
+    if isinstance(node, Mark):
+        return f"<mark>{render_inlines(node.inlines)}</mark>"
+    if isinstance(node, Kbd):
+        return f"<kbd>{render_inlines(node.inlines)}</kbd>"
     raise TypeError(f"unknown inline node: {type(node).__name__}")
 
 

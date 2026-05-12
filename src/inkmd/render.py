@@ -21,19 +21,26 @@ from inkmd.ast import (
     CodeBlock,
     Document,
     Emphasis,
+    HardBreak,
     Heading,
+    HtmlInline,
     Image,
     Inline,
+    Kbd,
     Link,
     List,
     ListItem,
+    Mark,
     Paragraph,
     Strikethrough,
     Strong,
+    Subscript,
+    Superscript,
     Table,
     TableCell,
     Text,
     ThematicBreak,
+    Underline,
 )
 from inkmd.fonts import text_width
 from inkmd.layout import Rect, Run, wrap_runs
@@ -880,17 +887,95 @@ def _render_inline(
         )]
 
     if isinstance(inline, Image):
-        # v0.2 fallback (PDF embedding lands in a follow-up): render the
-        # alt text in italic in place of the image. This is also the
-        # disposition for missing / unreadable image sources once
-        # embedding ships — the alt text doubles as both the
-        # accessibility surface and the "couldn't show the image" tell.
+        # v0.2 inline fallback: render the alt text in italic in place
+        # of the image. Block-level images are intercepted earlier in
+        # _render_block; this branch handles mixed-content paragraphs
+        # and any image whose source failed to load.
         return _flatten(
             inline.inlines, family, family.italic, size,
             link_url=link_url, strike=strike,
         )
 
+    if isinstance(inline, Subscript):
+        # Smaller size, baseline lowered. PDF emitter applies y_shift.
+        runs = _flatten(
+            inline.inlines, family, font, size * SUBSCRIPT_SIZE_RATIO,
+            link_url=link_url, strike=strike,
+        )
+        return [_with_y_shift(r, -size * SUBSCRIPT_OFFSET_RATIO) for r in runs]
+
+    if isinstance(inline, Superscript):
+        runs = _flatten(
+            inline.inlines, family, font, size * SUPERSCRIPT_SIZE_RATIO,
+            link_url=link_url, strike=strike,
+        )
+        return [_with_y_shift(r, size * SUPERSCRIPT_OFFSET_RATIO) for r in runs]
+
+    if isinstance(inline, Underline):
+        runs = _flatten(
+            inline.inlines, family, font, size,
+            link_url=link_url, strike=strike,
+        )
+        return [_with_underline(r) for r in runs]
+
+    if isinstance(inline, Mark):
+        runs = _flatten(
+            inline.inlines, family, font, size,
+            link_url=link_url, strike=strike,
+        )
+        return [_with_background(r, MARK_FILL) for r in runs]
+
+    if isinstance(inline, Kbd):
+        # Monospace + thin border around the run.
+        runs = _flatten(
+            inline.inlines, family, family.monospace, size,
+            link_url=link_url, strike=strike,
+        )
+        return [_with_border(r, KBD_BORDER) for r in runs]
+
+    if isinstance(inline, HardBreak):
+        # Encode as a Run with a special sentinel; layout treats it as
+        # an explicit newline. Empty-text run with a marker character
+        # (\\n) so the wrapper sees it.
+        return [Run(text="\n", font=font, size=size)]
+
+    if isinstance(inline, HtmlInline):
+        # An HtmlInline that survived to render time means our
+        # html_filter didn't promote it — likely an unrecognised stray
+        # tag. Drop it (no visible text).
+        return []
+
     raise NotImplementedError(f"render: unsupported inline {type(inline).__name__}")
+
+
+# Visual constants for the HTML allow-list rendering.
+SUBSCRIPT_SIZE_RATIO = 0.75
+SUBSCRIPT_OFFSET_RATIO = 0.20    # baseline lowered by 20% of original size
+SUPERSCRIPT_SIZE_RATIO = 0.75
+SUPERSCRIPT_OFFSET_RATIO = 0.40  # baseline raised by 40% of original size
+MARK_FILL = (1.0, 0.95, 0.6)     # pale yellow
+KBD_BORDER = (0.5, 0.5, 0.5)     # mid grey
+
+
+def _with_y_shift(run: Run, shift: float) -> Run:
+    """Return a copy of ``run`` with a different baseline shift."""
+    from dataclasses import replace
+    return replace(run, y_shift=shift)
+
+
+def _with_underline(run: Run) -> Run:
+    from dataclasses import replace
+    return replace(run, underline=True)
+
+
+def _with_background(run: Run, fill: tuple[float, float, float]) -> Run:
+    from dataclasses import replace
+    return replace(run, background_fill=fill)
+
+
+def _with_border(run: Run, border: tuple[float, float, float]) -> Run:
+    from dataclasses import replace
+    return replace(run, border_fill=border)
 
 
 def _flatten(

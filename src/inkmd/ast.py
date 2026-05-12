@@ -116,7 +116,82 @@ class Image:
     resolved: object = None  # inkmd.image_loader.ImageData | None
 
 
-Inline = Union[Text, Strong, Emphasis, Strikethrough, Code, Link, AutoLink, Image]
+@dataclass(frozen=True)
+class HtmlInline:
+    """A literal HTML fragment from the source.
+
+    Per CommonMark section 6.6 the parser recognises inline HTML
+    (open tags, close tags, comments, processing instructions,
+    declarations, CDATA sections) and preserves the literal bytes for
+    HTML-output renderers.
+
+    For PDF output, inkmd's render layer interprets a curated allow-list
+    of tags with defined PDF semantics (per docs/design/html-passthrough.md);
+    unknown tags drop the tag syntax but keep enclosed text content.
+    The HtmlInline node is what the parser emits before the render-time
+    interpretation runs.
+    """
+    raw: str
+
+
+@dataclass(frozen=True)
+class Subscript:
+    """``<sub>text</sub>`` (HTML allow-list extension)."""
+    inlines: tuple["Inline", ...]
+
+
+@dataclass(frozen=True)
+class Superscript:
+    """``<sup>text</sup>`` (HTML allow-list extension)."""
+    inlines: tuple["Inline", ...]
+
+
+@dataclass(frozen=True)
+class Underline:
+    """``<u>text</u>`` (HTML allow-list extension)."""
+    inlines: tuple["Inline", ...]
+
+
+@dataclass(frozen=True)
+class Mark:
+    """``<mark>text</mark>`` (HTML allow-list extension): highlighted text."""
+    inlines: tuple["Inline", ...]
+
+
+@dataclass(frozen=True)
+class Kbd:
+    """``<kbd>keys</kbd>`` (HTML allow-list extension): keyboard input."""
+    inlines: tuple["Inline", ...]
+
+
+@dataclass(frozen=True)
+class HardBreak:
+    """A hard line break.
+
+    Comes from either CommonMark hard-break syntax (``\\\\`` or two-or-
+    more trailing spaces before a newline) or the HTML allow-list tag
+    ``<br>`` / ``<br/>`` / ``<br />``.
+    """
+    pass
+
+
+Inline = Union[
+    Text,
+    Strong,
+    Emphasis,
+    Strikethrough,
+    Code,
+    Link,
+    AutoLink,
+    Image,
+    HtmlInline,
+    Subscript,
+    Superscript,
+    Underline,
+    Mark,
+    Kbd,
+    HardBreak,
+]
 
 
 # --- Block nodes ----------------------------------------------------------

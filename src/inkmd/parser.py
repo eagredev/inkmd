@@ -27,19 +27,26 @@ from inkmd.ast import (
     CodeBlock,
     Document,
     Emphasis,
+    HardBreak,
     Heading,
+    HtmlInline,
     Image,
     Inline,
+    Kbd,
     Link,
+    Mark,
     List,
     ListItem,
     Paragraph,
     Strikethrough,
     Strong,
+    Subscript,
+    Superscript,
     Table,
     TableCell,
     Text,
     ThematicBreak,
+    Underline,
 )
 
 
@@ -53,26 +60,46 @@ from inkmd.ast import (
 # read by ``_parse_inlines``.
 _AUTOLINKS_ENABLED = True
 
+# When True, the inline tokeniser recognises HTML constructs (open and
+# close tags, comments, declarations, CDATA, processing instructions)
+# and emits HtmlInline AST nodes for them. Set by ``parse(md, html=...)``.
+# See docs/design/html-passthrough.md for the v0.2 scope and PDF-render
+# allow-list applied later in inkmd.html_filter.
+_HTML_PASSTHROUGH_ENABLED = True
 
-def parse(text: str, *, autolinks: bool = True) -> Document:
+
+def parse(
+    text: str,
+    *,
+    autolinks: bool = True,
+    html: bool = True,
+) -> Document:
     """Parse a markdown string into an AST.
 
-    Public entry point. Normalises line endings (CRLF / CR → LF),
+    Public entry point. Normalises line endings (CRLF / CR -> LF),
     expands tabs to 4 spaces, then runs the two-phase pipeline.
 
     ``autolinks`` controls GFM-style autolinking of bare URLs and email
     addresses. Default True (matches GitHub / common docs sites). Set
     False for strict CommonMark — bare URLs render as plain text.
+
+    ``html`` controls whether inline HTML constructs are recognised
+    and preserved in the AST as HtmlInline nodes. Default True (matches
+    CommonMark behaviour). Set False to escape every ``<`` as literal
+    text (the v0.1 inkmd behaviour).
     """
-    global _AUTOLINKS_ENABLED
-    prev = _AUTOLINKS_ENABLED
+    global _AUTOLINKS_ENABLED, _HTML_PASSTHROUGH_ENABLED
+    prev_auto = _AUTOLINKS_ENABLED
+    prev_html = _HTML_PASSTHROUGH_ENABLED
     _AUTOLINKS_ENABLED = autolinks
+    _HTML_PASSTHROUGH_ENABLED = html
     try:
         normalised = _normalise(text)
         blocks = _parse_blocks(normalised)
         return Document(blocks=tuple(blocks))
     finally:
-        _AUTOLINKS_ENABLED = prev
+        _AUTOLINKS_ENABLED = prev_auto
+        _HTML_PASSTHROUGH_ENABLED = prev_html
 
 
 def _normalise(text: str) -> str:
@@ -1182,6 +1209,7 @@ class _Tok:
     link: "Link | None" = None
     autolink: "AutoLink | None" = None
     image: "Image | None" = None
+    html: "HtmlInline | None" = None
 
 
 def _parse_inlines(text: str) -> tuple[Inline, ...]:
@@ -1302,6 +1330,9 @@ def _tokenise(text: str) -> list[_Tok]:
                 continue
 
         # Autolink: <url> where url looks like a scheme: or email.
+        # HTML inline: <tag ...>, </tag>, <!--...-->, <![CDATA[...]]>,
+        # etc. Autolink wins for the canonical URL form; HTML scanner
+        # picks up everything else that starts with `<`.
         if ch == "<":
             auto_match = _try_autolink(text, i)
             if auto_match is not None:
@@ -1310,6 +1341,14 @@ def _tokenise(text: str) -> list[_Tok]:
                 tokens.append(_Tok(autolink=auto_node))
                 i = end_pos
                 continue
+            if _HTML_PASSTHROUGH_ENABLED:
+                html_match = _try_html_tag(text, i)
+                if html_match is not None:
+                    raw, end_pos = html_match
+                    flush_text()
+                    tokens.append(_Tok(html=HtmlInline(raw=raw)))
+                    i = end_pos
+                    continue
 
         # Delimiter run: * / _ / ~, one or more of the same char.
         if ch in "*_~":
@@ -1779,6 +1818,199 @@ _AUTOLINK_SCHEME = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _AUTOLINK_SCHEME_TAIL = _AUTOLINK_SCHEME + "0123456789+.-"
 
 
+# HTML tag-name first character: ASCII letter only per CommonMark.
+_HTML_TAG_NAME_FIRST = set(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+)
+# Subsequent tag-name characters: letters, digits, hyphens.
+_HTML_TAG_NAME_REST = set(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-"
+)
+# Attribute-name first character: letter, underscore, or colon.
+_HTML_ATTR_NAME_FIRST = set(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_:"
+)
+# Attribute-name subsequent: letters, digits, hyphens, underscores, colons, dots.
+_HTML_ATTR_NAME_REST = set(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:.-"
+)
+
+
+def _parse_html_open_tag_name(raw: str) -> str | None:
+    """Return the lowercase tag name from ``<tag ...>`` / ``<tag/>``.
+
+    None if ``raw`` isn't an open or self-closing tag (i.e. comment,
+    CDATA, declaration, PI, close tag).
+    """
+    if not raw.startswith("<") or len(raw) < 3:
+        return None
+    if raw[1] in "!?/":
+        return None
+    j = 1
+    while j < len(raw) and raw[j] in _HTML_TAG_NAME_REST:
+        j += 1
+    return raw[1:j].lower()
+
+
+def _parse_html_close_tag_name(raw: str) -> str | None:
+    """Return the lowercase tag name from ``</tag>``.
+
+    None if ``raw`` is not a close tag.
+    """
+    if not raw.startswith("</"):
+        return None
+    j = 2
+    while j < len(raw) and raw[j] in _HTML_TAG_NAME_REST:
+        j += 1
+    return raw[2:j].lower()
+
+
+def _try_html_tag(text: str, start: int) -> tuple[str, int] | None:
+    """Recognise a CommonMark inline-HTML construct at ``text[start:]``.
+
+    Returns (raw_html_substring, end_pos) on a match, where end_pos is
+    the index just past the matched substring. Returns None otherwise.
+
+    Recognised shapes (CommonMark 0.31.2 section 6.6):
+        <!-- comment -->        — text not containing ``-->`` plus boundary rules
+        <![CDATA[ stuff ]]>     — content not containing ``]]>``
+        <!DECLARATION ... >     — starts with ``<!`` + ASCII letter
+        <? processing ?>        — content not containing ``?>``
+        <tagname attrs/>        — open or self-closing
+        </tagname>              — close tag
+
+    Distinct from ``_try_autolink`` which handles ``<scheme:...>`` and
+    ``<email@host>``. Callers try autolink first; this function is the
+    fallback for any other ``<`` that opens a recognised HTML construct.
+    """
+    n = len(text)
+    if start >= n or text[start] != "<":
+        return None
+
+    nxt = text[start + 1] if start + 1 < n else ""
+
+    # 1. Comment, CDATA, declaration — all start with `<!`.
+    if nxt == "!":
+        # CDATA: `<![CDATA[...]]>` (matched before generic declaration
+        # because the declaration grammar is letter-first).
+        if text.startswith("<![CDATA[", start):
+            end = text.find("]]>", start + 9)
+            if end != -1:
+                return text[start:end + 3], end + 3
+            return None
+        # Comment: `<!--text-->` where text:
+        #   * does not start with ``>`` or ``->``
+        #   * does not contain ``--``
+        #   * does not end with ``-``
+        if text.startswith("<!--", start):
+            # Walk forward looking for ``-->``.
+            i = start + 4
+            # Forbidden start patterns per CommonMark.
+            if text[i:i + 1] == ">":
+                return None
+            if text[i:i + 2] == "->":
+                return None
+            while i < n - 2:
+                if text[i:i + 3] == "-->":
+                    return text[start:i + 3], i + 3
+                if text[i:i + 2] == "--":
+                    # Two consecutive hyphens not part of the closing
+                    # marker disqualifies the comment.
+                    return None
+                i += 1
+            return None
+        # Declaration: `<!ALPHA ... >` (must have an ASCII letter after `<!`).
+        if start + 2 < n and text[start + 2] in _HTML_TAG_NAME_FIRST:
+            end = text.find(">", start + 3)
+            if end != -1:
+                return text[start:end + 1], end + 1
+            return None
+        return None
+
+    # 2. Processing instruction: `<?...?>` content not containing `?>`.
+    if nxt == "?":
+        end = text.find("?>", start + 2)
+        if end != -1:
+            return text[start:end + 2], end + 2
+        return None
+
+    # 3. Close tag: `</tagname optional-ws>`
+    if nxt == "/":
+        if start + 2 >= n or text[start + 2] not in _HTML_TAG_NAME_FIRST:
+            return None
+        j = start + 3
+        while j < n and text[j] in _HTML_TAG_NAME_REST:
+            j += 1
+        # Optional whitespace then `>`.
+        while j < n and text[j] in " \t\n":
+            j += 1
+        if j < n and text[j] == ">":
+            return text[start:j + 1], j + 1
+        return None
+
+    # 4. Open tag: `<tagname` attrs `>` or ` />`.
+    if nxt in _HTML_TAG_NAME_FIRST:
+        j = start + 2
+        while j < n and text[j] in _HTML_TAG_NAME_REST:
+            j += 1
+        # Zero or more attributes.
+        while j < n:
+            # Required whitespace before each attribute.
+            if text[j] not in " \t\n":
+                break
+            ws_start = j
+            while j < n and text[j] in " \t\n":
+                j += 1
+            # Attribute name?
+            if j < n and text[j] in _HTML_ATTR_NAME_FIRST:
+                while j < n and text[j] in _HTML_ATTR_NAME_REST:
+                    j += 1
+                # Optional value: `=value`, `="value"`, or `='value'`.
+                k = j
+                while k < n and text[k] in " \t\n":
+                    k += 1
+                if k < n and text[k] == "=":
+                    k += 1
+                    while k < n and text[k] in " \t\n":
+                        k += 1
+                    if k >= n:
+                        return None
+                    if text[k] == '"':
+                        close = text.find('"', k + 1)
+                        if close == -1:
+                            return None
+                        j = close + 1
+                    elif text[k] == "'":
+                        close = text.find("'", k + 1)
+                        if close == -1:
+                            return None
+                        j = close + 1
+                    else:
+                        # Unquoted value: chars not in space/tab/newline/"/'/=/</>/`.
+                        unq_start = k
+                        while k < n and text[k] not in " \t\n\"'=<>`":
+                            k += 1
+                        if k == unq_start:
+                            return None
+                        j = k
+                continue
+            # Whitespace not followed by an attribute name — rewind and
+            # treat that whitespace as terminator-leading whitespace.
+            j = ws_start
+            break
+        # Optional trailing whitespace.
+        while j < n and text[j] in " \t\n":
+            j += 1
+        # Optional `/` for self-closing.
+        if j < n and text[j] == "/":
+            j += 1
+        if j < n and text[j] == ">":
+            return text[start:j + 1], j + 1
+        return None
+
+    return None
+
+
 def _try_autolink(text: str, start: int) -> tuple[AutoLink, int] | None:
     """If ``text[start:]`` is ``<url>``, parse it. Returns (AutoLink, end_pos)."""
     if text[start] != "<":
@@ -2020,6 +2252,10 @@ def _emit_inner(tokens: list[_Tok]) -> tuple[Inline, ...]:
         if tok.image is not None:
             flush()
             out.append(tok.image)
+            continue
+        if tok.html is not None:
+            flush()
+            out.append(tok.html)
             continue
         if tok.text is not None:
             text_buf += tok.text

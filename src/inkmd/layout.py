@@ -58,6 +58,20 @@ class Run:
     ``strike`` is True for runs inside ``~~text~~`` GFM strikethrough;
     the layout collects per-line strike extents and emits a thin
     horizontal rectangle through the glyph mid-height.
+
+    ``y_shift`` raises (positive) or lowers (negative) the run's
+    baseline relative to the surrounding text. Used by superscript
+    (positive shift) and subscript (negative shift). The wrapper still
+    treats the run as occupying its own width on the baseline; the
+    shift only moves where the glyph renders.
+
+    ``background_fill`` is an optional (r, g, b) tuple. When set the
+    PDF emitter draws a filled rectangle behind the run's glyph bounds.
+    Used for ``<mark>`` highlights.
+
+    ``border_fill`` is an optional (r, g, b) tuple. When set the PDF
+    emitter draws a thin border around the run's glyph bounds. Used
+    for ``<kbd>`` keyboard-key visuals.
     """
     text: str
     font: str
@@ -65,6 +79,10 @@ class Run:
     link_url: str | None = None
     color: tuple[float, float, float] | None = None  # None means default (black)
     strike: bool = False
+    y_shift: float = 0.0
+    background_fill: tuple[float, float, float] | None = None
+    border_fill: tuple[float, float, float] | None = None
+    underline: bool = False
 
 
 @dataclass(frozen=True)
@@ -78,6 +96,10 @@ class PositionedRun:
     link_url: str | None = None
     color: tuple[float, float, float] | None = None
     strike: bool = False
+    y_shift: float = 0.0
+    background_fill: tuple[float, float, float] | None = None
+    border_fill: tuple[float, float, float] | None = None
+    underline: bool = False
 
 
 @dataclass(frozen=True)
