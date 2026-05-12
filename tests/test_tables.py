@@ -139,6 +139,28 @@ def test_one_row_table():
     assert t.rows == ()
 
 
+def test_header_only_table_renders_headers_on_one_line():
+    """Header-only table where natural width fits the budget should
+    NOT wrap text within cells (kerning-loss slack guard).
+
+    Added 0.0.11.8: `| Empty Body | Still Valid |` was wrapping
+    `Still Valid` onto two lines because the natural width was equal
+    to the column content width, but individual token widths summed
+    slightly higher due to lost kerning across word boundaries.
+    """
+    from inkmd.render import render_document
+
+    md = "| Empty Body | Still Valid |\n| ---------- | ----------- |"
+    doc = parse(md)
+    block = render_document(doc)[0]
+    second_col_runs = [
+        (by, r) for by, runs in block.prepositioned_lines for r in runs
+        if r.text.strip() in ("Still", "Valid")
+    ]
+    baselines = sorted({by for by, _ in second_col_runs})
+    assert len(baselines) == 1, f"'Still Valid' wrapped: baselines={baselines}"
+
+
 # --- Parsing: inline content ------------------------------------------------
 
 
