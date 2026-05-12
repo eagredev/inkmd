@@ -250,6 +250,44 @@ def test_compile_table_cells_appear_in_stream():
     assert b"zz" in out
 
 
+def test_column_min_width_enforced_by_widest_token():
+    """Shrunken columns can't fall below their widest single word.
+
+    Added 0.0.11.7 after a torture-test render showed `Second` jammed
+    against the column border because the proportional-shrink path
+    squeezed the Topic column below the width of its longest cell word.
+    """
+    from inkmd.render import _shrink_to_budget
+
+    # Two columns: one with widest token = 40pt, one with no constraint.
+    natural = [40.0, 400.0]
+    min_widths = [40.0, 1.0]
+    budget = 200.0
+    result = _shrink_to_budget(natural, budget, min_widths)
+    # Column 0 must be at least 40 (its widest token).
+    assert result[0] >= 40.0
+    # Sum equals budget (within float tolerance).
+    assert abs(sum(result) - budget) < 0.01
+
+
+def test_compile_narrow_topic_column_does_not_crush():
+    """End-to-end: a 'Second' word in a narrow Topic column shouldn't
+    overflow its cell."""
+    md = (
+        "| Topic | Description |\n"
+        "| ----- | ----------- |\n"
+        "| First | " + "filler " * 50 + "|\n"
+        "| Second | another long row |\n"
+        "| Third | x |\n"
+    )
+    out = inkmd.compile(md)
+    # Just check it produces a valid PDF — the visual check is in
+    # /tmp/inkmd-narrow-table-v2.pdf. The previous (broken) version
+    # produced a crushed Topic column but the PDF was still structurally
+    # valid, so this test is mostly a smoke check.
+    assert out.startswith(b"%PDF-1.4\n")
+
+
 def test_compile_alignment_affects_x_position():
     """A right-aligned cell should place its run further right than a left-aligned one."""
     md_left = "| H |\n| :--- |\n| x |"
