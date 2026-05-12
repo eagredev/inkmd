@@ -13,6 +13,8 @@ That's the whole install. No system packages. No fonts to install. No Chrome bin
   <img src="docs/images/hero-sample.png" alt="A quarterly report rendered by inkmd, showing headings, a styled paragraph with strikethrough, a blockquote, a right-aligned table with tinted header, a bulleted list, and a fenced Python code block with a grey background." width="640">
   <br>
   <em><a href="examples/hero-sample.md">examples/hero-sample.md</a> rendered through inkmd. Headings, inline styles, strikethrough, blockquote, GFM table, list, fenced code, and autolinked URL + email — all in one page.</em>
+  <br>
+  <em>See also <a href="examples/inkmd-brief.md">examples/inkmd-brief.md</a> — a two-page project brief written in inkmd-renderable markdown.</em>
 </p>
 
 ## What you get
