@@ -65,4 +65,4 @@ Computes natural widths, per-column min widths (widest-token-width guard), then 
 .venv/bin/lizard src/inkmd/ -x "*/_kerning_data.py" -C 15
 ```
 
-Threshold rationale: 15 is lizard's default warn level and matches the threshold TORCH uses. Functions between 15 and 25 are judgement calls; ≥ 30 is a red flag worth investigating.
+Threshold rationale: 15 is lizard's default warn level and matches the threshold TORCH uses. Functions between 15 and 25 are judgement calls; 30 and above is a red flag worth investigating.
