@@ -25,6 +25,19 @@ That's the whole install. No system packages, no fonts to install, no Chrome bin
 - **Byte-identical output for the same input.** No clocks, no random IDs. Useful for version control, signed PDFs, audit trails, reproducible CI.
 - **Two layers of API:** a CLI and a `compile()` / `render_file()` library function. The whole public surface is two functions.
 
+## Benchmarks
+
+Measured against `WeasyPrint + markdown` (the closest pure-Python alternative) on the same input documents, on the same machine. Methodology and full caveats in [`BENCHMARKS.md`](BENCHMARKS.md); the script is at `scripts/bench.py` and is reproducible.
+
+| Metric | inkmd | WeasyPrint | Ratio |
+|--------|-------|------------|-------|
+| Install size (venv) | 11.6 MB | 74.5 MB | 6.4x smaller |
+| Cold-start render, ~1 page | 112 ms | 741 ms | 6.6x faster |
+| Cold-start render, ~11 pages | 148 ms | 1.40 s | 9.5x faster |
+| Peak RSS, ~11 pages | 17 MB | 122 MB | 7.3x lower |
+
+WeasyPrint produces slightly smaller PDFs for documents over a few pages (it compresses content streams; inkmd does not in v0.1). WeasyPrint also supports images, full Unicode, page-splitting tables, and CSS, which v0.1 of inkmd does not. The right tool depends on your input and your environment.
+
 ## Why this exists
 
 Markdown to PDF is a solved problem in theory and a minefield in practice. Every other tool brings heavy system dependencies that don't survive the trip into an Alpine container, a Lambda function, or a Windows machine without admin rights.
