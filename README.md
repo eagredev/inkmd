@@ -60,11 +60,17 @@ From PyPI:
 pip install inkmd
 ```
 
-Or grab the single-file zipapp — no `pip` install required:
+Or grab the single-file zipapp — no `pip` install required. Each tagged release attaches a `inkmd.pyz` (around 300 KB) you can drop anywhere Python 3.9+ is available:
 
 ```sh
-curl -O https://github.com/eagredev/inkmd/releases/latest/download/inkmd.pyz
+curl -L -o inkmd.pyz https://github.com/eagredev/inkmd/releases/latest/download/inkmd.pyz
 python inkmd.pyz in.md -o out.pdf
+```
+
+Or build it yourself from a checkout:
+
+```sh
+python scripts/build_zipapp.py    # produces dist/inkmd.pyz
 ```
 
 ## Usage
