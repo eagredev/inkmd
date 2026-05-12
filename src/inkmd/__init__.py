@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from inkmd.html_filter import filter_document as filter_html
 from inkmd.image_loader import resolve_images
 from inkmd.parser import parse
 from inkmd.pdf import styled_pdf
@@ -32,6 +33,7 @@ def compile(
     *,
     autolinks: bool = True,
     safe: bool = True,
+    html: bool = True,
     base_dir: Path | None = None,
     allow_remote_images: bool = False,
 ) -> bytes:
@@ -62,7 +64,8 @@ def compile(
     """
     if family not in FAMILIES:
         raise ValueError(f"unknown family {family!r}; available: {tuple(FAMILIES)}")
-    doc = parse(md_text, autolinks=autolinks)
+    doc = parse(md_text, autolinks=autolinks, html=html)
+    doc = filter_html(doc, html=html)
     doc = filter_document(doc, safe=safe)
     doc = resolve_images(doc, base_dir=base_dir, allow_remote=allow_remote_images)
     paragraphs = render_document(doc, family=FAMILIES[family])
@@ -77,6 +80,7 @@ def render_file(
     *,
     autolinks: bool = True,
     safe: bool = True,
+    html: bool = True,
     allow_remote_images: bool = False,
 ) -> None:
     """Read markdown from ``in_path``; write PDF to ``out_path``.
@@ -93,6 +97,7 @@ def render_file(
             family=family,
             autolinks=autolinks,
             safe=safe,
+            html=html,
             base_dir=src.parent,
             allow_remote_images=allow_remote_images,
         )

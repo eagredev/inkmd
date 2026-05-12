@@ -63,6 +63,17 @@ def _build_parser() -> argparse.ArgumentParser:
             "opt in for CI rendering that pulls in remote badges etc."
         ),
     )
+    p.add_argument(
+        "--no-html",
+        dest="html",
+        action="store_false",
+        help=(
+            "disable HTML passthrough. Every ``<`` is rendered as a "
+            "literal less-than character; the curated safe subset "
+            "(<sub>, <sup>, <kbd>, <mark>, <u>, <s>, <br>, <a href>, "
+            "etc.) becomes literal text."
+        ),
+    )
     p.add_argument("--version", action="version", version=f"inkmd {__version__}")
     return p
 
@@ -84,6 +95,7 @@ def main(argv: list[str] | None = None) -> int:
         family=args.family,
         autolinks=args.autolinks,
         safe=args.safe,
+        html=args.html,
         base_dir=base_dir,
         allow_remote_images=args.allow_remote_images,
     )
