@@ -27,6 +27,7 @@ from inkmd.ast import (
     List,
     ListItem,
     Paragraph,
+    Strikethrough,
     Strong,
     Table,
     TableCell,
@@ -720,6 +721,7 @@ def _render_inline(
     font: str,
     size: float = BODY_SIZE,
     link_url: str | None = None,
+    strike: bool = False,
 ) -> list[Run]:
     """Lower one inline node to one or more runs.
 
@@ -727,36 +729,44 @@ def _render_inline(
     Emphasis inside a Strong picks the family's ``bold_italic`` face
     instead of dropping back to plain italic. ``size`` and ``link_url``
     are carried through nesting — heading inlines stay at heading size,
-    and a Strong inside a Link inherits the link annotation.
+    and a Strong inside a Link inherits the link annotation. ``strike``
+    is set by an enclosing Strikethrough and propagated to every leaf
+    Run so the layout can draw a single horizontal bar across them.
     """
     color = LINK_COLOR if link_url is not None else None
 
     if isinstance(inline, Text):
-        return [Run(text=inline.content, font=font, size=size, link_url=link_url, color=color)]
+        return [Run(
+            text=inline.content, font=font, size=size,
+            link_url=link_url, color=color, strike=strike,
+        )]
 
     if isinstance(inline, Code):
         return [Run(
             text=inline.content, font=family.monospace, size=size,
-            link_url=link_url, color=color,
+            link_url=link_url, color=color, strike=strike,
         )]
 
     if isinstance(inline, Strong):
         next_font = (
             family.bold_italic if font == family.italic else family.bold
         )
-        return _flatten(inline.inlines, family, next_font, size, link_url=link_url)
+        return _flatten(inline.inlines, family, next_font, size, link_url=link_url, strike=strike)
 
     if isinstance(inline, Emphasis):
         next_font = (
             family.bold_italic if font == family.bold else family.italic
         )
-        return _flatten(inline.inlines, family, next_font, size, link_url=link_url)
+        return _flatten(inline.inlines, family, next_font, size, link_url=link_url, strike=strike)
+
+    if isinstance(inline, Strikethrough):
+        return _flatten(inline.inlines, family, font, size, link_url=link_url, strike=True)
 
     if isinstance(inline, Link):
         # Link children render at the same font/size but with link_url
         # propagated. CommonMark forbids nested links so we don't worry
         # about Link-inside-Link.
-        return _flatten(inline.inlines, family, font, size, link_url=inline.url)
+        return _flatten(inline.inlines, family, font, size, link_url=inline.url, strike=strike)
 
     if isinstance(inline, AutoLink):
         # AutoLink: URL is the destination; display text is the URL with
@@ -767,7 +777,7 @@ def _render_inline(
             display = display[len("mailto:"):]
         return [Run(
             text=display, font=font, size=size,
-            link_url=inline.url, color=LINK_COLOR,
+            link_url=inline.url, color=LINK_COLOR, strike=strike,
         )]
 
     raise NotImplementedError(f"render: unsupported inline {type(inline).__name__}")
@@ -779,9 +789,12 @@ def _flatten(
     font: str,
     size: float = BODY_SIZE,
     link_url: str | None = None,
+    strike: bool = False,
 ) -> list[Run]:
-    """Render a tuple of inline children, carrying font + size + link_url."""
+    """Render a tuple of inline children, carrying font + size + link_url + strike."""
     runs: list[Run] = []
     for inline in inlines:
-        runs.extend(_render_inline(inline, family, font=font, size=size, link_url=link_url))
+        runs.extend(_render_inline(
+            inline, family, font=font, size=size, link_url=link_url, strike=strike,
+        ))
     return runs

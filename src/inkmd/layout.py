@@ -54,12 +54,17 @@ class Run:
     ``link_url`` is set for runs that are part of an ``[text](url)`` /
     ``<url>`` link; the layout collects per-line link extents and the
     PDF layer emits clickable annotations + a blue underline.
+
+    ``strike`` is True for runs inside ``~~text~~`` GFM strikethrough;
+    the layout collects per-line strike extents and emits a thin
+    horizontal rectangle through the glyph mid-height.
     """
     text: str
     font: str
     size: float
     link_url: str | None = None
     color: tuple[float, float, float] | None = None  # None means default (black)
+    strike: bool = False
 
 
 @dataclass(frozen=True)
@@ -72,6 +77,7 @@ class PositionedRun:
     size: float
     link_url: str | None = None
     color: tuple[float, float, float] | None = None
+    strike: bool = False
 
 
 @dataclass(frozen=True)
@@ -261,14 +267,14 @@ def _tokenise_runs(runs: list[Run]) -> list[Run]:
                     j += 1
                 out.append(Run(
                     text=" ", font=run.font, size=run.size,
-                    link_url=run.link_url, color=run.color,
+                    link_url=run.link_url, color=run.color, strike=run.strike,
                 ))
             else:
                 while j < len(text) and not text[j].isspace():
                     j += 1
                 out.append(Run(
                     text=text[i:j], font=run.font, size=run.size,
-                    link_url=run.link_url, color=run.color,
+                    link_url=run.link_url, color=run.color, strike=run.strike,
                 ))
             i = j
     return out
@@ -491,6 +497,7 @@ def paginate_runs(
                             size=pr.size,
                             link_url=getattr(pr, "link_url", None),
                             color=getattr(pr, "color", None),
+                            strike=getattr(pr, "strike", False),
                         )
                     )
                 current_lines.append(StyledLine(tuple(positioned_list)))
@@ -498,6 +505,9 @@ def paginate_runs(
                 for ul_rect, ann in _link_decorations(positioned_list):
                     current_shapes.append(ul_rect)
                     current_annotations.append(ann)
+                # Strikethrough decorations within table cells.
+                for sk_rect in _strike_decorations(positioned_list):
+                    current_shapes.append(sk_rect)
             y_cursor = table_top_y - total_h
             if p_idx < len(paragraphs) - 1:
                 y_cursor -= parts.space_below
@@ -592,6 +602,7 @@ def paginate_runs(
                         size=run.size,
                         link_url=run.link_url,
                         color=run.color,
+                        strike=run.strike,
                     )
                 )
                 x += text_width(run.text, run.font, run.size)
@@ -600,6 +611,9 @@ def paginate_runs(
             for ul_rect, ann in _link_decorations(positioned):
                 current_shapes.append(ul_rect)
                 current_annotations.append(ann)
+            # Collect strikethrough shapes for this line.
+            for sk_rect in _strike_decorations(positioned):
+                current_shapes.append(sk_rect)
             # Per-line left rules for blockquotes. Multiple rules =
             # nested quote depth, each at its own x offset.
             for rule_x_rel in parts.left_rules:
@@ -682,6 +696,46 @@ def _link_decorations(
             height=ann_h,
         )
         out.append((ul, ann))
+        i = j
+    return out
+
+
+def _strike_decorations(positioned: list[PositionedRun]) -> list[Rect]:
+    """Group adjacent strike runs on one line into horizontal-bar rectangles.
+
+    Each contiguous run of struck runs yields one thin filled rectangle
+    crossing the glyph mid-height. Non-adjacent struck runs (separated
+    by a non-struck run) become separate bars.
+    """
+    out: list[Rect] = []
+    i = 0
+    n = len(positioned)
+    while i < n:
+        run = positioned[i]
+        if not run.strike:
+            i += 1
+            continue
+        start_x = run.x
+        last_run = run
+        j = i + 1
+        while j < n and positioned[j].strike:
+            last_run = positioned[j]
+            j += 1
+        end_x = last_run.x + text_width(last_run.text, last_run.font, last_run.size)
+        size = run.size
+        thickness = max(0.5, size * 0.06)
+        # Strike sits roughly at the visual x-height midline (~36% above
+        # baseline for the body fonts we ship).
+        offset = size * 0.30
+        out.append(
+            Rect(
+                x=start_x,
+                y=run.y + offset,
+                width=end_x - start_x,
+                height=thickness,
+                fill=run.color or (0.0, 0.0, 0.0),
+            )
+        )
         i = j
     return out
 
