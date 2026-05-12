@@ -137,11 +137,16 @@ def test_unmatched_backtick_is_literal_text():
 # --- Empty spans ----------------------------------------------------------
 
 
-def test_empty_strong_is_empty():
-    """**** with no content currently produces an empty Strong; that's fine for v0.0.5."""
-    inlines = _inlines("****")
-    # Whatever the result is, the parser must not crash.
-    assert inlines is not None
+def test_four_asterisks_is_thematic_break():
+    """**** on its own line is a thematic break per CommonMark §4.1, not a paragraph.
+
+    Tightened from the v0.0.5 placeholder behaviour after thematic-break
+    support landed (0.0.11.4): 3+ same-char delimiter chars on a line
+    take that path now.
+    """
+    from inkmd.ast import ThematicBreak
+    doc = parse("****")
+    assert doc.blocks == (ThematicBreak(),)
 
 
 def test_empty_code_span():
