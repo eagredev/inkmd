@@ -808,8 +808,9 @@ def _try_fence_open(line: str) -> _FenceInfo | None:
     # An info string containing a backtick is invalid for backtick fences.
     if ch == "`" and "`" in info:
         return None
-    # CommonMark §6.5: entities inside the info string are decoded.
-    info = _decode_entities(info)
+    # CommonMark sections 6.1 + 6.5: backslash escapes and entity refs
+    # inside the info string are decoded.
+    info = _decode_inline_escapes(info)
     return _FenceInfo(char=ch, length=i, indent=indent, info=info)
 
 
@@ -995,6 +996,41 @@ def _decode_entities(s: str) -> str:
     i = 0
     n = len(s)
     while i < n:
+        if s[i] == "&":
+            ent = _try_entity_ref(s, i)
+            if ent is not None:
+                out.append(ent[0])
+                i = ent[1]
+                continue
+        out.append(s[i])
+        i += 1
+    return "".join(out)
+
+
+def _decode_inline_escapes(s: str) -> str:
+    """Apply CommonMark inline-text decoding in one left-to-right pass.
+
+    Used in contexts (link destinations, link titles, code fence info
+    strings) where the inline tokeniser does not run but backslash
+    escapes and entity references are still meaningful.
+
+    Per CommonMark section 6.1, ``\\X`` produces literal X when X is
+    ASCII punctuation, and leaves the backslash alone otherwise. Per
+    section 6.5, ``&name;`` / ``&#N;`` / ``&#xH;`` decode to the
+    referenced character. The single-pass shape matters: ``\\&amp;``
+    must stay literally ``&amp;`` (the backslash escapes the ``&``;
+    once consumed as a literal it does not re-enter entity decoding).
+    """
+    if "\\" not in s and "&" not in s:
+        return s
+    out: list[str] = []
+    i = 0
+    n = len(s)
+    while i < n:
+        if s[i] == "\\" and i + 1 < n and s[i + 1] in _ESCAPABLE:
+            out.append(s[i + 1])
+            i += 2
+            continue
         if s[i] == "&":
             ent = _try_entity_ref(s, i)
             if ent is not None:
@@ -1560,8 +1596,9 @@ def _try_inline_link(text: str, start: int) -> tuple[Link, int] | None:
     url, j = _parse_link_url(text, j)
     if url is None:
         return None
-    # CommonMark §6.5: entities inside link destinations are decoded.
-    url = _decode_entities(url)
+    # CommonMark sections 6.1 + 6.5: backslash escapes and entity refs
+    # inside link destinations are decoded.
+    url = _decode_inline_escapes(url)
     # 5. Optional title in "..." or '...' or (...).
     while j < n and text[j] in " \t":
         j += 1
@@ -1579,7 +1616,7 @@ def _try_inline_link(text: str, start: int) -> tuple[Link, int] | None:
             j += 1
         if j >= n or text[j] != quote:
             return None
-        title = _decode_entities(title_buf)
+        title = _decode_inline_escapes(title_buf)
         j += 1
     # 6. Skip whitespace before closing ')'.
     while j < n and text[j] in " \t":
