@@ -6,9 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-Nothing yet. Next milestone is v0.2.0 — see the [roadmap](README.md#roadmap).
+Nothing yet. Next milestone is v0.2.0; see the [roadmap](README.md#roadmap).
 
-## [0.1.0] — 2026-05-12
+## [0.1.0] - 2026-05-12
 
 Initial public release. Pure-Python markdown-to-PDF compiler with zero system dependencies, MIT-licensed, byte-deterministic output.
 
@@ -17,9 +17,9 @@ Initial public release. Pure-Python markdown-to-PDF compiler with zero system de
 #### CommonMark support
 
 - Paragraphs with line wrapping
-- ATX (`#`…`######`) and Setext headings
+- ATX (`#` through `######`) and Setext headings
 - Ordered and unordered lists, with arbitrary nesting and tight/loose detection
-- Blockquotes — nested, multi-paragraph, can wrap any block type
+- Blockquotes (nested, multi-paragraph, can wrap any block type)
 - Fenced code blocks with preserved whitespace, language tag (info string), and soft-wrap on long lines
 - Indented code blocks
 - Code spans
@@ -32,7 +32,7 @@ Initial public release. Pure-Python markdown-to-PDF compiler with zero system de
 #### GFM extensions
 
 - Pipe tables with left / center / right column alignments and content-aware widths
-- Bare-URL autolinks: `https://…`, `http://…`, `www.…`, `host.tld/path`
+- Bare-URL autolinks: `https://...`, `http://...`, `www....`, `host.tld/path`
 - Email autolinks (auto-prefixed with `mailto:`)
 - Strikethrough (`~~text~~`)
 
@@ -61,19 +61,19 @@ Initial public release. Pure-Python markdown-to-PDF compiler with zero system de
 
 #### Examples and docs
 
-- [`examples/hero-sample.md`](examples/hero-sample.md) — half-page quarterly-report sample used as the README hero image
-- [`examples/inkmd-brief.md`](examples/inkmd-brief.md) — two-page project brief written in inkmd-renderable markdown; the artefact for "look what inkmd output actually looks like"
-- [`examples/torture-test.md`](examples/torture-test.md) — comprehensive feature exercise covering every supported construct
-- [`LIZARD-AUDIT.md`](LIZARD-AUDIT.md) — pre-release cyclomatic-complexity audit and v0.2 refactor candidates
+- [`examples/hero-sample.md`](examples/hero-sample.md): half-page quarterly-report sample used as the README hero image
+- [`examples/inkmd-brief.md`](examples/inkmd-brief.md): two-page project brief written in inkmd-renderable markdown
+- [`examples/torture-test.md`](examples/torture-test.md): comprehensive feature exercise covering every supported construct
+- [`LIZARD-AUDIT.md`](LIZARD-AUDIT.md): pre-release cyclomatic-complexity audit and v0.2 refactor candidates
 
 ### Known limitations
 
-These are documented v0.1 constraints, not bugs — see the [roadmap](README.md#roadmap) for when they lift:
+These are documented v0.1 constraints, not bugs. See the [roadmap](README.md#roadmap) for when they lift:
 
 - **Codepoints outside WinAnsi** (CJK, Cyrillic, emoji, most non-Latin scripts, plus odds like the rightwards arrow `U+2192`) render as `?`. v0.2 lifts this with TTF font embedding.
 - **Images** are not yet embedded. v0.2.
 - **Task lists** (`- [ ]` / `- [x]`) are not yet recognised. v0.2.
-- **Tables don't split across pages** — a table taller than one page will overflow. v0.2.
+- **Tables don't split across pages**: a table taller than one page will overflow. v0.2.
 - **Tables inside blockquotes** are silently dropped (table detection runs at document level only). v0.2.
 - **Headers, footers, and page numbers** are not yet supported. v0.2.
 

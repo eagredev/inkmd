@@ -12,7 +12,7 @@ Compiling markdown to PDF should be a one-line operation. In practice, every off
 | Chrome headless  | 200 MB install; 5 to 15 seconds of cold-start latency            |
 | WeasyPrint       | 350 to 550 MB of Pango, cairo, and GObject; breaks on Alpine     |
 | Pandoc and LaTeX | A 3 GB texlive installation                                      |
-| borb             | AGPL — unusable in closed-source or commercial work              |
+| borb             | AGPL, so unusable in closed-source or commercial work            |
 
 These are real costs. A Lambda function that pulls down Chrome at cold-start pays a tax every time it scales. An Alpine container that needs WeasyPrint stops being Alpine. A locked-down CI runner can't install 3 GB of texlive without an exception.
 
@@ -20,7 +20,7 @@ These are real costs. A Lambda function that pulls down Chrome at cold-start pay
 
 `inkmd` is the tool you would write yourself with a free weekend and no patience for browser dependencies. The whole compiler is around 3,500 lines of pure-Python logic. There is nothing to install at the system level. The wheel installs in under a second. Every PDF it produces is byte-identical for the same input.
 
-That last property is the one most worth dwelling on. If you hash the markdown and the PDF, the relationship is stable forever — same input, same output, on every platform, every Python version, every run. Useful for version-controlled documents, signed audit trails, reproducible CI builds, and any workflow where "the document changed" needs to mean something more rigorous than a fresh timestamp.
+That last property is the one most worth dwelling on. If you hash the markdown and the PDF, the relationship is stable forever: same input, same output, on every platform, every Python version, every run. Useful for version-controlled documents, signed audit trails, reproducible CI builds, and any workflow where "the document changed" needs to mean something more rigorous than a fresh timestamp.
 
 ## What it ships
 
@@ -40,7 +40,7 @@ pip install inkmd
 inkmd report.md -o report.pdf
 ```
 
-The output uses real AFM kerning emitted via TJ arrays, blue underlined links that are clickable in any conforming reader, blockquote rules that stack side-by-side at each nesting level, tinted table headers, and a light-grey background tint behind fenced code. It is honest typography, not browser screenshots dressed up.
+The output uses real AFM kerning emitted via TJ arrays, blue underlined links that are clickable in any conforming reader, blockquote rules that stack side-by-side at each nesting level, tinted table headers, and a light-grey background tint behind fenced code.
 
 ## What it does not do, yet
 
