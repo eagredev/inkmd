@@ -157,10 +157,21 @@ def render_block(node) -> str:
     raise TypeError(f"unknown block node: {type(node).__name__}")
 
 
+def _task_checkbox(item: ListItem) -> str:
+    """Return the GFM task-list checkbox HTML for this item, or empty."""
+    if item.task is None:
+        return ""
+    if item.task:
+        return '<input checked="" disabled="" type="checkbox"> '
+    return '<input disabled="" type="checkbox"> '
+
+
 def _render_list_item(item: ListItem, tight: bool) -> str:
     """Render one list item per CommonMark tight/loose rules."""
     if not item.blocks:
         return "<li></li>\n"
+
+    checkbox = _task_checkbox(item)
 
     if tight:
         # Tight: strip the <p> wrapper from any contained Paragraph.
@@ -175,9 +186,17 @@ def _render_list_item(item: ListItem, tight: bool) -> str:
                 # by newlines, to match the reference output shape.
                 parts.append("\n" + render_block(b).rstrip("\n") + "\n")
         body = "".join(parts)
-        return f"<li>{body}</li>\n"
+        return f"<li>{checkbox}{body}</li>\n"
     else:
         # Loose: keep <p> wrappers, blocks on their own lines.
+        # GFM places the checkbox INSIDE the first <p>, before its content.
+        if checkbox and isinstance(item.blocks[0], Paragraph):
+            first = item.blocks[0]
+            first_html = (
+                f"<p>{checkbox}{render_inlines(first.inlines)}</p>\n"
+            )
+            rest = "".join(render_block(b) for b in item.blocks[1:])
+            return f"<li>\n{first_html}{rest}</li>\n"
         inner = "".join(render_block(b) for b in item.blocks)
         return f"<li>\n{inner}</li>\n"
 

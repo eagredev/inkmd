@@ -583,7 +583,7 @@ class _BlockParser:
         # Decide tight vs loose. Loose if any item had an interior blank,
         # or any pair of items had a blank between them.
         tight = not ctx.force_loose
-        items = tuple(ListItem(blocks=tuple(it.blocks)) for it in ctx.items)
+        items = tuple(_finalise_item(it) for it in ctx.items)
         list_node = List(
             ordered=ctx.ordered,
             start=ctx.start,
@@ -605,6 +605,45 @@ def _marker_matches_list(marker: "_MarkerInfo", ctx: _ListCtx) -> bool:
         return False
     # Bullet: same marker char (-, *, +). Ordered: same delimiter (. or )).
     return marker.marker_char == ctx.marker_char
+
+
+def _finalise_item(it: _ItemCtx) -> ListItem:
+    """Build the immutable ListItem from a mutable _ItemCtx.
+
+    Also detects the GFM task-list-item prefix on the first paragraph
+    line: ``[ ]``, ``[x]``, or ``[X]`` followed by at least one space.
+    When found, the prefix is removed from the paragraph and the
+    ``task`` flag is set (False for unchecked, True for checked).
+    """
+    blocks = tuple(it.blocks)
+    task = None
+
+    # GFM places the task marker at the start of the FIRST paragraph
+    # of the item. We inspect the raw paragraph_lines if any — but by
+    # the time _finalise_item runs the paragraph has already been
+    # flushed into blocks. Look at the first inline of the first
+    # Paragraph instead.
+    if blocks and isinstance(blocks[0], Paragraph):
+        p = blocks[0]
+        if p.inlines and isinstance(p.inlines[0], Text):
+            head = p.inlines[0].content
+            if len(head) >= 4 and head[0] == "[" and head[2] == "]" and head[3] == " ":
+                marker = head[1]
+                if marker == " ":
+                    task = False
+                elif marker in ("x", "X"):
+                    task = True
+                if task is not None:
+                    # Strip the "[ ] " / "[x] " prefix from the first
+                    # inline. If the result is empty the Text node
+                    # disappears.
+                    new_head = head[4:]
+                    new_first = (Text(new_head),) if new_head else ()
+                    new_inlines = new_first + p.inlines[1:]
+                    new_para = Paragraph(inlines=new_inlines)
+                    blocks = (new_para,) + blocks[1:]
+
+    return ListItem(blocks=blocks, task=task)
 
 
 # --- Marker recognition ---------------------------------------------------
