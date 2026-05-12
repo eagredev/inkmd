@@ -176,7 +176,10 @@ def _filter_blockquote_iterative(root: BlockQuote) -> BlockQuote:
 
 
 def _filter_list_item(item: ListItem) -> ListItem:
-    return ListItem(blocks=tuple(_filter_block(b) for b in item.blocks))
+    return ListItem(
+        blocks=tuple(_filter_block(b) for b in item.blocks),
+        task=item.task,
+    )
 
 
 def _filter_cell(cell: TableCell) -> TableCell:

@@ -113,8 +113,14 @@ class ListItem:
     Items can contain paragraphs, nested lists, or other block types.
     Tight-list items typically hold a single Paragraph; loose-list items
     may hold multiple blocks.
+
+    ``task`` is None for an ordinary list item; True for a GFM task list
+    item whose source started with ``[x]`` or ``[X]`` (checked); False
+    for one that started with ``[ ]`` (unchecked). The bracket prefix
+    is consumed by the parser; it is not visible in ``blocks``.
     """
     blocks: tuple["Block", ...]
+    task: bool | None = None
 
 
 @dataclass(frozen=True)

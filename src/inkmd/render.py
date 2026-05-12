@@ -633,7 +633,15 @@ def _render_list(lst: List, family: FontFamily, depth: int) -> list[RenderedBloc
     item_spacing = LOOSE_ITEM_SPACING if not lst.tight else TIGHT_ITEM_SPACING
 
     for item_idx, item in enumerate(lst.items):
-        marker_text = _marker_text(lst, item_idx)
+        # GFM task-list items replace the bullet/number with a checkbox
+        # marker. Plain ASCII keeps the glyph available in every WinAnsi
+        # font, so users don't see a tofu box on Helvetica systems.
+        if item.task is None:
+            marker_text = _marker_text(lst, item_idx)
+        elif item.task:
+            marker_text = "[x] "
+        else:
+            marker_text = "[ ] "
         marker_runs = (Run(text=marker_text, font=family.regular, size=BODY_SIZE),)
         marker_x = LIST_INDENT_PT * depth
 
