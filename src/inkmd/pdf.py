@@ -13,8 +13,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from inkmd.layout import (
+    ImagePlacement,
     Page,
     PositionedRun,
+    Rect,
     Run,
     StyledLine,
     paginate,
@@ -375,20 +377,36 @@ def text_pdf(text: str, page_size: str = "letter") -> bytes:
 # --- Styled emission path (milestone 0.0.3) -------------------------------
 
 
-def _styled_page_content_stream(page: Page) -> bytes:
+def _styled_page_content_stream(page: Page, image_xobject_names: dict[str, str] | None = None) -> bytes:
     """Build a content stream for a page of ``StyledLine`` records.
 
-    Shapes (background rectangles, blockquote rules) are drawn first so
-    text overlays them cleanly. Each text run is positioned absolutely
-    via Tm; font switches emit a Tf only when font or size actually
-    changes (cheaper output bytes).
+    Shapes (background rectangles, blockquote rules, images) are drawn
+    first so text overlays them cleanly. Each text run is positioned
+    absolutely via Tm; font switches emit a Tf only when font or size
+    actually changes (cheaper output bytes).
+
+    ``image_xobject_names`` maps an ImagePlacement.image_id to the
+    /Im N resource slot name used in the page's /XObject dict. Required
+    if the page contains any ImagePlacement shapes.
     """
     parts: list[bytes] = []
-    # 1. Shapes — drawn before text. Each one sets the fill colour, emits
-    #    a rectangle, and fills it. We track the current fill colour so
-    #    consecutive shapes with the same colour skip the redundant ``rg``.
+    image_xobject_names = image_xobject_names or {}
+    # 1. Shapes — drawn before text. Filled rectangles use ``rg`` + ``re f``;
+    #    images use ``q`` + ``cm`` + ``Do`` + ``Q`` (the q/Q wrap localises
+    #    the cm transform so the next operator sees the identity matrix).
     current_rg: tuple[float, float, float] | None = None
     for shape in page.shapes:
+        if isinstance(shape, ImagePlacement):
+            slot = image_xobject_names.get(shape.image_id)
+            if slot is None:
+                # Should not happen — paginator + emitter agreed on the
+                # resource table. Skip rather than crash if it does.
+                continue
+            parts.append(
+                f"q {_fmt(shape.width)} 0 0 {_fmt(shape.height)} "
+                f"{_fmt(shape.x)} {_fmt(shape.y)} cm /{slot} Do Q".encode("ascii")
+            )
+            continue
         if shape.fill != current_rg:
             r, g, b = shape.fill
             parts.append(f"{_fmt(r)} {_fmt(g)} {_fmt(b)} rg".encode("ascii"))
@@ -447,9 +465,9 @@ def styled_pdf(
 ) -> bytes:
     """Emit a multi-page PDF from styled paragraph runs.
 
-    Each paragraph is a list of ``Run`` objects. The four supported
-    fonts (Helvetica, Helvetica-Bold, Helvetica-Oblique, Courier) are
-    each declared as a font resource on every page.
+    Each paragraph is a list of ``Run`` objects. The eight supported
+    fonts (Helvetica family, Times family, Courier) are each declared
+    as a font resource on every page.
     """
     width, height = PAGE_SIZES[page_size]
     pages = paginate_runs(paragraphs, page_width=width, page_height=height)
@@ -457,18 +475,38 @@ def styled_pdf(
     if not pages:
         pages = [Page(lines=(), width=width, height=height)]
 
+    # Collect every unique image referenced anywhere in the document,
+    # in deterministic first-appearance order. Each gets a stable
+    # /Im N resource slot and an XObject object number. Pages later
+    # declare only the slots they actually use.
+    image_order: list[str] = []
+    image_data_by_id: dict[str, object] = {}
+    page_image_ids: list[list[str]] = []
+    for page in pages:
+        used_on_page: list[str] = []
+        for shape in page.shapes:
+            if isinstance(shape, ImagePlacement):
+                if shape.image_id not in image_data_by_id:
+                    image_order.append(shape.image_id)
+                    image_data_by_id[shape.image_id] = shape.image_data
+                if shape.image_id not in used_on_page:
+                    used_on_page.append(shape.image_id)
+        page_image_ids.append(used_on_page)
+    image_slot_by_id = {
+        image_id: f"Im{idx}" for idx, image_id in enumerate(image_order)
+    }
+
     writer = PDFWriter()
 
     catalog_n = 1
     pages_tree_n = 2
 
-    # Pre-compute object numbers for each page's per-page objects:
-    # page object, contents object, and one annotation object per link
-    # rectangle on that page. We assign numbers up-front so the page
-    # object's /Annots array can reference them by number.
+    # Pre-compute object numbers: catalog, pages tree, fonts, XObjects,
+    # then per-page (page object, contents, annotations).
     fixed_objects = 2  # catalog + pages tree
     n_fonts = len(FONT_SLOTS)
-    cursor = fixed_objects + n_fonts + 1
+    n_images = len(image_order)
+    cursor = fixed_objects + n_fonts + n_images + 1
 
     n_pages = len(pages)
     page_obj_nums: list[int] = []
@@ -491,7 +529,7 @@ def styled_pdf(
         f"<< /Type /Pages /Kids [{kids}] /Count {n_pages} >>".encode("ascii")
     )
 
-    # Font objects, in a deterministic order matching FONT_SLOTS.
+    # Font objects.
     font_obj_nums: dict[str, int] = {}
     for font_name in FONT_SLOTS:
         obj_n = writer.add_object(
@@ -502,29 +540,49 @@ def styled_pdf(
         )
         font_obj_nums[font_name] = obj_n
 
-    # Resource dict: every font slot maps to its object.
+    # Image XObjects.
+    image_obj_nums: dict[str, int] = {}
+    for image_id in image_order:
+        data = image_data_by_id[image_id]
+        body = _image_xobject_body(data)
+        obj_n = writer.add_object(body)
+        image_obj_nums[image_id] = obj_n
+
+    # Resource fragments.
     font_resource = " ".join(
         f"/{slot} {font_obj_nums[name]} 0 R"
         for name, slot in FONT_SLOTS.items()
     )
 
-    for page, page_n, contents_n, annot_nums in zip(
+    for page_idx, (page, page_n, contents_n, annot_nums) in enumerate(zip(
         pages, page_obj_nums, contents_obj_nums, page_annot_obj_nums
-    ):
+    )):
         annots_array = ""
         if annot_nums:
             refs = " ".join(f"{n} 0 R" for n in annot_nums)
             annots_array = f" /Annots [{refs}]"
+        page_image_resource = ""
+        if page_image_ids[page_idx]:
+            entries = " ".join(
+                f"/{image_slot_by_id[image_id]} {image_obj_nums[image_id]} 0 R"
+                for image_id in page_image_ids[page_idx]
+            )
+            page_image_resource = f" /XObject << {entries} >>"
         page_obj = (
             f"<< /Type /Page /Parent {pages_tree_n} 0 R "
             f"/MediaBox [0 0 {page.width} {page.height}] "
-            f"/Resources << /Font << {font_resource} >> >> "
+            f"/Resources << /Font << {font_resource} >>{page_image_resource} >> "
             f"/Contents {contents_n} 0 R{annots_array} >>"
         ).encode("ascii")
         writer.add_object(page_obj)
 
+        per_page_image_slots = {
+            image_id: image_slot_by_id[image_id]
+            for image_id in page_image_ids[page_idx]
+        }
         stream_body = (
-            _styled_page_content_stream(page) if page.lines else b"BT\nET"
+            _styled_page_content_stream(page, per_page_image_slots)
+            if page.lines or page.shapes else b"BT\nET"
         )
         writer.add_object(_content_stream(stream_body))
 
@@ -533,6 +591,121 @@ def styled_pdf(
             writer.add_object(_link_annotation_object(ann))
 
     return writer.serialise(root_obj_num=catalog_n)
+
+
+def _image_xobject_body(data) -> bytes:
+    """Build the body of an Image XObject for a PNG or JPEG image.
+
+    JPEG: the file body is passed through with /DCTDecode. PDF readers
+    decode it natively.
+
+    PNG: trickier. The PNG file's IDAT chunks contain row-filtered
+    deflated data — *not* directly the raw pixel grid that PDF expects.
+    We rely on PDF 1.5's /Predictor 15 flag which tells the reader to
+    apply PNG row filtering after FlateDecode, so we can pass the IDAT
+    bytes through verbatim (concatenated across chunks if there are
+    several).
+    """
+    fmt = data.format
+    width = data.width
+    height = data.height
+    if fmt == "jpeg":
+        body = data.data
+        dict_pairs = [
+            "/Type /XObject",
+            "/Subtype /Image",
+            f"/Width {width}",
+            f"/Height {height}",
+            "/ColorSpace /DeviceRGB",
+            "/BitsPerComponent 8",
+            "/Filter /DCTDecode",
+            f"/Length {len(body)}",
+        ]
+        header = "<< " + " ".join(dict_pairs) + " >>"
+        return header.encode("ascii") + b"\nstream\n" + body + b"\nendstream"
+    if fmt == "png":
+        png_payload, colorspace, bpc, predictor_columns, png_colors = _png_xobject_pieces(data)
+        dict_pairs = [
+            "/Type /XObject",
+            "/Subtype /Image",
+            f"/Width {width}",
+            f"/Height {height}",
+            f"/ColorSpace {colorspace}",
+            f"/BitsPerComponent {bpc}",
+            "/Filter /FlateDecode",
+            (
+                "/DecodeParms << /Predictor 15 "
+                f"/Colors {png_colors} /BitsPerComponent {bpc} "
+                f"/Columns {predictor_columns} >>"
+            ),
+            f"/Length {len(png_payload)}",
+        ]
+        header = "<< " + " ".join(dict_pairs) + " >>"
+        return header.encode("ascii") + b"\nstream\n" + png_payload + b"\nendstream"
+    raise ValueError(f"unsupported image format: {fmt}")
+
+
+def _png_xobject_pieces(data) -> tuple[bytes, str, int, int, int]:
+    """Extract the IDAT byte stream + colour metadata from a PNG.
+
+    Returns (idat_bytes, colorspace, bits_per_component, width,
+    colour_components).
+    """
+    raw = data.data
+    # IHDR is at bytes 8..33 (after 8-byte signature, 4 length, 4 "IHDR",
+    # 13 data, 4 CRC). The 13 bytes of IHDR data:
+    #   0..3   width
+    #   4..7   height
+    #   8      bit depth
+    #   9      colour type
+    #   10     compression method (0)
+    #   11     filter method (0)
+    #   12     interlace method (0 or 1)
+    import struct
+    ihdr = raw[16:29]
+    bit_depth = ihdr[8]
+    colour_type = ihdr[9]
+    interlace = ihdr[12]
+    if interlace != 0:
+        raise ValueError("interlaced PNG not supported in v0.2")
+    if colour_type == 0:
+        colorspace = "/DeviceGray"
+        components = 1
+    elif colour_type == 2:
+        colorspace = "/DeviceRGB"
+        components = 3
+    elif colour_type == 6:
+        # RGBA. PDF /SMask handling is complex; for v0.2 we flatten alpha
+        # onto a white background at decode time. Not ideal but enables
+        # the typical "logo on a transparent background" case to render
+        # without a runtime decode dependency.
+        raise ValueError("RGBA PNG embedding pending v0.3")
+    elif colour_type == 3:
+        # Indexed colour: PDF needs the palette. Defer to v0.3.
+        raise ValueError("indexed PNG pending v0.3")
+    elif colour_type == 4:
+        # Grayscale + alpha
+        raise ValueError("grayscale+alpha PNG pending v0.3")
+    else:
+        raise ValueError(f"unknown PNG colour type {colour_type}")
+
+    # Concatenate every IDAT chunk's data. PNG layout: signature(8) +
+    # chunks(length(4) + type(4) + data(length) + crc(4)).
+    offset = 8
+    idat_parts: list[bytes] = []
+    while offset < len(raw):
+        chunk_len = struct.unpack(">I", raw[offset:offset + 4])[0]
+        chunk_type = raw[offset + 4:offset + 8]
+        chunk_data = raw[offset + 8:offset + 8 + chunk_len]
+        if chunk_type == b"IDAT":
+            idat_parts.append(chunk_data)
+        elif chunk_type == b"IEND":
+            break
+        offset += 8 + chunk_len + 4
+    if not idat_parts:
+        raise ValueError("PNG has no IDAT chunks")
+
+    return b"".join(idat_parts), colorspace, bit_depth, data.width, components
 
 
 def _link_annotation_object(ann) -> bytes:

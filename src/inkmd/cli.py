@@ -54,6 +54,15 @@ def _build_parser() -> argparse.ArgumentParser:
             "markdown sources."
         ),
     )
+    p.add_argument(
+        "--allow-remote-images",
+        dest="allow_remote_images",
+        action="store_true",
+        help=(
+            "fetch http(s) image URLs at compile time. Off by default; "
+            "opt in for CI rendering that pulls in remote badges etc."
+        ),
+    )
     p.add_argument("--version", action="version", version=f"inkmd {__version__}")
     return p
 
@@ -63,8 +72,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.input == "-":
         md = sys.stdin.read()
+        base_dir = None  # cwd for relative image paths from stdin
     else:
-        md = Path(args.input).read_text(encoding="utf-8")
+        src = Path(args.input)
+        md = src.read_text(encoding="utf-8")
+        base_dir = src.parent
 
     pdf = compile_md(
         md,
@@ -72,6 +84,8 @@ def main(argv: list[str] | None = None) -> int:
         family=args.family,
         autolinks=args.autolinks,
         safe=args.safe,
+        base_dir=base_dir,
+        allow_remote_images=args.allow_remote_images,
     )
 
     if args.output == "-":

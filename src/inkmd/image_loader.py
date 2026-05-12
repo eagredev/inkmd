@@ -15,6 +15,12 @@ that we parse without a third-party library.
 
 Errors do not crash; the caller decides how to render the fallback
 (typically alt text in italics). Every error path returns None.
+
+The public entry point ``resolve_images`` walks a parsed Document
+and returns a new Document with every Image node's ``resolved``
+field populated (either an ``ImageData`` or None on failure). It
+happens once, between parse and render, so the render layer stays
+stateless about image loading.
 """
 
 from __future__ import annotations
@@ -23,8 +29,29 @@ import base64
 import io
 import struct
 import urllib.parse
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+
+from inkmd.ast import (
+    AutoLink,
+    BlockQuote,
+    Code,
+    CodeBlock,
+    Document,
+    Emphasis,
+    Heading,
+    Image,
+    Link,
+    List,
+    ListItem,
+    Paragraph,
+    Strikethrough,
+    Strong,
+    Table,
+    TableCell,
+    Text,
+    ThematicBreak,
+)
 
 
 @dataclass(frozen=True)
@@ -37,6 +64,114 @@ class ImageData:
 
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def resolve_images(
+    doc: Document,
+    *,
+    base_dir: Path | None = None,
+    allow_remote: bool = False,
+) -> Document:
+    """Walk ``doc`` and populate ``Image.resolved`` for every Image node.
+
+    Returns a new Document tree; the input is not modified. Images whose
+    URL is unreachable or whose format is unrecognised get
+    ``resolved=None``, signalling to the renderer that the alt-text
+    fallback should be used.
+
+    Loaded image bytes are cached by URL within this call so repeated
+    references to the same image don't re-read the file.
+    """
+    cache: dict[str, ImageData | None] = {}
+
+    def get(url: str) -> ImageData | None:
+        if url not in cache:
+            cache[url] = load(url, base_dir=base_dir, allow_remote=allow_remote)
+        return cache[url]
+
+    return Document(blocks=tuple(_walk_block(b, get) for b in doc.blocks))
+
+
+def _walk_block(block, get):
+    if isinstance(block, Paragraph):
+        return Paragraph(inlines=_walk_inlines(block.inlines, get))
+    if isinstance(block, Heading):
+        return Heading(level=block.level, inlines=_walk_inlines(block.inlines, get))
+    if isinstance(block, BlockQuote):
+        return _walk_blockquote_iterative(block, get)
+    if isinstance(block, List):
+        return List(
+            ordered=block.ordered,
+            start=block.start,
+            tight=block.tight,
+            items=tuple(
+                ListItem(
+                    blocks=tuple(_walk_block(b, get) for b in it.blocks),
+                    task=it.task,
+                )
+                for it in block.items
+            ),
+        )
+    if isinstance(block, Table):
+        return Table(
+            headers=tuple(
+                TableCell(inlines=_walk_inlines(c.inlines, get)) for c in block.headers
+            ),
+            alignments=block.alignments,
+            rows=tuple(
+                tuple(TableCell(inlines=_walk_inlines(c.inlines, get)) for c in row)
+                for row in block.rows
+            ),
+        )
+    # CodeBlock, ThematicBreak — opaque.
+    return block
+
+
+def _walk_blockquote_iterative(root: BlockQuote, get) -> BlockQuote:
+    """Walk a single-child blockquote chain iteratively.
+
+    Same pattern as ``inkmd.url_filter._filter_blockquote_iterative``:
+    descend a chain of nested BlockQuotes non-recursively so the
+    resource-probe pathological case (10000-deep nesting) does not
+    overflow Python's stack.
+    """
+    chain: list[BlockQuote] = []
+    cur: BlockQuote | None = root
+    while (
+        isinstance(cur, BlockQuote)
+        and len(cur.blocks) == 1
+        and isinstance(cur.blocks[0], BlockQuote)
+    ):
+        chain.append(cur)
+        cur = cur.blocks[0]
+    if isinstance(cur, BlockQuote):
+        leaf = BlockQuote(blocks=tuple(_walk_block(b, get) for b in cur.blocks))
+    else:
+        leaf = _walk_block(cur, get)  # type: ignore[arg-type]
+    result = leaf
+    for _ in chain:
+        result = BlockQuote(blocks=(result,))
+    return result
+
+
+def _walk_inlines(inlines, get):
+    out = []
+    for node in inlines:
+        if isinstance(node, Image):
+            out.append(replace(
+                node,
+                inlines=_walk_inlines(node.inlines, get),
+                resolved=get(node.url),
+            ))
+        elif isinstance(node, (Strong, Emphasis, Strikethrough)):
+            new_inner = _walk_inlines(node.inlines, get)
+            out.append(replace(node, inlines=new_inner))
+        elif isinstance(node, Link):
+            new_inner = _walk_inlines(node.inlines, get)
+            out.append(replace(node, inlines=new_inner))
+        else:
+            out.append(node)
+    return tuple(out)
 
 
 def load(

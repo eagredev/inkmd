@@ -272,6 +272,14 @@ def _render_block(block, family: FontFamily, depth: int) -> list[RenderedBlock]:
     if isinstance(block, Heading):
         return [_render_heading(block, family)]
     if isinstance(block, Paragraph):
+        # An image-only paragraph (modulo whitespace text) becomes a
+        # block-level image. Mixed-with-text images stay inline and use
+        # the alt-text fallback inside _render_inline.
+        single_image = _paragraph_as_image(block)
+        if single_image is not None:
+            from inkmd.image_loader import ImageData
+            if isinstance(single_image.resolved, ImageData):
+                return [_render_image_block(single_image)]
         return [RenderedBlock(runs=tuple(_render_paragraph(block, family)))]
     if isinstance(block, List):
         return _render_list(block, family, depth)
@@ -284,6 +292,94 @@ def _render_block(block, family: FontFamily, depth: int) -> list[RenderedBlock]:
     if isinstance(block, ThematicBreak):
         return [_render_thematic_break()]
     raise NotImplementedError(f"render: unsupported block {type(block).__name__}")
+
+
+def _paragraph_as_image(p: Paragraph) -> "Image | None":
+    """Return the single Image in this paragraph if the paragraph is
+    "just an image" (one Image plus optional pure-whitespace text).
+
+    Mixed-content paragraphs (image with surrounding prose) return None
+    so the image falls back to its inline alt-text rendering. v0.2
+    supports block-level image rendering only; inline images remain a
+    v0.3 candidate.
+    """
+    image = None
+    for inline in p.inlines:
+        if isinstance(inline, Image):
+            if image is not None:
+                return None  # more than one image; not block-level
+            image = inline
+        elif isinstance(inline, Text):
+            if inline.content.strip():
+                return None  # non-whitespace surrounding text
+        else:
+            return None  # any other inline (Strong, Code, ...) -> inline
+    return image
+
+
+# v0.2 block-level image rendering.
+#
+# A block-level image occupies its own RenderedBlock via the
+# ``prepositioned`` path. We compute the image's display dimensions
+# (natural pixel size at 72 dpi, capped to the available column width),
+# build an ImagePlacement at the block's origin, and stash the source
+# bytes for later XObject emission via _paragraph_image_registry.
+
+# Natural pixels-to-points conversion. PDF uses 72 points per inch; we
+# assume images supply 72 DPI by default, matching what every major
+# markdown-to-HTML renderer does.
+_PIXEL_TO_POINT = 1.0
+
+# Vertical breathing room around a block-level image, in points.
+_IMAGE_SPACE_ABOVE = 6.0
+_IMAGE_SPACE_BELOW = 6.0
+
+# Approximate column width used by the renderer when sizing images.
+# The paginator scales further to the actual available width per page;
+# this is the initial guess.
+_RENDER_COLUMN_WIDTH = 468.0
+
+
+def _render_image_block(image) -> RenderedBlock:
+    """Build a prepositioned RenderedBlock for a block-level image.
+
+    The prepositioned_shapes carry a single dict with ``kind="image"``;
+    the paginator translates it to a layout.ImagePlacement at emit time.
+    """
+    data = image.resolved
+    # Display size: natural pixel size at 72 dpi, capped to column width.
+    nat_w = data.width * _PIXEL_TO_POINT
+    nat_h = data.height * _PIXEL_TO_POINT
+    if nat_w > _RENDER_COLUMN_WIDTH and nat_w > 0:
+        scale = _RENDER_COLUMN_WIDTH / nat_w
+        disp_w = _RENDER_COLUMN_WIDTH
+        disp_h = nat_h * scale
+    else:
+        disp_w = nat_w
+        disp_h = nat_h
+
+    # Identifier for the XObject registry: use the URL when available.
+    image_id = image.url or f"image:{id(image)}"
+
+    return RenderedBlock(
+        runs=(),
+        space_above=_IMAGE_SPACE_ABOVE,
+        space_below=_IMAGE_SPACE_BELOW,
+        prepositioned=True,
+        prepositioned_lines=(),
+        prepositioned_line_heights=(),
+        prepositioned_shapes=(
+            {
+                "kind": "image",
+                "image_id": image_id,
+                "image_data": data,  # ImageData; carries format, width, height, bytes
+                "rel_y_top": 0.0,
+                "x_offset": 0.0,
+                "width": disp_w,
+                "height": disp_h,
+            },
+        ),
+    )
 
 
 # Thematic break (---/***/___) — thin grey horizontal rule.

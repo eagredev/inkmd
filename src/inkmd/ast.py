@@ -97,16 +97,23 @@ class Image:
 
     ``alt`` is the alt-text inline content (typed as a tuple of inline
     nodes so the alt text can itself contain emphasis, code spans, etc.
-    Per CommonMark §6.4, alt text is "the textual content of the inner
-    inlines", so a consumer that wants alt-as-plain-string flattens the
-    tree to text content).
+    Per CommonMark section 6.4, alt text is "the textual content of the
+    inner inlines", so a consumer that wants alt-as-plain-string flattens
+    the tree to text content).
 
     ``title`` is the optional tooltip-style string from
     ``![alt](url "title")``.
+
+    ``resolved`` is populated by inkmd.image_loader.resolve_images()
+    after parse: it carries the loaded image bytes plus pixel
+    dimensions when the source was reachable and recognised, or None
+    when the source was missing / unsupported. The renderer uses it to
+    decide between PDF embedding and the alt-text-italic fallback.
     """
     inlines: tuple["Inline", ...]
     url: str
     title: str = ""
+    resolved: object = None  # inkmd.image_loader.ImageData | None
 
 
 Inline = Union[Text, Strong, Emphasis, Strikethrough, Code, Link, AutoLink, Image]
