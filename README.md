@@ -1,6 +1,6 @@
 # inkmd
 
-**Markdown → PDF, pure Python, zero dependencies. MIT-licensed. Deterministic.**
+**Markdown to PDF, pure Python, zero dependencies. MIT-licensed. Deterministic.**
 
 ```sh
 pip install inkmd
@@ -25,7 +25,7 @@ That's the whole install. No system packages. No fonts to install. No Chrome bin
 
 ## Why this exists
 
-Markdown → PDF is a solved problem in theory and a minefield in practice. Every other tool brings heavy system dependencies that don't survive the trip into an Alpine container, a Lambda function, or a Windows machine without admin rights.
+Markdown to PDF is a solved problem in theory and a minefield in practice. Every other tool brings heavy system dependencies that don't survive the trip into an Alpine container, a Lambda function, or a Windows machine without admin rights.
 
 | Tool | What goes wrong |
 |------|-----------------|
@@ -36,7 +36,7 @@ Markdown → PDF is a solved problem in theory and a minefield in practice. Ever
 | **PyMuPDF-based tools** | Don't build on Alpine musl. |
 | **`borb`** | AGPL — unusable in closed-source or commercial projects without a paid licence. |
 
-`inkmd` runs anywhere Python runs. It's the markdown → PDF compiler you'd write yourself if you had a free weekend and didn't want to take a dependency on a browser.
+`inkmd` runs anywhere Python runs. It's the markdown-to-PDF compiler you'd write yourself if you had a free weekend and didn't want to take a dependency on a browser.
 
 ## Use cases
 
@@ -106,29 +106,29 @@ The public API is intentionally narrow: two functions, no classes to instantiate
 
 | Feature | inkmd |
 |---------|:---:|
-| Paragraphs with line wrapping | ✓ |
-| ATX headings (`#` … `######`) | ✓ |
-| Setext headings (`===` / `---`) | ✓ |
-| Ordered lists, arbitrary `start` | ✓ |
-| Unordered lists (`-` / `*` / `+`) | ✓ |
-| Nested lists, mixed marker types | ✓ |
-| Tight vs. loose list detection | ✓ |
-| Blockquotes | ✓ |
-| Nested and multi-paragraph blockquotes | ✓ |
-| Blockquotes wrapping any block type | ✓ |
-| Fenced code blocks | ✓ |
-| Code block language tag (info string) | ✓ |
-| Indented code blocks | ✓ |
-| Code spans (`` `code` ``) | ✓ |
-| Emphasis (`*`, `_`) | ✓ |
-| Strong emphasis (`**`, `__`) | ✓ |
-| Triple `***` → nested italic-bold | ✓ |
-| Rule of 3 + intraword-underscore | ✓ |
-| Backslash escapes | ✓ |
-| Thematic breaks | ✓ |
-| Inline links `[text](url)` | ✓ |
-| Inline link titles | ✓ |
-| Angle-bracket autolinks `<url>` | ✓ |
+| Paragraphs with line wrapping | Yes |
+| ATX headings (`#` … `######`) | Yes |
+| Setext headings (`===` / `---`) | Yes |
+| Ordered lists, arbitrary `start` | Yes |
+| Unordered lists (`-` / `*` / `+`) | Yes |
+| Nested lists, mixed marker types | Yes |
+| Tight vs. loose list detection | Yes |
+| Blockquotes | Yes |
+| Nested and multi-paragraph blockquotes | Yes |
+| Blockquotes wrapping any block type | Yes |
+| Fenced code blocks | Yes |
+| Code block language tag (info string) | Yes |
+| Indented code blocks | Yes |
+| Code spans (`` `code` ``) | Yes |
+| Emphasis (`*`, `_`) | Yes |
+| Strong emphasis (`**`, `__`) | Yes |
+| Triple `***` becomes nested italic-bold | Yes |
+| Rule of 3 + intraword-underscore | Yes |
+| Backslash escapes | Yes |
+| Thematic breaks | Yes |
+| Inline links `[text](url)` | Yes |
+| Inline link titles | Yes |
+| Angle-bracket autolinks `<url>` | Yes |
 | Images `![](...)` | v0.2 |
 | Reference-style links | v0.2 |
 | HTML blocks / inline HTML | not planned |
@@ -137,12 +137,12 @@ The public API is intentionally narrow: two functions, no classes to instantiate
 
 | Feature | inkmd |
 |---------|:---:|
-| Pipe tables | ✓ |
-| Table column alignments | ✓ |
-| Bare URL autolinks (`https://…`, `www.…`) | ✓ |
-| Bare host autolinks (`host.tld/path`) | ✓ |
-| Email autolinks | ✓ |
-| Strikethrough `~~text~~` | ✓ |
+| Pipe tables | Yes |
+| Table column alignments | Yes |
+| Bare URL autolinks (`https://…`, `www.…`) | Yes |
+| Bare host autolinks (`host.tld/path`) | Yes |
+| Email autolinks | Yes |
+| Strikethrough `~~text~~` | Yes |
 | Task lists `- [ ]` / `- [x]` | v0.2 |
 
 ### Visual output
@@ -181,7 +181,7 @@ If you hash the markdown and the PDF, the relationship is stable forever. Useful
 | Tagged PDF / PDF/UA accessibility | v0.3+ | Under consideration |
 | PDF/A archival format | — | Not planned |
 | Math (LaTeX-style) | — | Out of scope. Use Pandoc + LaTeX. |
-| HTML passthrough | — | Out of scope by design. `inkmd` is markdown → PDF, not HTML → PDF. |
+| HTML passthrough | — | Out of scope by design. `inkmd` is markdown to PDF, not HTML to PDF. |
 | Themes / CSS | — | Out of scope. Markdown's value is honest constraints — don't bring CSS back in. |
 
 ## How it works
