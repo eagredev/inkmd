@@ -118,9 +118,12 @@ class RenderedBlock:
     marker_runs: tuple[Run, ...] = ()
     marker_x: float = 0.0
     compact: bool = False  # if True, suppress inter-block paragraph_spacing before this block
-    # Blockquote support: if set, draw a thin vertical bar at this x for
-    # every line of this block.
-    left_rule_x: float | None = None
+    # Blockquote support: each entry is an x offset (relative to the
+    # left margin) where a thin vertical rule should be drawn for every
+    # line of this block. Nested blockquotes accumulate rules so each
+    # depth gets its own visible bar — the outermost at the leftmost x,
+    # inner rules at progressively deeper x positions.
+    left_rules: tuple[float, ...] = ()
     left_rule_fill: tuple[float, float, float] = (0.6, 0.6, 0.6)
     # Code block support: if set, draw a single background rectangle
     # spanning this block's full vertical extent (top of first line to
@@ -246,12 +249,22 @@ _COLUMN_WIDTH_FALLBACK = 468.0
 
 
 def _render_blockquote(quote: BlockQuote, family: FontFamily, depth: int) -> list[RenderedBlock]:
-    """Flatten a BlockQuote: render inner blocks with extra indent and a left rule."""
+    """Flatten a BlockQuote: render inner blocks with extra indent + left rule.
+
+    Each nesting level adds one rule at its own x position. Inner-quote
+    rules sit to the *right* of outer-quote rules so a `> > >` source
+    produces three rules side-by-side, indented progressively.
+    """
     inner: list[RenderedBlock] = []
     for child in quote.blocks:
         inner.extend(_render_block(child, family, depth))
     out: list[RenderedBlock] = []
     for cb in inner:
+        # Our new rule sits at the outermost x relative to inner blocks.
+        # Inner rules (already in cb.left_rules) get shifted right by
+        # QUOTE_INDENT_PT to make room for our rule on their left.
+        shifted_inner = tuple(r + QUOTE_INDENT_PT for r in cb.left_rules)
+        new_rules = (QUOTE_RULE_OFFSET_PT,) + shifted_inner
         out.append(
             RenderedBlock(
                 runs=cb.runs,
@@ -261,7 +274,7 @@ def _render_blockquote(quote: BlockQuote, family: FontFamily, depth: int) -> lis
                 marker_runs=cb.marker_runs,
                 marker_x=cb.marker_x + QUOTE_INDENT_PT,
                 compact=cb.compact,
-                left_rule_x=QUOTE_RULE_OFFSET_PT,
+                left_rules=new_rules,
                 left_rule_fill=QUOTE_RULE_FILL,
                 background_fill=cb.background_fill,
                 bg_padding=cb.bg_padding,
