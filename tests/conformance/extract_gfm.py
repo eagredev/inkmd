@@ -18,13 +18,16 @@ import re
 from collections import Counter
 from pathlib import Path
 
-SRC = Path("/tmp/gfm.html")
+SRC = Path(__file__).parent / "gfm-spec-source.html"
 DST = Path(__file__).parent / "gfm-0.29.json"
 
 
 def main() -> None:
     if not SRC.exists():
-        raise SystemExit(f"Save GFM spec HTML to {SRC} first (curl https://github.github.com/gfm/)")
+        raise SystemExit(
+            f"GFM spec HTML missing: {SRC}\n"
+            f"Fetch with: curl -sL https://github.github.com/gfm/ -o {SRC}"
+        )
 
     html_doc = SRC.read_text()
 
