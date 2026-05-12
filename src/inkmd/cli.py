@@ -44,6 +44,16 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_false",
         help="disable GFM-style autodetection of bare URLs and email addresses",
     )
+    p.add_argument(
+        "--allow-unsafe-urls",
+        dest="safe",
+        action="store_false",
+        help=(
+            "disable the URL-scheme filter (allow javascript:, data:, "
+            "vbscript:, file: and similar). Use only with trusted "
+            "markdown sources."
+        ),
+    )
     p.add_argument("--version", action="version", version=f"inkmd {__version__}")
     return p
 
@@ -61,6 +71,7 @@ def main(argv: list[str] | None = None) -> int:
         page_size=args.page_size,
         family=args.family,
         autolinks=args.autolinks,
+        safe=args.safe,
     )
 
     if args.output == "-":

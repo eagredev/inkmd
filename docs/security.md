@@ -12,19 +12,23 @@ template expansion, no shell-out. The library function
 `inkmd.compile(md_text)` takes a string and returns bytes; that
 is the entire contract.
 
-The known security-relevant findings in v0.1.0:
+The current security-relevant findings:
 
-1. **URL schemes are not filtered.** A `[click](javascript:...)` link
-   in markdown produces a clickable `javascript:` URI in the output
-   PDF. Some readers will execute it. Filtering is on the v0.2
-   roadmap; the proposed default for v0.2 is allow-list filtering
-   (http, https, mailto, xmpp, ftp) with an opt-out flag for
-   trusted-input use cases.
+1. **URL schemes are filtered by default** (v0.2 change, on by
+   default). Only `http:`, `https:`, `mailto:`, `tel:`, `ftp:`, and
+   `xmpp:` schemes produce clickable PDF link annotations. Anything
+   else (javascript:, data:, vbscript:, file:, custom app schemes)
+   renders as plain text with the link annotation dropped. Opt out
+   with `safe=False` or `--allow-unsafe-urls` for trusted-content
+   use cases. v0.1 shipped without this filter; v0.1 users should
+   pre-sanitise untrusted markdown before calling `compile()`.
 2. **HTML is escaped, not executed.** Raw HTML in markdown source
    is rendered as escaped text in the PDF, not interpreted. There
-   is no HTML executor anywhere in inkmd. v0.2 may add a curated
-   safe-subset HTML passthrough; if so it will go through this
-   document's threat model first.
+   is no HTML executor anywhere in inkmd. v0.2 adds a curated
+   safe-subset HTML passthrough (see `docs/design/html-passthrough.md`)
+   with a fixed allow-list of tags that have defined, statically-
+   resolved PDF rendering — no script interpretation, no CSS, no
+   resource fetching, no JavaScript form fields.
 
 The known *non-issues* — things people might expect to be problems
 that are not:
@@ -128,44 +132,45 @@ the prudent operational pattern is the same as for any text-
 processing pipeline: bound input length, set a wall-clock timeout
 on the call, and limit memory at the OS level (cgroups, ulimits).
 
-## URL handling — the v0.1.0 known issue
+## URL handling
 
 When the parser sees `[text](url)`, it places the URL into the
 output PDF as a `/URI` annotation, with PDF-syntax escaping
 applied (parentheses and backslashes get escaped, the rest passes
-through). **The URL's scheme is not validated.**
+through).
 
-Concretely: this markdown:
+**v0.2 added an opt-out URL-scheme filter, on by default.** Only
+schemes on the allow-list produce clickable link annotations:
 
-```markdown
-[click me](javascript:alert(1))
-```
+| Scheme | Status |
+|--------|--------|
+| `http:`, `https:` | Allowed |
+| `mailto:` | Allowed (used by GFM email autolinks) |
+| `tel:` | Allowed |
+| `ftp:` | Allowed |
+| `xmpp:` | Allowed |
+| `javascript:` | **Filtered** — link text survives, annotation dropped |
+| `data:` | **Filtered** |
+| `vbscript:` | **Filtered** |
+| `file:` | **Filtered** |
+| Anything else (custom app schemes, unknown URIs) | **Filtered** |
 
-produces a PDF whose link annotation contains the literal
-URL `javascript:alert(1)`. Adobe Reader will refuse to follow
-this by default; Chrome's PDF viewer used to honour it (current
-behaviour is reader-version-dependent); some embedded viewers
-may execute it.
+Relative URLs and fragment-only URLs (no scheme) pass through
+unchanged — they cannot navigate out of the document.
 
-This is the same behaviour as `weasyprint`, `pandoc`, `mdpdf`,
-and most other markdown-to-PDF tools. The decision in v0.1.0 was
-to defer the question to a deliberate v0.2 design pass rather
-than ship an incomplete filter.
+**v0.1.0 shipped without this filter** — `javascript:alert(1)` and
+similar schemes produced clickable annotations. The historical
+behaviour can be restored via `safe=False` on `compile()` /
+`render_file()`, or `--allow-unsafe-urls` on the CLI. The opt-out
+exists for use cases where the markdown source is trusted
+absolutely (a developer rendering their own README, a CI pipeline
+compiling content from a vetted repository).
 
-**For untrusted input in v0.1.0, the caller's responsibility is**:
-
-- Strip or transform suspicious schemes before calling
-  `inkmd.compile()`. A regex over the markdown source is the
-  simplest defence.
-- Or post-process the PDF to remove `/A /URI` annotations whose
-  URL doesn't start with `http:`, `https:`, or `mailto:`.
-
-The v0.2 plan is an opt-out URL filter: by default,
-`inkmd.compile()` will allow only `http:`, `https:`, `mailto:`,
-`xmpp:`, and `ftp:` schemes. Links with other schemes will render
-as plain text (the link text without the `/URI` annotation). A
-`safe=False` parameter and `--allow-unsafe-urls` CLI flag will
-restore current v0.1 behaviour for callers who explicitly opt in.
+**For untrusted input, leave the default in place.** Filtered
+links render as plain text with no visual indicator that filtering
+occurred. We deliberately do not advertise "a suspicious URL was
+here" in the rendered output — that would leak source information
+to anyone viewing the PDF.
 
 ## Output handling
 
