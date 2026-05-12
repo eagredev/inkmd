@@ -123,6 +123,12 @@ class CodeBlock:
     info: str = ""
 
 
+@dataclass(frozen=True)
+class ThematicBreak:
+    """A horizontal rule produced by ``---``, ``***``, or ``___``."""
+    pass
+
+
 # Column alignment for tables. None means "no explicit alignment".
 Alignment = str  # one of "left", "center", "right", or None
 
@@ -148,7 +154,7 @@ class Table:
     rows: tuple[tuple[TableCell, ...], ...]
 
 
-Block = Union[Paragraph, Heading, List, BlockQuote, CodeBlock, Table]
+Block = Union[Paragraph, Heading, List, BlockQuote, CodeBlock, Table, ThematicBreak]
 
 
 # --- Document root --------------------------------------------------------

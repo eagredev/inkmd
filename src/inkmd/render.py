@@ -31,6 +31,7 @@ from inkmd.ast import (
     Table,
     TableCell,
     Text,
+    ThematicBreak,
 )
 from inkmd.fonts import text_width
 from inkmd.layout import Rect, Run, wrap_runs
@@ -195,7 +196,53 @@ def _render_block(block, family: FontFamily, depth: int) -> list[RenderedBlock]:
         return [_render_code_block(block, family)]
     if isinstance(block, Table):
         return [_render_table(block, family)]
+    if isinstance(block, ThematicBreak):
+        return [_render_thematic_break()]
     raise NotImplementedError(f"render: unsupported block {type(block).__name__}")
+
+
+# Thematic break (---/***/___) — thin grey horizontal rule.
+THEMATIC_BREAK_FILL = (0.7, 0.7, 0.7)
+THEMATIC_BREAK_HEIGHT = 0.6
+
+
+def _render_thematic_break() -> RenderedBlock:
+    """A thin grey rectangle spanning the full body column.
+
+    Uses the prepositioned path with a single shape and no positioned
+    runs. The shape's x_offset is 0 and width spans the whole column;
+    paginate_runs translates that to absolute coords. Total height
+    includes a little vertical breathing room above and below the rule.
+    """
+    # Padding above and below so the rule doesn't crash into adjacent text.
+    pad = 4.0
+    return RenderedBlock(
+        runs=(),
+        space_above=pad,
+        space_below=pad,
+        prepositioned=True,
+        prepositioned_lines=(),
+        prepositioned_line_heights=(),
+        prepositioned_shapes=(
+            {
+                "kind": "fill",
+                "rel_y_top": 0.0,
+                "height": THEMATIC_BREAK_HEIGHT,
+                "x_offset": 0.0,
+                "width": _COLUMN_WIDTH_FALLBACK,
+                "fill": THEMATIC_BREAK_FILL,
+            },
+        ),
+    )
+
+
+# The thematic break shape needs to span the body column width, but the
+# renderer doesn't know that here — pass a sentinel that the layout
+# translates to (column_width - body_indent) at pagination time. We use
+# letter's column width (8.5in - 2in margin = 6.5in = 468pt) as the
+# default. The layout could be smarter about this but for now this is
+# accurate for both A4 and letter at default margins.
+_COLUMN_WIDTH_FALLBACK = 468.0
 
 
 def _render_blockquote(quote: BlockQuote, family: FontFamily, depth: int) -> list[RenderedBlock]:

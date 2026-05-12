@@ -35,6 +35,7 @@ from inkmd.ast import (
     Table,
     TableCell,
     Text,
+    ThematicBreak,
 )
 
 
@@ -332,22 +333,28 @@ class _BlockParser:
             self._add_block(Heading(level=level, inlines=_parse_inlines(body)))
             return
 
-        # 2. List marker: starts a new list, a new item, or nests.
-        marker = _try_marker(remaining)
-        if marker is not None:
-            # If the marker is at column 0 of the remainder, it's at the
-            # current container's "natural" indent.
-            self._handle_marker(remaining, marker)
-            return
-
-        # 3. Setext underline: if we have an in-progress paragraph in the
-        #    current container, the paragraph becomes a heading.
+        # 2. Setext underline: only when an open paragraph is being closed,
+        #    `text\n---` becomes Setext H2 (CommonMark §4.1 example 30,
+        #    Setext takes priority over thematic break for the same shape).
         setext_level = _try_setext_underline(remaining)
         if setext_level is not None and self._has_open_paragraph():
             self._convert_paragraph_to_heading(setext_level)
             return
 
-        # 4. Plain paragraph content.
+        # 3. Thematic break — checked *before* list markers because
+        #    `- - -` and `* * *` would otherwise be eaten as bullet
+        #    markers. CommonMark §4.1 says thematic break wins.
+        if _is_thematic_break(remaining):
+            self._add_block(ThematicBreak())
+            return
+
+        # 4. List marker: starts a new list, a new item, or nests.
+        marker = _try_marker(remaining)
+        if marker is not None:
+            self._handle_marker(remaining, marker)
+            return
+
+        # 5. Plain paragraph content.
         self._add_paragraph_line(remaining)
 
     def _handle_marker(self, remaining: str, marker: "_MarkerInfo") -> None:
@@ -687,6 +694,30 @@ def _try_atx_heading(line: str) -> tuple[int, str] | None:
         if j < len(body) and (j == 0 or body[j - 1] == " "):
             body = body[:j].rstrip()
     return i, body
+
+
+def _is_thematic_break(line: str) -> bool:
+    """True if ``line`` is a CommonMark §4.1 thematic break.
+
+    3+ ``-``, ``*``, or ``_`` characters (all the same), optional spaces
+    or tabs between them, optional 0-3 leading-space indent, optional
+    trailing whitespace.
+    """
+    stripped = line.lstrip(" ")
+    indent = len(line) - len(stripped)
+    if indent > _ATX_MAX_INDENT:
+        return False
+    body = stripped.rstrip()
+    if not body:
+        return False
+    # Remove spaces/tabs from the body; what's left should be 3+ of the same char.
+    compact = body.replace(" ", "").replace("\t", "")
+    if len(compact) < 3:
+        return False
+    ch = compact[0]
+    if ch not in "-*_":
+        return False
+    return all(c == ch for c in compact)
 
 
 def _try_setext_underline(line: str) -> int | None:
