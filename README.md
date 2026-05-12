@@ -50,7 +50,7 @@ Markdown to PDF is a solved problem in theory and a minefield in practice. Every
 
 ## Status
 
-**v0.1 — feature-complete, MIT-licensed.** 497 tests across 23 files. Stdlib-only, Python 3.9+. Byte-deterministic output. Built in a single intense day; the [torture test](examples/torture-test.md) covers everything `inkmd` can render.
+**v0.1 — feature-complete, MIT-licensed.** 501 tests across 24 files. Stdlib-only, Python 3.9+. Byte-deterministic output. Built in a single intense day; the [torture test](examples/torture-test.md) covers everything `inkmd` can render.
 
 ## Install
 
