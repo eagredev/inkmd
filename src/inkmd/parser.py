@@ -28,6 +28,7 @@ from inkmd.ast import (
     Document,
     Emphasis,
     Heading,
+    Image,
     Inline,
     Link,
     List,
@@ -1171,15 +1172,16 @@ class _Tok:
     """A token in the inline stream.
 
     Exactly one of ``text`` / ``code`` / ``delim`` / ``link`` / ``autolink``
-    is set. Link tokens carry a pre-parsed ``Link`` AST node; emphasis
-    resolution skips over them as atomic units (CommonMark forbids nested
-    links anyway).
+    / ``image`` is set. Link / image tokens carry pre-parsed AST nodes;
+    emphasis resolution skips over them as atomic units (CommonMark
+    forbids nested links anyway).
     """
     text: str | None = None
     code: str | None = None
     delim: _Delim | None = None
     link: "Link | None" = None
     autolink: "AutoLink | None" = None
+    image: "Image | None" = None
 
 
 def _parse_inlines(text: str) -> tuple[Inline, ...]:
@@ -1277,6 +1279,17 @@ def _tokenise(text: str) -> list[_Tok]:
             buf += text[i:run_end]
             i = run_end
             continue
+
+        # Inline image: ![alt](url) — checked before `[` so the `!`
+        # prefix isn't consumed as text.
+        if ch == "!":
+            image_match = _try_inline_image(text, i)
+            if image_match is not None:
+                image_node, end_pos = image_match
+                flush_text()
+                tokens.append(_Tok(image=image_node))
+                i = end_pos
+                continue
 
         # Inline link: [text](url) or [text](url "title").
         if ch == "[":
@@ -1605,12 +1618,60 @@ def _try_inline_link(text: str, start: int) -> tuple[Link, int] | None:
     inside link text must be backslash-escaped; nested brackets are not
     supported in v0.1.
     """
+    parsed = _try_link_body(text, start)
+    if parsed is None:
+        return None
+    text_start, text_end, url, title, end_pos = parsed
+    link_text = text[text_start:text_end]
+    # CommonMark forbids nested links — disable autolinks during the
+    # inner parse so a bare URL inside link text doesn't become a
+    # second annotation overlapping the outer one.
+    global _AUTOLINKS_ENABLED
+    prev = _AUTOLINKS_ENABLED
+    _AUTOLINKS_ENABLED = False
+    try:
+        inner_inlines = _parse_inlines(link_text)
+    finally:
+        _AUTOLINKS_ENABLED = prev
+    return Link(inlines=inner_inlines, url=url, title=title), end_pos
+
+
+def _try_inline_image(text: str, start: int) -> tuple[Image, int] | None:
+    """If ``text[start:]`` starts with ``![alt](url[ "title"])``, parse it.
+
+    Per CommonMark §6.4, image alt text is the same shape as link text;
+    parsers reuse the link-body machinery. The leading ``!`` differs.
+    """
+    if text[start] != "!" or start + 1 >= len(text) or text[start + 1] != "[":
+        return None
+    parsed = _try_link_body(text, start + 1)
+    if parsed is None:
+        return None
+    text_start, text_end, url, title, end_pos = parsed
+    alt = text[text_start:text_end]
+    # Parse the alt text as inline content. CommonMark says emphasis,
+    # code spans etc. inside alt are AST-meaningful even though typical
+    # renderers flatten them to plain text for HTML alt attributes.
+    inner_inlines = _parse_inlines(alt)
+    return Image(inlines=inner_inlines, url=url, title=title), end_pos
+
+
+def _try_link_body(
+    text: str, start: int
+) -> tuple[int, int, str, str, int] | None:
+    """Shared body parser for ``[X](url "title")`` style constructs.
+
+    Returns ``(text_start, text_end, url, title, end_pos)`` where the
+    caller is responsible for interpreting ``text[text_start:text_end]``
+    as inline content (link text or image alt) and constructing the
+    appropriate AST node. Returns None if the pattern does not match.
+    """
     if text[start] != "[":
         return None
-    # 1. Find the matching ']'. Backslash escapes pass; nested [ not allowed.
     i = start + 1
     n = len(text)
     text_start = i
+    # 1. Find the matching ']'. Backslash escapes pass; nested [ not allowed.
     while i < n:
         if text[i] == "\\" and i + 1 < n:
             i += 2
@@ -1618,7 +1679,6 @@ def _try_inline_link(text: str, start: int) -> tuple[Link, int] | None:
         if text[i] == "]":
             break
         if text[i] == "[":
-            # Nested bracket — bail (v0.1 simplification).
             return None
         i += 1
     if i >= n or text[i] != "]":
@@ -1631,14 +1691,12 @@ def _try_inline_link(text: str, start: int) -> tuple[Link, int] | None:
     # 3. Skip optional whitespace before URL.
     while j < n and text[j] in " \t":
         j += 1
-    # 4. Parse URL: either <...> form or bare-up-to-whitespace-or-).
+    # 4. Parse URL.
     url, j = _parse_link_url(text, j)
     if url is None:
         return None
-    # CommonMark sections 6.1 + 6.5: backslash escapes and entity refs
-    # inside link destinations are decoded.
     url = _decode_inline_escapes(url)
-    # 5. Optional title in "..." or '...' or (...).
+    # 5. Optional title.
     while j < n and text[j] in " \t":
         j += 1
     title = ""
@@ -1662,18 +1720,7 @@ def _try_inline_link(text: str, start: int) -> tuple[Link, int] | None:
         j += 1
     if j >= n or text[j] != ")":
         return None
-    link_text = text[text_start:text_end]
-    # CommonMark forbids nested links — disable autolinks during the
-    # inner parse so a bare URL inside link text doesn't become a
-    # second annotation overlapping the outer one.
-    global _AUTOLINKS_ENABLED
-    prev = _AUTOLINKS_ENABLED
-    _AUTOLINKS_ENABLED = False
-    try:
-        inner_inlines = _parse_inlines(link_text)
-    finally:
-        _AUTOLINKS_ENABLED = prev
-    return Link(inlines=inner_inlines, url=url, title=title), j + 1
+    return text_start, text_end, url, title, j + 1
 
 
 def _parse_link_url(text: str, start: int) -> tuple[str | None, int]:
@@ -1969,6 +2016,10 @@ def _emit_inner(tokens: list[_Tok]) -> tuple[Inline, ...]:
         if tok.autolink is not None:
             flush()
             out.append(tok.autolink)
+            continue
+        if tok.image is not None:
+            flush()
+            out.append(tok.image)
             continue
         if tok.text is not None:
             text_buf += tok.text

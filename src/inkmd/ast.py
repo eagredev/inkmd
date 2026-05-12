@@ -87,7 +87,29 @@ class AutoLink:
             object.__setattr__(self, "text", self.url)
 
 
-Inline = Union[Text, Strong, Emphasis, Strikethrough, Code, Link, AutoLink]
+@dataclass(frozen=True)
+class Image:
+    """``![alt](url "title")`` image reference.
+
+    ``url`` is the image source — a local file path (relative or
+    absolute), a ``data:`` URI, or an ``http(s):`` URL (the last only
+    fetched when the caller opts in).
+
+    ``alt`` is the alt-text inline content (typed as a tuple of inline
+    nodes so the alt text can itself contain emphasis, code spans, etc.
+    Per CommonMark §6.4, alt text is "the textual content of the inner
+    inlines", so a consumer that wants alt-as-plain-string flattens the
+    tree to text content).
+
+    ``title`` is the optional tooltip-style string from
+    ``![alt](url "title")``.
+    """
+    inlines: tuple["Inline", ...]
+    url: str
+    title: str = ""
+
+
+Inline = Union[Text, Strong, Emphasis, Strikethrough, Code, Link, AutoLink, Image]
 
 
 # --- Block nodes ----------------------------------------------------------

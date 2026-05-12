@@ -22,6 +22,7 @@ from inkmd.ast import (
     Document,
     Emphasis,
     Heading,
+    Image,
     Inline,
     Link,
     List,
@@ -781,6 +782,17 @@ def _render_inline(
             text=inline.text, font=font, size=size,
             link_url=inline.url, color=LINK_COLOR, strike=strike,
         )]
+
+    if isinstance(inline, Image):
+        # v0.2 fallback (PDF embedding lands in a follow-up): render the
+        # alt text in italic in place of the image. This is also the
+        # disposition for missing / unreadable image sources once
+        # embedding ships — the alt text doubles as both the
+        # accessibility surface and the "couldn't show the image" tell.
+        return _flatten(
+            inline.inlines, family, family.italic, size,
+            link_url=link_url, strike=strike,
+        )
 
     raise NotImplementedError(f"render: unsupported inline {type(inline).__name__}")
 

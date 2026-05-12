@@ -32,6 +32,7 @@ from inkmd.ast import (
     Document,
     Emphasis,
     Heading,
+    Image,
     Link,
     List,
     ListItem,
@@ -218,5 +219,15 @@ def _filter_inline(node):
         return [Emphasis(inlines=_filter_inlines(node.inlines))]
     if isinstance(node, Strikethrough):
         return [Strikethrough(inlines=_filter_inlines(node.inlines))]
+    if isinstance(node, Image):
+        # Image URLs are not link annotations — the URL is consulted at
+        # embed time by inkmd.image_loader, which has its own
+        # http(s)/file/data: gating. The URL-scheme filter does not
+        # apply here.
+        return [Image(
+            inlines=_filter_inlines(node.inlines),
+            url=node.url,
+            title=node.title,
+        )]
     # Text, Code — opaque.
     return [node]

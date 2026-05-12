@@ -24,6 +24,7 @@ from inkmd.ast import (
     Document,
     Emphasis,
     Heading,
+    Image,
     Link,
     List,
     ListItem,
@@ -114,7 +115,41 @@ def render_inline(node) -> str:
         )
     if isinstance(node, AutoLink):
         return f'<a href="{escape_url(node.url)}">{escape_html(node.text)}</a>'
+    if isinstance(node, Image):
+        # CommonMark §6.4: <img src="URL" alt="ALT" title="TITLE">.
+        # Alt is the text-content of the alt inlines (formatting flat-
+        # tened); the spec reference renderer recursively flattens
+        # link/emphasis structure inside alt down to plain text.
+        alt = _inlines_to_alt_text(node.inlines)
+        title_attr = f' title="{escape_html(node.title)}"' if node.title else ""
+        return (
+            f'<img src="{escape_url(node.url)}" alt="{escape_html(alt)}"'
+            f"{title_attr} />"
+        )
     raise TypeError(f"unknown inline node: {type(node).__name__}")
+
+
+def _inlines_to_alt_text(nodes) -> str:
+    """Flatten an inline tree to its plain-text alt content.
+
+    Per CommonMark §6.4, alt text is "the textual content of the inner
+    inlines". Emphasis / strong / code spans / links contribute their
+    text content only; the surrounding markup is stripped. Nested
+    images contribute their alt text recursively.
+    """
+    out = []
+    for n in nodes:
+        if isinstance(n, Text):
+            out.append(n.content)
+        elif isinstance(n, Code):
+            out.append(n.content)
+        elif isinstance(n, AutoLink):
+            out.append(n.text)
+        elif isinstance(n, (Strong, Emphasis, Strikethrough, Link)):
+            out.append(_inlines_to_alt_text(n.inlines))
+        elif isinstance(n, Image):
+            out.append(_inlines_to_alt_text(n.inlines))
+    return "".join(out)
 
 
 def render_inlines(nodes) -> str:
