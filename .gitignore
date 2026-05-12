@@ -33,5 +33,6 @@ htmlcov/
 # Project-local
 *.pdf
 !tests/fixtures/expected/*.pdf
+!docs/gallery/*.pdf
 SESSION-HANDOFF.md
 bench-venvs/
