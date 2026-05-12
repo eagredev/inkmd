@@ -65,7 +65,7 @@ Markdown to PDF is a solved problem in theory and a minefield in practice. Every
 
 **v0.1, feature-complete, MIT-licensed.** 501 tests across 24 files. Stdlib-only, Python 3.9+. Byte-deterministic output.
 
-Conformance against the spec suites we publish openly: CommonMark 0.31.2 at 334/652 (51.2%); GFM extensions at 9/28 (32.1%). The full per-section breakdown, failure analysis, and which categories are deliberate v0.1 omissions vs. real bugs queued for v0.2 are in [`docs/conformance.md`](docs/conformance.md). Threat model and known security findings (including v0.1's unfiltered URL-scheme behaviour) are in [`docs/security.md`](docs/security.md). Edge-case render samples are committed as PDFs in [`docs/gallery/`](docs/gallery/).
+Conformance against the spec suites we publish openly: CommonMark 0.31.2 at 394/652 (60.4%); GFM extensions at 17/28 (60.7%). The full per-section breakdown, failure analysis, and which categories are deliberate v0.1 omissions vs. v0.2 features are in [`docs/conformance.md`](docs/conformance.md). Threat model and known security findings (including v0.1's unfiltered URL-scheme behaviour) are in [`docs/security.md`](docs/security.md). Edge-case render samples are committed as PDFs in [`docs/gallery/`](docs/gallery/).
 
 ## Install
 
