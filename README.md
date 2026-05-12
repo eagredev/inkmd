@@ -195,7 +195,7 @@ Four layers, each strictly above the previous:
 3. **`layout`** — wraps runs into pages, positions each `PositionedRun` against the page coordinate system, emits background rectangles for code blocks, vertical rules for blockquotes, underline + annotation pairs for links, and bars for strikethrough.
 4. **`pdf`** — serialises pages into PDF bytes. Text via `Tj`/`TJ`-with-kerning, graphics via `rg`/`re`/`f`, link annotations via per-page `/Annots` arrays.
 
-No layer imports a higher one. The whole pipeline is ~3,500 lines of pure-Python logic plus ~4,700 lines of generated AFM kerning tables — that's it. The complexity profile is documented in [`LIZARD-AUDIT.md`](LIZARD-AUDIT.md).
+No layer imports a higher one. The whole pipeline is ~3,500 lines of pure-Python logic plus ~4,700 lines of generated AFM kerning tables — that's it. For a deeper walk-through (emphasis algorithm, AFM kerning, determinism mechanics), see [`docs/internals.md`](docs/internals.md); the complexity profile is in [`LIZARD-AUDIT.md`](LIZARD-AUDIT.md).
 
 <details>
 <summary><strong>A note on font rendering in v0.1</strong> — click to expand</summary>
