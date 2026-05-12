@@ -15,6 +15,7 @@ CommonMark-subset parser, hand-rolled. Two phases:
 
 from __future__ import annotations
 
+import html.entities
 import unicodedata
 from dataclasses import dataclass, field
 
@@ -807,6 +808,8 @@ def _try_fence_open(line: str) -> _FenceInfo | None:
     # An info string containing a backtick is invalid for backtick fences.
     if ch == "`" and "`" in info:
         return None
+    # CommonMark §6.5: entities inside the info string are decoded.
+    info = _decode_entities(info)
     return _FenceInfo(char=ch, length=i, indent=indent, info=info)
 
 
@@ -940,6 +943,98 @@ def _try_table_row(line: str, n_cols: int) -> tuple[TableCell, ...] | None:
 # ASCII punctuation per CommonMark §6.1 (backslash-escapable).
 _ASCII_PUNCT = frozenset("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
 
+
+# CommonMark §6.5 entity / numeric character references.
+#
+# Three forms:
+#   &name;     — must be a valid HTML5 entity (with semicolon)
+#   &#NNN;     — decimal, 1-7 digits
+#   &#xHH;     — hex, 1-6 digits
+#
+# Invalid forms (unknown name, NUL, out-of-range, missing semicolon)
+# stay literal per CommonMark — UNLIKE stdlib html.unescape which
+# silently does its best. We need strict behaviour.
+#
+# The html5 entity table from the stdlib only stores the WITH-SEMICOLON
+# variants for CommonMark; CommonMark requires the semicolon for every
+# entity reference (including the historically-bare ones like ``&copy``).
+_HTML5_NAMED = {
+    k[:-1]: v for k, v in html.entities.html5.items() if k.endswith(";")
+}
+
+
+def _decode_entities(s: str) -> str:
+    """Decode every recognised entity / numeric reference in ``s``.
+
+    Used for contexts (link destinations, link titles, code fence info
+    strings) where the inline tokeniser does not run but entities are
+    still meaningful. Unknown ``&...;`` sequences stay literal.
+    """
+    if "&" not in s:
+        return s
+    out: list[str] = []
+    i = 0
+    n = len(s)
+    while i < n:
+        if s[i] == "&":
+            ent = _try_entity_ref(s, i)
+            if ent is not None:
+                out.append(ent[0])
+                i = ent[1]
+                continue
+        out.append(s[i])
+        i += 1
+    return "".join(out)
+
+
+def _try_entity_ref(text: str, start: int) -> tuple[str, int] | None:
+    """Try to recognise an entity reference at text[start:].
+
+    Returns (decoded_chars, end_index_after_semicolon) or None.
+    On success, end_index points just past the closing ``;``.
+    """
+    # Must start with '&'
+    if start >= len(text) or text[start] != "&":
+        return None
+    # Find the closing semicolon within a reasonable window.
+    # Longest valid: &CounterClockwiseContourIntegral; (33 chars) plus a
+    # safety margin. Numeric: &#NNNNNNN; (10) or &#xHHHHHH; (10).
+    semi = text.find(";", start + 1, start + 64)
+    if semi == -1:
+        return None
+    inner = text[start + 1:semi]
+    if not inner:
+        return None
+
+    # Numeric: &#NNN; or &#xNN; / &#XNN;
+    if inner[0] == "#":
+        body = inner[1:]
+        if not body:
+            return None
+        if body[0] in "xX":
+            digits = body[1:]
+            if not digits or len(digits) > 6:
+                return None
+            if not all(c in "0123456789abcdefABCDEF" for c in digits):
+                return None
+            cp = int(digits, 16)
+        else:
+            if len(body) > 7:
+                return None
+            if not body.isdigit():
+                return None
+            cp = int(body)
+        # CommonMark: NUL and out-of-range -> U+FFFD.
+        if cp == 0 or cp > 0x10FFFF or 0xD800 <= cp <= 0xDFFF:
+            return "�", semi + 1
+        return chr(cp), semi + 1
+
+    # Named entity: look up in html5 table (with-semicolon variants only).
+    if inner in _HTML5_NAMED:
+        return _HTML5_NAMED[inner], semi + 1
+
+    return None
+
 # Characters that can be backslash-escaped per CommonMark §6.1.
 _ESCAPABLE = _ASCII_PUNCT
 
@@ -1044,6 +1139,16 @@ def _tokenise(text: str) -> list[_Tok]:
             buf += text[i + 1]
             i += 2
             continue
+
+        # Entity / numeric character reference (CommonMark §6.5):
+        # &name; | &#NNN; | &#xHH;. Unknown references stay literal.
+        if ch == "&":
+            ent = _try_entity_ref(text, i)
+            if ent is not None:
+                decoded, end_pos = ent
+                buf += decoded
+                i = end_pos
+                continue
 
         # Code span: backtick to next backtick (single-backtick form only
         # for v0.0.6; multi-backtick forms are deferred).
@@ -1412,6 +1517,8 @@ def _try_inline_link(text: str, start: int) -> tuple[Link, int] | None:
     url, j = _parse_link_url(text, j)
     if url is None:
         return None
+    # CommonMark §6.5: entities inside link destinations are decoded.
+    url = _decode_entities(url)
     # 5. Optional title in "..." or '...' or (...).
     while j < n and text[j] in " \t":
         j += 1
@@ -1429,7 +1536,7 @@ def _try_inline_link(text: str, start: int) -> tuple[Link, int] | None:
             j += 1
         if j >= n or text[j] != quote:
             return None
-        title = title_buf
+        title = _decode_entities(title_buf)
         j += 1
     # 6. Skip whitespace before closing ')'.
     while j < n and text[j] in " \t":
