@@ -263,29 +263,31 @@ Total v0.2 estimate: ~4000 LoC of focused work, ~85 conformance
 tests, plus the security and qualitative improvements. At current
 pace that is ~3-5 focused sessions to implement and test.
 
-## Open questions
+## Resolved questions (2026-05-13)
 
-These need user input before implementation starts:
+These were initial open questions; all resolved before
+implementation.
 
-1. **Should `<details>` actually render expanded in the PDF, or
-   should we keep it collapsed with a "[+] expand" indicator like
-   GitHub does in print view?** Recommendation: expanded by default;
-   PDF cannot truly collapse without JavaScript form fields; a `[+]`
-   indicator is misleading.
+1. **`<details>` rendering** — render expanded by default. The
+   summary line is styled as a small heading; the body content
+   renders below in normal flow. No `[+]` indicator; no attempt to
+   simulate collapsibility. PDF readers cannot toggle visibility
+   without form-field JavaScript, which inkmd does not emit.
 
-2. **Should we accept GitHub-style `<picture>` and `<source>` for
-   responsive images?** Recommendation: no for v0.2; if we
-   implement images they go through the markdown `![](url)` syntax,
-   not via passthrough HTML. Keep the allow-list small.
+2. **`<picture>` and `<source>`** — accepted in passthrough. The
+   v0.2 image pipeline picks the first `<source>` with a media
+   query that matches print-flavoured constraints (or the first
+   `srcset` candidate at a sensible default density); falls back
+   to the inner `<img>` if none match. This extends the image-
+   handling surface but the cost is bounded because the parser
+   need only pick *one* of the candidates.
 
-3. **Should `<a href>` HTML links be treated the same as markdown
-   `[text](url)` links?** Recommendation: yes, treat them as
-   equivalent and route through the same Link AST node — saves a
-   render-side branch and means we can apply the same URL-scheme
-   filter (task 36) to both.
+3. **HTML `<a href>` vs markdown `[text](url)`** — same AST node.
+   The HTML form becomes syntactic sugar for the markdown form at
+   parse time; both produce a `Link` node, both route through the
+   same URL scheme filter (task 36), both render identically.
 
-4. **Should HTML comments be visible or stripped?** Recommendation:
-   stripped. They're authoring artefacts; users do not expect them
-   in printed output. Counter-argument: stripping makes round-
-   tripping impossible. We do not aim to round-trip; markdown is
-   the source of truth.
+4. **HTML comments `<!-- ... -->`** — stripped silently. Comments
+   are authoring artefacts; users do not expect them in printed
+   output. Round-tripping is not a goal; markdown is the source of
+   truth.
