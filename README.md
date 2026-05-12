@@ -19,7 +19,7 @@ Every other markdown → PDF tool needs heavy system dependencies:
 
 ## Status
 
-**v0.1 — feature-complete.** Library + CLI both work. 478 tests across 22 files. Stdlib-only Python 3.9+.
+**v0.1 — feature-complete.** Library + CLI both work. 495 tests across 23 files. Stdlib-only Python 3.9+.
 
 ## Install
 
@@ -69,7 +69,7 @@ pdf_bytes = inkmd.compile(
 ## What `inkmd` supports
 
 - **CommonMark**: paragraphs, ATX (1-6) + Setext headings, ordered + unordered lists with nesting and tight/loose detection, blockquotes (nested, multi-paragraph, can wrap any block type), fenced code blocks with preserved whitespace and soft-wrap, code spans, emphasis (full left/right-flanking algorithm including rule of 3 and intraword-underscore), thematic breaks, inline links `[text](url)`, autolinks `<url>`.
-- **GFM extensions**: pipe tables with alignments, fenced code with language tag, bare-URL and email autolinks (toggle with `--no-autolinks` / `autolinks=False`).
+- **GFM extensions**: pipe tables with alignments, fenced code with language tag, bare-URL and email autolinks (toggle with `--no-autolinks` / `autolinks=False`), strikethrough `~~text~~`.
 - **Page sizes**: A4, Letter.
 - **Fonts**: Helvetica family (sans, default) or Times family (serif). Code uses Courier. All 14 standard PDF fonts are available internally.
 - **Visual style**: clickable PDF `/Link` annotations on URLs, blue underlined link text, light-grey background fill behind fenced code, thin grey rules for blockquotes (stacked side-by-side for nested), tinted table headers with full grid borders, AFM-correct kerning emitted via TJ arrays.
@@ -80,7 +80,7 @@ pdf_bytes = inkmd.compile(
 
 - **Images** — planned for v0.2.
 - **Custom fonts / TTF / OTF embedding** — planned for v0.2. Means **v0.1 is WinAnsi only**: codepoints outside Latin-1 / WinAnsi (CJK, Cyrillic, emoji, most non-Latin scripts) render as `?`. v0.2 lifts this by embedding font outlines into the PDF.
-- **Strikethrough and task lists** — GFM extensions deferred to v0.2 alongside the inline-extensions pass.
+- **Task lists** (`- [ ]` / `- [x]`) — GFM extension deferred to v0.2 alongside the rest of the list-prefix extensions.
 - **Tables that split across pages** — tables place atomically. A table taller than one page will overflow. v0.2.
 - **Tables inside blockquotes** — table detection runs at document level only. Tables nested inside a blockquote are silently dropped. v0.2.
 - **Tagged PDF / PDF/UA accessibility** — under consideration for v0.3+.

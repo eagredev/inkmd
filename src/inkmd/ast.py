@@ -39,6 +39,12 @@ class Emphasis:
 
 
 @dataclass(frozen=True)
+class Strikethrough:
+    """``~~struck~~`` (GFM). Contains inline children."""
+    inlines: tuple["Inline", ...]
+
+
+@dataclass(frozen=True)
 class Code:
     """``Inline code`` — opaque content, no nested parsing."""
     content: str
@@ -63,7 +69,7 @@ class AutoLink:
     url: str
 
 
-Inline = Union[Text, Strong, Emphasis, Code, Link, AutoLink]
+Inline = Union[Text, Strong, Emphasis, Strikethrough, Code, Link, AutoLink]
 
 
 # --- Block nodes ----------------------------------------------------------

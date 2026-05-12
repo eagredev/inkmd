@@ -31,6 +31,7 @@ from inkmd.ast import (
     List,
     ListItem,
     Paragraph,
+    Strikethrough,
     Strong,
     Table,
     TableCell,
@@ -1045,12 +1046,18 @@ def _tokenise(text: str) -> list[_Tok]:
                 i = end_pos
                 continue
 
-        # Delimiter run: * or _, one or more of the same char.
-        if ch in "*_":
+        # Delimiter run: * / _ / ~, one or more of the same char.
+        if ch in "*_~":
             j = i
             while j < n and text[j] == ch:
                 j += 1
             run = text[i:j]
+            # GFM strikethrough: only ~~ (length-2) is significant; a
+            # single ~ or 3+ tildes stay as literal text.
+            if ch == "~" and len(run) != 2:
+                buf += run
+                i = j
+                continue
             flush_text()
             # Compute flanking from neighbours.
             prev = text[i - 1] if i > 0 else " "
@@ -1522,7 +1529,8 @@ def _flanking(ch: str, prev: str, nxt: str) -> tuple[bool, bool]:
     left_flanking = (not nxt_ws) and (not nxt_punct or prev_ws or prev_punct)
     right_flanking = (not prev_ws) and (not prev_punct or nxt_ws or nxt_punct)
 
-    if ch == "*":
+    if ch in "*~":
+        # GFM treats `~~` flanking like `*` — no intraword rule.
         return left_flanking, right_flanking
     # ch == "_"
     can_open = left_flanking and (not right_flanking or prev_punct)
@@ -1576,13 +1584,20 @@ def _resolve_emphasis(tokens: list[_Tok]) -> None:
             continue
 
         opener = tokens[opener_idx].delim
-        # Eat 2 chars for Strong, else 1 for Emphasis.
-        eat = 2 if opener.length >= 2 and d.length >= 2 else 1
+        # For ~ (GFM strikethrough), only the exact ~~/~~ pairing is
+        # meaningful — both sides are guaranteed length-2 by the tokeniser,
+        # so eat=2 always. For * / _, eat 2 chars for Strong, else 1.
+        if d.char == "~":
+            eat = 2
+        else:
+            eat = 2 if opener.length >= 2 and d.length >= 2 else 1
 
         # Build the span over tokens (opener_idx, i).
         inner_tokens = tokens[opener_idx + 1:i]
         inner = _emit_inner(inner_tokens)
-        if eat == 2:
+        if d.char == "~":
+            span = Strikethrough(inlines=inner)
+        elif eat == 2:
             span = Strong(inlines=inner)
         else:
             span = Emphasis(inlines=inner)
