@@ -1166,23 +1166,23 @@ def _try_bare_autolink(text: str, start: int) -> tuple["AutoLink", int] | None:
             end = _scan_url_body(text, start + len(scheme))
             if end is None:
                 return None
-            url = text[start:end]
-            return AutoLink(url=url), end
+            literal = text[start:end]
+            return AutoLink(url=literal, text=literal), end
 
     # 2. www.-prefixed.
     if text.startswith(_BARE_URL_PREFIX, start):
         end = _scan_url_body(text, start + len(_BARE_URL_PREFIX))
         if end is None:
             return None
-        url = "http://" + text[start:end]
-        return AutoLink(url=url), end
+        literal = text[start:end]
+        return AutoLink(url="http://" + literal, text=literal), end
 
     # 3. Email — must have @ within reach and a TLD-like ending.
     if start < len(text) and text[start] in _EMAIL_LOCAL_CHARS:
         end = _scan_email(text, start)
         if end is not None:
             email = text[start:end]
-            return AutoLink(url="mailto:" + email), end
+            return AutoLink(url="mailto:" + email, text=email), end
 
     # 4. Bare host.tld/path — extends GFM with a useful real-world case.
     # `linkedin.com/in/dylanmoir`, `github.com/eagredev` and similar
@@ -1192,8 +1192,8 @@ def _try_bare_autolink(text: str, start: int) -> tuple["AutoLink", int] | None:
     if start < len(text) and text[start] in _HOST_CHARS:
         end = _scan_bare_host_with_path(text, start)
         if end is not None:
-            url = "http://" + text[start:end]
-            return AutoLink(url=url), end
+            literal = text[start:end]
+            return AutoLink(url="http://" + literal, text=literal), end
 
     return None
 
@@ -1506,7 +1506,7 @@ def _try_autolink(text: str, start: int) -> tuple[AutoLink, int] | None:
     if colon == -1:
         # Try email shape: local@domain.tld
         if "@" in inner:
-            return AutoLink(url="mailto:" + inner), end + 1
+            return AutoLink(url="mailto:" + inner, text=inner), end + 1
         return None
     scheme = inner[:colon]
     if not scheme or scheme[0] not in _AUTOLINK_SCHEME:
@@ -1515,7 +1515,7 @@ def _try_autolink(text: str, start: int) -> tuple[AutoLink, int] | None:
         return None
     if not (2 <= len(scheme) <= 32):
         return None
-    return AutoLink(url=inner), end + 1
+    return AutoLink(url=inner, text=inner), end + 1
 
 
 def _flanking(ch: str, prev: str, nxt: str) -> tuple[bool, bool]:

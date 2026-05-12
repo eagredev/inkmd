@@ -769,14 +769,8 @@ def _render_inline(
         return _flatten(inline.inlines, family, font, size, link_url=inline.url, strike=strike)
 
     if isinstance(inline, AutoLink):
-        # AutoLink: URL is the destination; display text is the URL with
-        # the mailto: prefix stripped if present (so an email autolink
-        # shows the bare address, not "mailto:dylan@example.com").
-        display = inline.url
-        if display.startswith("mailto:"):
-            display = display[len("mailto:"):]
         return [Run(
-            text=display, font=font, size=size,
+            text=inline.text, font=font, size=size,
             link_url=inline.url, color=LINK_COLOR, strike=strike,
         )]
 

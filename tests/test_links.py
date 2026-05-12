@@ -115,7 +115,9 @@ def test_autolink_url():
 def test_autolink_email_gets_mailto_prefix():
     doc = parse("<dylan@example.com>")
     p = doc.blocks[0]
-    assert p.inlines == (AutoLink(url="mailto:dylan@example.com"),)
+    assert p.inlines == (
+        AutoLink(url="mailto:dylan@example.com", text="dylan@example.com"),
+    )
 
 
 def test_autolink_with_path_and_query():
