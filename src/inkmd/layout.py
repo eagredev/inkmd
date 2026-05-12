@@ -116,6 +116,26 @@ class LinkAnnotation:
 
 
 @dataclass(frozen=True)
+class ImagePlacement:
+    """A raster image placed on a page.
+
+    ``image_id`` is a stable identifier (typically the source URL) used
+    by the PDF emitter to deduplicate XObjects when the same image
+    appears multiple times. ``image_data`` carries the loaded bytes
+    plus dimensions (an ``inkmd.image_loader.ImageData`` instance).
+    ``x`` / ``y`` are the bottom-left corner of the image's bounding
+    box on the page in PDF coordinates. ``width`` / ``height`` are
+    the displayed dimensions (the emitter scales source pixels via /cm).
+    """
+    image_id: str
+    image_data: object  # inkmd.image_loader.ImageData
+    x: float
+    y: float
+    width: float
+    height: float
+
+
+@dataclass(frozen=True)
 class Page:
     """A list of lines that share one physical page.
 
@@ -437,7 +457,9 @@ def paginate_runs(
     y_cursor = top_y
 
     def flush_page() -> None:
-        if current_lines:
+        # Flush whenever the page has content of any kind. Pages whose
+        # only content is image placements (no lines) must still emit.
+        if current_lines or current_shapes or current_annotations:
             pages.append(
                 Page(
                     tuple(current_lines),
@@ -474,16 +496,31 @@ def paginate_runs(
                 current_annotations = []
                 y_cursor = top_y
             table_top_y = y_cursor
-            # Translate every relative shape to absolute Rect.
+            # Translate every relative shape to its absolute placement.
+            # "fill" shapes become filled Rects; "image" shapes become
+            # ImagePlacements that the PDF emitter resolves to /XObject
+            # references.
             for shape_dict in parts.prepositioned_shapes:
-                rect = Rect(
-                    x=margin + shape_dict["x_offset"],
-                    y=table_top_y - shape_dict["rel_y_top"] - shape_dict["height"],
-                    width=shape_dict["width"],
-                    height=shape_dict["height"],
-                    fill=shape_dict["fill"],
-                )
-                current_shapes.append(rect)
+                kind = shape_dict.get("kind", "fill")
+                if kind == "image":
+                    placement = ImagePlacement(
+                        image_id=shape_dict["image_id"],
+                        image_data=shape_dict["image_data"],
+                        x=margin + shape_dict["x_offset"],
+                        y=table_top_y - shape_dict["rel_y_top"] - shape_dict["height"],
+                        width=shape_dict["width"],
+                        height=shape_dict["height"],
+                    )
+                    current_shapes.append(placement)
+                else:
+                    rect = Rect(
+                        x=margin + shape_dict["x_offset"],
+                        y=table_top_y - shape_dict["rel_y_top"] - shape_dict["height"],
+                        width=shape_dict["width"],
+                        height=shape_dict["height"],
+                        fill=shape_dict["fill"],
+                    )
+                    current_shapes.append(rect)
             # Translate every relative positioned-run line.
             for baseline_from_top, runs_record in parts.prepositioned_lines:
                 positioned_list = []
