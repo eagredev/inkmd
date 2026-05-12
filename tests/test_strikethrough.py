@@ -37,13 +37,26 @@ def test_strikethrough_inside_paragraph():
     )
 
 
-def test_single_tilde_is_literal():
-    """A solo ~ is not a strike delimiter — it stays as text."""
+def test_single_tilde_strikes():
+    """A single ~text~ pair produces a Strikethrough per GFM. The spec's
+    text says "two tildes" but the reference implementation (cmark-gfm)
+    accepts one or two; we follow the implementation, as does GitHub."""
     doc = parse("a ~tilde~ pair")
     para = doc.blocks[0]
-    # The parser keeps single-tilde runs as plain text in the buffer.
+    strikes = [x for x in para.inlines if isinstance(x, Strikethrough)]
+    assert len(strikes) == 1
+    inner_text = "".join(
+        t.content for t in strikes[0].inlines if isinstance(t, Text)
+    )
+    assert inner_text == "tilde"
+
+
+def test_unmatched_lone_tilde_stays_literal():
+    """A single ~ with nothing to close it remains plain text."""
+    doc = parse("alone ~ here")
+    para = doc.blocks[0]
     text_content = "".join(t.content for t in para.inlines if isinstance(t, Text))
-    assert "~tilde~" in text_content
+    assert "~" in text_content
     assert not any(isinstance(x, Strikethrough) for x in para.inlines)
 
 

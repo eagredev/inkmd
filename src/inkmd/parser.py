@@ -1063,9 +1063,9 @@ def _tokenise(text: str) -> list[_Tok]:
             while j < n and text[j] == ch:
                 j += 1
             run = text[i:j]
-            # GFM strikethrough: only ~~ (length-2) is significant; a
-            # single ~ or 3+ tildes stay as literal text.
-            if ch == "~" and len(run) != 2:
+            # GFM strikethrough: 1 or 2 tildes can open/close. Runs of
+            # 3 or more tildes are literal text per the GFM reference.
+            if ch == "~" and len(run) > 2:
                 buf += run
                 i = j
                 continue
@@ -1595,11 +1595,18 @@ def _resolve_emphasis(tokens: list[_Tok]) -> None:
             continue
 
         opener = tokens[opener_idx].delim
-        # For ~ (GFM strikethrough), only the exact ~~/~~ pairing is
-        # meaningful — both sides are guaranteed length-2 by the tokeniser,
-        # so eat=2 always. For * / _, eat 2 chars for Strong, else 1.
+        # For ~ (GFM strikethrough), the opener and closer must have the
+        # same length (1 or 2). Skip a mismatched pair the same way we'd
+        # skip an unbalanced * or _.
         if d.char == "~":
-            eat = 2
+            if opener.length != d.length:
+                # Mismatched tilde lengths cannot close each other in GFM.
+                # Treat the closer as not-a-closer and move on.
+                if not d.can_open:
+                    tokens[i].delim = None
+                i += 1
+                continue
+            eat = d.length
         else:
             eat = 2 if opener.length >= 2 and d.length >= 2 else 1
 
