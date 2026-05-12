@@ -162,7 +162,32 @@ def test_render_blockquote_sets_left_rule():
 
     doc = parse("> hello")
     block = render_document(doc)[0]
-    assert block.left_rule_x is not None
+    assert len(block.left_rules) == 1
+
+
+def test_render_nested_blockquote_stacks_rules():
+    """`> > foo` should produce two rules side-by-side, not one.
+
+    Added 0.0.11.6 after torture-test triage. The outer rule sits at
+    the outermost x; the inner rule sits one quote-indent to its right.
+    """
+    from inkmd.render import render_document
+
+    doc = parse("> > inner")
+    block = render_document(doc)[0]
+    assert len(block.left_rules) == 2
+    # Both rules at distinct x positions, outermost first.
+    assert block.left_rules[0] < block.left_rules[1]
+
+
+def test_render_triple_nested_blockquote_stacks_three_rules():
+    from inkmd.render import render_document
+
+    doc = parse("> > > deep")
+    block = render_document(doc)[0]
+    assert len(block.left_rules) == 3
+    # Outermost to innermost, monotonically increasing.
+    assert block.left_rules[0] < block.left_rules[1] < block.left_rules[2]
 
 
 def test_render_blockquote_indents_body():

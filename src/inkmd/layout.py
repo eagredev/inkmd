@@ -342,7 +342,7 @@ class _BlockParts:
     marker_runs: tuple[Run, ...]
     marker_x: float
     compact: bool  # if True, suppress the default paragraph_spacing gap before this block
-    left_rule_x: float | None
+    left_rules: tuple[float, ...]
     left_rule_fill: tuple[float, float, float]
     background_fill: tuple[float, float, float] | None
     bg_padding: float
@@ -362,8 +362,8 @@ def _block_parts(block) -> _BlockParts:
     deliberately does not import render to keep the layer order clean.
     """
     if hasattr(block, "runs"):
-        rule_x = getattr(block, "left_rule_x", None)
         bg = getattr(block, "background_fill", None)
+        rules = getattr(block, "left_rules", ())
         return _BlockParts(
             runs=list(block.runs),
             space_above=float(getattr(block, "space_above", 0.0)),
@@ -372,7 +372,7 @@ def _block_parts(block) -> _BlockParts:
             marker_runs=tuple(getattr(block, "marker_runs", ())),
             marker_x=float(getattr(block, "marker_x", 0.0)),
             compact=bool(getattr(block, "compact", False)),
-            left_rule_x=float(rule_x) if rule_x is not None else None,
+            left_rules=tuple(float(r) for r in rules),
             left_rule_fill=tuple(getattr(block, "left_rule_fill", (0.6, 0.6, 0.6))),
             background_fill=tuple(bg) if bg is not None else None,
             bg_padding=float(getattr(block, "bg_padding", 4.0)),
@@ -390,7 +390,7 @@ def _block_parts(block) -> _BlockParts:
         marker_runs=(),
         marker_x=0.0,
         compact=False,
-        left_rule_x=None,
+        left_rules=(),
         left_rule_fill=(0.6, 0.6, 0.6),
         background_fill=None,
         bg_padding=4.0,
@@ -600,11 +600,11 @@ def paginate_runs(
             for ul_rect, ann in _link_decorations(positioned):
                 current_shapes.append(ul_rect)
                 current_annotations.append(ann)
-            # Per-line left rule for blockquotes.
-            if parts.left_rule_x is not None:
+            # Per-line left rules for blockquotes. Multiple rules =
+            # nested quote depth, each at its own x offset.
+            for rule_x_rel in parts.left_rules:
                 rule_w = 2.0
-                rule_x = margin + parts.left_rule_x
-                # Rule spans the line's vertical extent (~line_height).
+                rule_x = margin + rule_x_rel
                 current_shapes.append(
                     Rect(
                         x=rule_x,
