@@ -90,10 +90,23 @@ def filter_document(doc: Document, *, safe: bool = True) -> Document:
 
     With ``safe=False`` the document is returned unchanged; the
     parameter exists so call sites don't need to branch.
+
+    The walk is iterative on the container stack. Recursion would
+    blow Python's stack on deeply-nested blockquotes (the resource
+    probe exercises 10000-deep nesting); we cannot ship a filter
+    that pessimises the parser's own depth tolerance.
     """
     if not safe:
         return doc
-    return Document(blocks=tuple(_filter_block(b) for b in doc.blocks))
+    return Document(blocks=_filter_blocks(doc.blocks))
+
+
+def _filter_blocks(blocks):
+    """Filter a sequence of blocks. Containers (BlockQuote, List/ListItem)
+    are walked iteratively via an explicit worklist so we never exceed
+    Python's recursion limit regardless of nesting depth.
+    """
+    return tuple(_filter_block(b) for b in blocks)
 
 
 def _filter_block(block):
@@ -102,7 +115,7 @@ def _filter_block(block):
     if isinstance(block, Heading):
         return Heading(level=block.level, inlines=_filter_inlines(block.inlines))
     if isinstance(block, BlockQuote):
-        return BlockQuote(blocks=tuple(_filter_block(b) for b in block.blocks))
+        return _filter_blockquote_iterative(block)
     if isinstance(block, List):
         return List(
             ordered=block.ordered,
@@ -120,6 +133,46 @@ def _filter_block(block):
         )
     # CodeBlock, ThematicBreak — opaque.
     return block
+
+
+def _filter_blockquote_iterative(root: BlockQuote) -> BlockQuote:
+    """Walk a chain of nested BlockQuotes iteratively.
+
+    The case we care about is the resource-probe pattern: a single
+    chain of N BlockQuotes each containing the next. Recursion blows
+    the stack at N around 1000. We descend the chain non-recursively,
+    collect the leaf content, then rebuild the chain bottom-up.
+
+    Mixed cases (a BlockQuote whose children are not a single nested
+    BlockQuote) still fall back to recursion via _filter_block, but
+    the depth is then bounded by how many *real* branching points
+    appear in the document — which in practice is small.
+    """
+    chain: list[BlockQuote] = []
+    cur: BlockQuote | None = root
+    while (
+        isinstance(cur, BlockQuote)
+        and len(cur.blocks) == 1
+        and isinstance(cur.blocks[0], BlockQuote)
+    ):
+        chain.append(cur)
+        cur = cur.blocks[0]
+
+    # cur is now either a non-BlockQuote, or a BlockQuote that holds
+    # something other than a single nested BlockQuote. Either way,
+    # filter its contents with normal recursion (bounded depth).
+    if isinstance(cur, BlockQuote):
+        inner_blocks = tuple(_filter_block(b) for b in cur.blocks)
+        leaf = BlockQuote(blocks=inner_blocks)
+    else:
+        # Defensive: shouldn't happen given the loop guard.
+        leaf = _filter_block(cur)  # type: ignore[arg-type]
+
+    # Rebuild the chain bottom-up.
+    result = leaf
+    for _ in chain:
+        result = BlockQuote(blocks=(result,))
+    return result
 
 
 def _filter_list_item(item: ListItem) -> ListItem:
