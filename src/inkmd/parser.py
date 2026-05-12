@@ -963,6 +963,25 @@ _HTML5_NAMED = {
 }
 
 
+def _find_matching_backticks(text: str, start: int, n: int) -> int | None:
+    """Return the index of a run of EXACTLY ``n`` backticks starting at
+    or after ``start``, or None if no such run exists in the input.
+    """
+    i = start
+    end = len(text)
+    while i < end:
+        if text[i] != "`":
+            i += 1
+            continue
+        j = i
+        while j < end and text[j] == "`":
+            j += 1
+        if j - i == n:
+            return i
+        i = j
+    return None
+
+
 def _decode_entities(s: str) -> str:
     """Decode every recognised entity / numeric reference in ``s``.
 
@@ -1150,15 +1169,39 @@ def _tokenise(text: str) -> list[_Tok]:
                 i = end_pos
                 continue
 
-        # Code span: backtick to next backtick (single-backtick form only
-        # for v0.0.6; multi-backtick forms are deferred).
+        # Code span: a run of N backticks opens, closed by the next run
+        # of EXACTLY N backticks (CommonMark §6.1). Content has internal
+        # newlines collapsed to spaces, plus one optional leading and
+        # trailing space stripped together if the result still contains
+        # a non-space.
         if ch == "`":
-            close = text.find("`", i + 1)
-            if close != -1:
+            run_end = i
+            while run_end < n and text[run_end] == "`":
+                run_end += 1
+            run_len = run_end - i
+            close_start = _find_matching_backticks(text, run_end, run_len)
+            if close_start is not None:
+                content = text[run_end:close_start]
+                # Internal line-endings -> space.
+                content = content.replace("\r\n", "\n").replace("\r", "\n")
+                content = content.replace("\n", " ")
+                # Strip one leading and trailing space iff both exist and
+                # the body has at least one non-space character.
+                if (
+                    len(content) >= 2
+                    and content[0] == " "
+                    and content[-1] == " "
+                    and content.strip()
+                ):
+                    content = content[1:-1]
                 flush_text()
-                tokens.append(_Tok(code=text[i + 1:close]))
-                i = close + 1
+                tokens.append(_Tok(code=content))
+                i = close_start + run_len
                 continue
+            # No matching close: emit the backticks as literal text.
+            buf += text[i:run_end]
+            i = run_end
+            continue
 
         # Inline link: [text](url) or [text](url "title").
         if ch == "[":
