@@ -154,6 +154,54 @@ def test_indented_fence_strips_matching_indent():
     assert block.content == "content\n    deeper"
 
 
+def test_fence_after_list_at_column_zero():
+    """A column-0 fence following a list (with blank-line separator) must
+    open a new code block at the document level, not be absorbed as
+    paragraph content.
+
+    Regression: discovered 2026-05-12 while rendering the README hero
+    sample. The original feed() short-circuited fence detection when
+    list_stack was non-empty; ``` lines after a list were falling through
+    to paragraph accumulation, and worse, subsequent text was being
+    captured as the *content* of the malformed code block.
+    """
+    md = (
+        "- item one\n"
+        "- item two\n"
+        "\n"
+        "```python\n"
+        "x = 1\n"
+        "```\n"
+        "\n"
+        "After.\n"
+    )
+    doc = parse(md)
+    kinds = [type(b).__name__ for b in doc.blocks]
+    assert kinds == ["List", "CodeBlock", "Paragraph"]
+    code = doc.blocks[1]
+    assert code.content == "x = 1"
+    assert code.info == "python"
+
+
+def test_fence_inside_list_item():
+    """A fence indented to sit inside a list item should open a code block
+    scoped to that item (not at document level)."""
+    md = (
+        "- item with code:\n"
+        "\n"
+        "    ```\n"
+        "    payload\n"
+        "    ```\n"
+    )
+    doc = parse(md)
+    assert len(doc.blocks) == 1
+    lst = doc.blocks[0]
+    item = lst.items[0]
+    item_block_kinds = [type(b).__name__ for b in item.blocks]
+    # Paragraph for "item with code:", then a CodeBlock inside the item.
+    assert "CodeBlock" in item_block_kinds
+
+
 # --- Render -----------------------------------------------------------------
 
 

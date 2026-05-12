@@ -207,7 +207,10 @@ class _BlockParser:
         stripped_line = line.lstrip(" ")
         line_indent = len(line) - len(stripped_line)
 
-        # Fence open at top-of-current-container — detect before list logic.
+        # Fence open at column 0 (no list active) — short-circuit before
+        # list-stack walking. Fence-opens inside list items are handled
+        # later in _handle_content_line after the list-stack matching has
+        # determined which container the fence belongs to.
         if not self.list_stack:
             fence_open = _try_fence_open(line)
             if fence_open is not None:
@@ -349,13 +352,21 @@ class _BlockParser:
             self._add_block(ThematicBreak())
             return
 
-        # 4. List marker: starts a new list, a new item, or nests.
+        # 4. Fenced code block. Inside a list item this opens a code
+        #    block scoped to the item; at document level the early-out
+        #    in feed() handles it before list-stack matching.
+        fence_open = _try_fence_open(remaining)
+        if fence_open is not None:
+            self._open_code_fence(fence_open)
+            return
+
+        # 5. List marker: starts a new list, a new item, or nests.
         marker = _try_marker(remaining)
         if marker is not None:
             self._handle_marker(remaining, marker)
             return
 
-        # 5. Plain paragraph content.
+        # 6. Plain paragraph content.
         self._add_paragraph_line(remaining)
 
     def _handle_marker(self, remaining: str, marker: "_MarkerInfo") -> None:
