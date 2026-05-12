@@ -19,9 +19,9 @@ Every other markdown → PDF tool needs heavy system dependencies:
 
 ## Status
 
-**Pre-v0.1.** Not yet usable. Skeleton stage. See the [roadmap](#roadmap) below for what's coming.
+**v0.1 — feature-complete.** Library + CLI both work. 478 tests across 22 files. Stdlib-only Python 3.9+.
 
-## Install (when released)
+## Install
 
 ```sh
 pip install inkmd
@@ -34,15 +34,16 @@ curl -O https://github.com/eagredev/inkmd/releases/latest/download/inkmd.pyz
 python inkmd.pyz in.md -o out.pdf
 ```
 
-## Usage (planned API)
+## Usage
 
 CLI:
 
 ```sh
-inkmd in.md -o out.pdf
-inkmd in.md > out.pdf
-inkmd < in.md > out.pdf
-inkmd in.md --page-size letter --no-deterministic -o out.pdf
+inkmd in.md -o out.pdf              # file in, file out
+inkmd in.md > out.pdf               # file in, stdout out
+inkmd < in.md > out.pdf             # stdin in, stdout out
+inkmd in.md -o out.pdf --page-size A4 --family times
+inkmd in.md -o out.pdf --no-autolinks
 ```
 
 Library:
@@ -55,21 +56,33 @@ pdf_bytes = inkmd.compile(md_text)
 
 # Or convert files directly
 inkmd.render_file("input.md", "output.pdf")
+
+# Options
+pdf_bytes = inkmd.compile(
+    md_text,
+    page_size="A4",          # or "letter" (default)
+    family="times",          # or "helvetica" (default)
+    autolinks=False,         # opt out of GFM bare-URL/email detection
+)
 ```
 
-## What `inkmd` supports (v0.1 target)
+## What `inkmd` supports
 
-- CommonMark baseline (paragraphs, headings, lists, blockquotes, code blocks, code spans, emphasis, links)
-- GFM extensions: pipe tables, fenced code with language tag, strikethrough, task lists
-- Page sizes: A4 (default), Letter
-- 14 standard PDF fonts (Helvetica / Times / Courier variants, Symbol, ZapfDingbats)
-- WinAnsi character encoding
-- Deterministic output: same input → byte-identical PDF, every time, on every platform
+- **CommonMark**: paragraphs, ATX (1-6) + Setext headings, ordered + unordered lists with nesting and tight/loose detection, blockquotes (nested, multi-paragraph, can wrap any block type), fenced code blocks with preserved whitespace and soft-wrap, code spans, emphasis (full left/right-flanking algorithm including rule of 3 and intraword-underscore), thematic breaks, inline links `[text](url)`, autolinks `<url>`.
+- **GFM extensions**: pipe tables with alignments, fenced code with language tag, bare-URL and email autolinks (toggle with `--no-autolinks` / `autolinks=False`).
+- **Page sizes**: A4, Letter.
+- **Fonts**: Helvetica family (sans, default) or Times family (serif). Code uses Courier. All 14 standard PDF fonts are available internally.
+- **Visual style**: clickable PDF `/Link` annotations on URLs, blue underlined link text, light-grey background fill behind fenced code, thin grey rules for blockquotes (stacked side-by-side for nested), tinted table headers with full grid borders, AFM-correct kerning emitted via TJ arrays.
+- **WinAnsi character encoding** (em-dash, en-dash, curly quotes, ellipsis, most Western European glyphs).
+- **Deterministic output**: same input → byte-identical PDF, every time, on every platform.
 
 ## What `inkmd` doesn't support (yet)
 
 - **Images** — planned for v0.2.
-- **Custom fonts / TTF / OTF embedding** — planned for v0.2. Means **v0.1 is Latin-1 / WinAnsi only**: no CJK, no Cyrillic, no emoji, no most non-Latin scripts. It also means the actual visible rendering depends on which Helvetica clone the reader's system provides (see below).
+- **Custom fonts / TTF / OTF embedding** — planned for v0.2. Means **v0.1 is WinAnsi only**: codepoints outside Latin-1 / WinAnsi (CJK, Cyrillic, emoji, most non-Latin scripts) render as `?`. v0.2 lifts this by embedding font outlines into the PDF.
+- **Strikethrough and task lists** — GFM extensions deferred to v0.2 alongside the inline-extensions pass.
+- **Tables that split across pages** — tables place atomically. A table taller than one page will overflow. v0.2.
+- **Tables inside blockquotes** — table detection runs at document level only. Tables nested inside a blockquote are silently dropped. v0.2.
 - **Tagged PDF / PDF/UA accessibility** — under consideration for v0.3+.
 - **PDF/A archival format** — not planned.
 - **Math (LaTeX-style)** — out of scope. Use Pandoc + LaTeX if you need math.
@@ -94,23 +107,14 @@ For most use cases this is fine. If you need pixel-identical rendering across ev
 
 ## Determinism
 
-`inkmd` is deterministic by default. The same markdown input produces byte-identical PDF output on every platform, every Python version, every run. This is supported via:
-
-- A fixed `CreationDate` (no real-time clock)
-- `SOURCE_DATE_EPOCH` environment variable support
-- No random IDs in object generation
-- Stable iteration order throughout
-
-Useful for: version-controlled documents, signed/hashed PDFs, reproducible CI builds, audit trails.
-
-Disable with `--no-deterministic` (uses current time) if you need timestamps.
+`inkmd` produces byte-identical PDF output for the same markdown input on every platform, every Python version, every run. No real-time clocks, no random IDs, no platform-dependent iteration order. Useful for version-controlled documents, signed/hashed PDFs, reproducible CI builds, and audit trails.
 
 ## Roadmap
 
-- **v0.1** — Core: markdown → PDF for the subset above, library + CLI, MIT, deterministic.
-- **v0.2** — **Font embedding** (Nimbus Sans bundled by default; user-supplied TTF/OTF supported). Solves both the cross-platform-rendering question and Unicode coverage in one milestone. Also: image embedding (PNG, JPEG), headers/footers, page numbers.
-- **v0.3** — Tagged PDF / accessibility, TOC generation, hyperlinks.
-- **post-v1.0** — Optimisations, additional output sizes, PDF/A consideration.
+- **v0.1** — Core: markdown → PDF for the subset above, library + CLI, MIT, deterministic. **Shipped.**
+- **v0.2** — Font embedding (full Unicode), images, strikethrough, task lists, headers/footers, page numbers, page-splitting for oversized tables.
+- **v0.3** — Tagged PDF / accessibility, TOC generation, cross-references.
+- **post-v1.0** — Optimisations, additional page sizes, PDF/A consideration.
 
 ## Licence
 
