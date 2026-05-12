@@ -2,24 +2,51 @@
 
 **Pure-Python markdown → PDF compiler. Zero system dependencies. MIT-licensed. Deterministic by default.**
 
-`inkmd` compiles markdown into PDF without wrapping a browser, LaTeX, or HTML/CSS engine. It's a direct compiler: markdown in, PDF bytes out, no apt-get required.
+`inkmd` compiles markdown straight to PDF — no browser wrapper, no LaTeX, no HTML/CSS engine. Markdown in, PDF bytes out. If Python runs, `inkmd` runs.
 
-## Why?
+<p align="center">
+  <img src="docs/images/torture-page-1.png" alt="Page 1 of inkmd's torture-test rendered to PDF" width="600">
+  <br>
+  <em>Page 1 of <a href="examples/torture-test.md">examples/torture-test.md</a> rendered through inkmd.</em>
+</p>
+
+## Quickstart
+
+```sh
+pip install inkmd
+inkmd in.md -o out.pdf
+```
+
+Or via the library:
+
+```python
+import inkmd
+
+inkmd.render_file("in.md", "out.pdf")
+# or
+pdf_bytes = inkmd.compile(md_text)
+```
+
+That's it. No system packages, no fonts to install, no Chrome binary, no `apt-get`. Works the same on macOS, Linux, Windows, Alpine, AWS Lambda, a locked-down CI runner, or a Steam Deck.
+
+## Why does this need to exist?
 
 Every other markdown → PDF tool needs heavy system dependencies:
 
-- **wkhtmltopdf** is deprecated since 2023, with unpatched CVEs.
-- **Chrome headless / Puppeteer** is 200MB+ and adds 5-15s of cold-start latency.
-- **WeasyPrint** needs Pango, cairo, and GObject — 350-550MB of system packages, and breaks on Alpine Linux and Windows.
-- **Pandoc + LaTeX** is a 3GB texlive install.
-- **PyMuPDF-based tools** don't build on Alpine musl.
-- **`borb`** is the closest pure-Python alternative, but it's AGPL — unusable in closed-source or commercial projects without a paid licence.
+| Tool | Problem |
+|------|---------|
+| **wkhtmltopdf** | Deprecated since 2023. Unpatched CVEs. |
+| **Chrome headless / Puppeteer** | 200MB+ install. 5-15s cold-start latency. |
+| **WeasyPrint** | Needs Pango, cairo, GObject (350-550MB). Breaks on Alpine and Windows. |
+| **Pandoc + LaTeX** | 3GB texlive install. |
+| **PyMuPDF-based tools** | Don't build on Alpine musl. |
+| **`borb`** | AGPL — unusable in closed-source or commercial projects without a paid licence. |
 
-`inkmd` is designed for the places where those tools fail: Alpine Docker images, AWS Lambda functions, locked-down CI runners, Windows hosts, Steam Decks. If Python runs, `inkmd` runs.
+`inkmd` was built for the places where those fail: stripped-down Docker images, serverless functions, locked-down CI runners, embedded hardware. It uses only PDF's 14 base fonts and the Python standard library, so the wheel is tiny and there's nothing to install at the system level.
 
 ## Status
 
-**v0.1 — feature-complete.** Library + CLI both work. 495 tests across 23 files. Stdlib-only Python 3.9+.
+**v0.1 — feature-complete, MIT.** 495 tests across 23 files. Stdlib-only Python 3.9+. Byte-deterministic output verified across platforms.
 
 ## Install
 
@@ -27,7 +54,7 @@ Every other markdown → PDF tool needs heavy system dependencies:
 pip install inkmd
 ```
 
-Or, for the single-file zipapp deployment:
+Or, for the single-file zipapp deployment (no `pip` required):
 
 ```sh
 curl -O https://github.com/eagredev/inkmd/releases/latest/download/inkmd.pyz
@@ -36,7 +63,7 @@ python inkmd.pyz in.md -o out.pdf
 
 ## Usage
 
-CLI:
+### CLI
 
 ```sh
 inkmd in.md -o out.pdf              # file in, file out
@@ -44,9 +71,10 @@ inkmd in.md > out.pdf               # file in, stdout out
 inkmd < in.md > out.pdf             # stdin in, stdout out
 inkmd in.md -o out.pdf --page-size A4 --family times
 inkmd in.md -o out.pdf --no-autolinks
+inkmd --version
 ```
 
-Library:
+### Library
 
 ```python
 import inkmd
@@ -66,29 +94,78 @@ pdf_bytes = inkmd.compile(
 )
 ```
 
+The public API is intentionally narrow: two functions, no classes to instantiate, no state to manage.
+
 ## What `inkmd` supports
 
-- **CommonMark**: paragraphs, ATX (1-6) + Setext headings, ordered + unordered lists with nesting and tight/loose detection, blockquotes (nested, multi-paragraph, can wrap any block type), fenced code blocks with preserved whitespace and soft-wrap, code spans, emphasis (full left/right-flanking algorithm including rule of 3 and intraword-underscore), thematic breaks, inline links `[text](url)`, autolinks `<url>`.
-- **GFM extensions**: pipe tables with alignments, fenced code with language tag, bare-URL and email autolinks (toggle with `--no-autolinks` / `autolinks=False`), strikethrough `~~text~~`.
-- **Page sizes**: A4, Letter.
-- **Fonts**: Helvetica family (sans, default) or Times family (serif). Code uses Courier. All 14 standard PDF fonts are available internally.
-- **Visual style**: clickable PDF `/Link` annotations on URLs, blue underlined link text, light-grey background fill behind fenced code, thin grey rules for blockquotes (stacked side-by-side for nested), tinted table headers with full grid borders, AFM-correct kerning emitted via TJ arrays.
-- **WinAnsi character encoding** (em-dash, en-dash, curly quotes, ellipsis, most Western European glyphs).
-- **Deterministic output**: same input → byte-identical PDF, every time, on every platform.
+### CommonMark (full baseline)
 
-## What `inkmd` doesn't support (yet)
+- Paragraphs with wrapping
+- ATX (1-6) and Setext headings
+- Ordered and unordered lists, with arbitrary nesting and tight/loose detection
+- Blockquotes, including multi-paragraph and nested blockquotes that can wrap any block type
+- Fenced code blocks (with preserved whitespace and soft-wrap on long lines)
+- Code spans
+- Emphasis: full left/right-flanking algorithm, rule of 3, intraword-underscore rule, backslash escapes, triple-`***` → nested italic-bold
+- Thematic breaks (`---`, `***`, `___`)
+- Inline links `[text](url)` and angle-bracket autolinks `<url>`
 
-- **Images** — planned for v0.2.
-- **Custom fonts / TTF / OTF embedding** — planned for v0.2. Means **v0.1 is WinAnsi only**: codepoints outside Latin-1 / WinAnsi (CJK, Cyrillic, emoji, most non-Latin scripts) render as `?`. v0.2 lifts this by embedding font outlines into the PDF.
-- **Task lists** (`- [ ]` / `- [x]`) — GFM extension deferred to v0.2 alongside the rest of the list-prefix extensions.
-- **Tables that split across pages** — tables place atomically. A table taller than one page will overflow. v0.2.
-- **Tables inside blockquotes** — table detection runs at document level only. Tables nested inside a blockquote are silently dropped. v0.2.
-- **Tagged PDF / PDF/UA accessibility** — under consideration for v0.3+.
-- **PDF/A archival format** — not planned.
-- **Math (LaTeX-style)** — out of scope. Use Pandoc + LaTeX if you need math.
-- **HTML passthrough** — out of scope by design. `inkmd` is markdown → PDF directly.
-- **Page numbers / headers / footers** — planned for v0.2.
-- **Themes / CSS** — out of scope. Markdown's value is honest constraints; don't bring CSS back in.
+### GFM extensions
+
+- Pipe tables with alignments (left, center, right) and content-aware column widths
+- Fenced code with language tag (info-string preserved on the AST node)
+- Bare URL and email autolinks (`https://...`, `www....`, `user@host`, `host.tld/path`)
+- Strikethrough (`~~text~~`)
+
+### Visual style
+
+- Clickable PDF `/Link` annotations on every URL — both inline and autolinks
+- Blue underlined link text
+- Light-grey background fill behind fenced code blocks
+- Thin grey vertical rules for blockquotes, stacked side-by-side for nested quotes
+- Tinted table headers with full grid borders
+- AFM-correct kerning emitted via TJ arrays (Helvetica and Times both kerned)
+- Strikethrough drawn as a thin horizontal bar at glyph mid-height
+
+### Typography
+
+- Helvetica family (default) or Times family
+- Code uses Courier (regardless of body family)
+- WinAnsi character encoding — em-dash, en-dash, curly quotes, ellipsis, most Western European glyphs
+- Standard PDF letter and A4 page sizes
+
+### Determinism
+
+`inkmd` produces **byte-identical** PDF output for the same markdown input on every platform, every Python version, every run. No real-time clocks, no random IDs, no platform-dependent iteration order. Useful for version-controlled documents, signed/hashed PDFs, reproducible CI builds, audit trails.
+
+## What `inkmd` doesn't support yet
+
+| Feature | When | Why deferred |
+|---------|------|--------------|
+| **Images** | v0.2 | Needs image-decoding logic; out of scope for the minimum lovable v0.1 |
+| **TTF / OTF font embedding** | v0.2 | v0.1 uses PDF's 14 base fonts — small and dependency-free but limits codepoints to WinAnsi (no CJK, Cyrillic, emoji, most non-Latin scripts; they render as `?`) |
+| **Task lists** (`- [ ]` / `- [x]`) | v0.2 | GFM extension; needs list-marker prefix scan |
+| **Tables that split across pages** | v0.2 | Tables currently place atomically — a table taller than one page will overflow |
+| **Tables inside blockquotes** | v0.2 | Table detection runs at document level only; tables nested in a blockquote are silently dropped |
+| **Headers, footers, page numbers** | v0.2 | Needs a per-page chrome system |
+| **Tagged PDF / PDF/UA accessibility** | v0.3+ | Under consideration |
+| **PDF/A archival format** | — | Not planned |
+| **Math (LaTeX-style)** | — | Out of scope. Use Pandoc + LaTeX. |
+| **HTML passthrough** | — | Out of scope by design. `inkmd` is markdown → PDF directly. |
+| **Themes / CSS** | — | Out of scope. Markdown's value is honest constraints — don't bring CSS back in. |
+
+## How it works
+
+Four layers, each one strictly above the previous:
+
+1. **`parser`** — single-pass container-aware block parser plus a CommonMark inline tokeniser. Produces a frozen-dataclass AST.
+2. **`render`** — lowers AST blocks to `RenderedBlock` records with runs, spacing, indent, decorations. Carries font and link state through inline nesting.
+3. **`layout`** — wraps runs into pages, positions each `PositionedRun` against the page coordinate system, emits background rectangles for code blocks, vertical rules for blockquotes, underline + annotation pairs for links, and bars for strikethrough.
+4. **`pdf`** — serialises pages into PDF bytes. Text via `Tj`/`TJ`-with-kerning, graphics via `rg`/`re`/`f`, link annotations via per-page `/Annots` arrays.
+
+No layer imports a higher one. The whole pipeline is ~3,500 lines of pure-Python logic plus ~4,700 lines of generated AFM kerning tables.
+
+A deeper write-up is in progress — for now, the source is fairly self-documenting and `LIZARD-AUDIT.md` covers the complexity profile.
 
 ## A note on font rendering in v0.1
 
@@ -101,18 +178,14 @@ The trade-off is that the *actual rendering* depends on which Helvetica (or Time
 - **Linux** typically substitutes Nimbus Sans (URW++'s free Helvetica clone). Renders very similarly but with slightly different side bearings — spacing between glyphs can look subtly different.
 - **Mobile** (iOS/Android) ships system Helvetica/Roboto variants. Mostly fine.
 
-The advance widths are correct everywhere (PDF readers honor the AFM-published metrics), so layout — page breaks, line wrapping, paragraph flow — is identical across systems. What varies is the precise glyph shape *within* each advance-width box, which can produce slightly different visual spacing.
+The advance widths are correct everywhere (PDF readers honour the AFM-published metrics), so layout — page breaks, line wrapping, paragraph flow — is identical across systems. What varies is the precise glyph shape *within* each advance-width box, which can produce slightly different visual spacing.
 
 For most use cases this is fine. If you need pixel-identical rendering across every system (e.g. for signed/archival documents), wait for **v0.2 font embedding**, which will bundle font outlines inside each PDF.
-
-## Determinism
-
-`inkmd` produces byte-identical PDF output for the same markdown input on every platform, every Python version, every run. No real-time clocks, no random IDs, no platform-dependent iteration order. Useful for version-controlled documents, signed/hashed PDFs, reproducible CI builds, and audit trails.
 
 ## Roadmap
 
 - **v0.1** — Core: markdown → PDF for the subset above, library + CLI, MIT, deterministic. **Shipped.**
-- **v0.2** — Font embedding (full Unicode), images, strikethrough, task lists, headers/footers, page numbers, page-splitting for oversized tables.
+- **v0.2** — Font embedding (full Unicode), images, task lists, headers/footers/page numbers, page-splitting for oversized tables, tables-in-blockquotes.
 - **v0.3** — Tagged PDF / accessibility, TOC generation, cross-references.
 - **post-v1.0** — Optimisations, additional page sizes, PDF/A consideration.
 
