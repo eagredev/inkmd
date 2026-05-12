@@ -33,4 +33,5 @@ htmlcov/
 # Project-local
 *.pdf
 !tests/fixtures/expected/*.pdf
+!docs/gallery/*.pdf
 bench-venvs/
