@@ -116,14 +116,26 @@ modest clock). Numbers are from
 
 The parser is iterative on the container stack; there is no known
 input in v0.1.0 that triggers a `RecursionError` with the default
-`sys.setrecursionlimit`. The 10000-blockquote case shows the
-container parser scales roughly linearly with nesting depth — 10×
-the depth costs ~40× the time, suggestive of an O(*N*²) ceiling
-on container parsing that we should profile and improve in v0.2.
+`sys.setrecursionlimit`. The 10000-blockquote case shows roughly
+O(*N*²) scaling. Profiling (2026-05-13, post-Phase-2) localised
+the cost to the renderer: each level of `_render_blockquote`
+copies the current left-rule offset vector to add its own rule
+position. For *N* levels of nesting this is `N + (N-1) + ... + 1 = N²/2`
+copies, matching the observed time slope.
 
-The headline shape across the more realistic inputs: time is
-roughly linear in input size, and output size is at most ~5×
-input size for content-heavy markdown. If you find an input that takes
+In practice this only matters for adversarial inputs: real
+documents nest blockquotes a handful of levels at most, so the
+per-block cost stays a small constant. We do not "fix" this
+because doing so would require restructuring left-rule positions
+from "resolved per block at render time" to "composed at PDF-
+emission time", a refactor with no benefit to non-pathological
+input. The 3-second wall-clock at 10000 deep is well within the
+"bounded behaviour on hostile input" envelope this document
+describes.
+
+The headline shape across realistic inputs: time is roughly linear
+in input size, output size is at most ~5× input size for content-
+heavy markdown. If you find an input that takes
 disproportionate time or memory, please file an issue at
 <https://github.com/eagredev/inkmd/issues>.
 
