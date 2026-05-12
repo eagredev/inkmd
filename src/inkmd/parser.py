@@ -454,13 +454,13 @@ class _BlockParser:
 
     def _flush_item_paragraph(self, item: _ItemCtx) -> None:
         if item.paragraph_lines:
-            joined = " ".join(item.paragraph_lines)
+            joined = "\n".join(item.paragraph_lines)
             item.blocks.append(Paragraph(inlines=_parse_inlines(joined)))
             item.paragraph_lines.clear()
 
     def _flush_doc_paragraph(self) -> None:
         if self._doc_paragraph_lines:
-            joined = " ".join(self._doc_paragraph_lines)
+            joined = "\n".join(self._doc_paragraph_lines)
             self.doc_blocks.append(Paragraph(inlines=_parse_inlines(joined)))
             self._doc_paragraph_lines.clear()
 
@@ -473,11 +473,11 @@ class _BlockParser:
         """Drain the current paragraph accumulator and emit a Heading."""
         if self.list_stack:
             item = self.list_stack[-1].items[-1]
-            joined = " ".join(item.paragraph_lines)
+            joined = "\n".join(item.paragraph_lines)
             item.paragraph_lines.clear()
             item.blocks.append(Heading(level=level, inlines=_parse_inlines(joined)))
         else:
-            joined = " ".join(self._doc_paragraph_lines)
+            joined = "\n".join(self._doc_paragraph_lines)
             self._doc_paragraph_lines.clear()
             self.doc_blocks.append(Heading(level=level, inlines=_parse_inlines(joined)))
 

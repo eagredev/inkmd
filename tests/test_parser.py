@@ -81,16 +81,21 @@ def test_parse_multiple_blank_lines_still_one_separator():
 # --- parse: line joining within a paragraph -------------------------------
 
 
-def test_parse_internal_newlines_become_spaces():
-    """Per CommonMark, a soft line break inside a paragraph joins with a space."""
+def test_parse_internal_newlines_preserved_as_soft_breaks():
+    """A soft line break inside a paragraph is preserved as a literal '\\n'
+    in the AST. Per CommonMark 0.31.2 §6.9, the AST carries the newline;
+    HTML renderers emit the newline as markup (browsers collapse it to a
+    space); PDF / printed renderers also collapse it to a space at layout
+    time. The information is preserved so any consumer can decide."""
     doc = parse("Line one\nLine two\nLine three")
-    assert doc.blocks[0].inlines == (Text("Line one Line two Line three"),)
+    assert doc.blocks[0].inlines == (Text("Line one\nLine two\nLine three"),)
 
 
 def test_parse_internal_trailing_whitespace_collapsed():
     doc = parse("Line one   \nLine two")
-    # Trailing spaces stripped; lines joined with one space.
-    assert doc.blocks[0].inlines == (Text("Line one Line two"),)
+    # Trailing spaces on a soft-break line are stripped per spec;
+    # the soft break itself survives as a literal newline.
+    assert doc.blocks[0].inlines == (Text("Line one\nLine two"),)
 
 
 # --- parse: AST shape -----------------------------------------------------

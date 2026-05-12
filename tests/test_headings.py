@@ -138,10 +138,11 @@ def test_setext_h1_single_equals_works():
 
 
 def test_setext_multi_line_content_joins():
-    """Multiple content lines before underline join with a space."""
+    """Multiple content lines before the underline are joined with literal
+    newlines (soft line breaks) in the heading AST."""
     doc = parse("Line one\nLine two\n===")
     assert doc.blocks == (
-        Heading(level=1, inlines=(Text("Line one Line two"),)),
+        Heading(level=1, inlines=(Text("Line one\nLine two"),)),
     )
 
 

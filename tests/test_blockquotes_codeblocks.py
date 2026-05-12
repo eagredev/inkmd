@@ -30,10 +30,11 @@ def test_blockquote_strips_required_space_after_marker():
 
 
 def test_blockquote_joins_consecutive_lines_into_paragraph():
+    # Soft line breaks survive in the AST as literal newlines.
     doc = parse("> one\n> two\n> three")
     quote = doc.blocks[0]
     assert isinstance(quote, BlockQuote)
-    assert quote.blocks == (Paragraph(inlines=(Text("one two three"),)),)
+    assert quote.blocks == (Paragraph(inlines=(Text("one\ntwo\nthree"),)),)
 
 
 def test_blockquote_with_internal_blank_line_makes_two_paragraphs():
