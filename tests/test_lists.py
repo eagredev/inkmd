@@ -206,6 +206,33 @@ def test_empty_list_item_is_allowed():
     assert lst.items[0].blocks == ()
 
 
+def test_trailing_empty_item_preserved():
+    """An empty item at the end of a list stays in the AST.
+
+    Fixed 0.0.11.5: previously the renderer skipped empty items, making
+    a source like `-\n- after\n-` visually drop the trailing marker even
+    though the parser produced 3 items correctly. The render now emits
+    a marker-only line for empty items.
+    """
+    doc = parse("-\n- after\n-")
+    lst = doc.blocks[0]
+    assert len(lst.items) == 3
+    assert lst.items[0].blocks == ()
+    assert lst.items[2].blocks == ()
+
+
+def test_empty_item_renders_a_marker():
+    """Render: an empty item produces a RenderedBlock with marker_runs."""
+    from inkmd.render import render_document
+
+    doc = parse("-\n- after\n-")
+    blocks = render_document(doc)
+    # 3 blocks, one per item (each with a marker).
+    assert len(blocks) == 3
+    for b in blocks:
+        assert b.marker_runs, "every item must have a marker_runs"
+
+
 def test_dash_at_start_of_word_is_not_a_marker():
     """A dash without trailing space is not a list marker."""
     doc = parse("-not a list")

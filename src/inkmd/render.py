@@ -529,6 +529,24 @@ def _render_list(lst: List, family: FontFamily, depth: int) -> list[RenderedBloc
         marker_runs = (Run(text=marker_text, font=family.regular, size=BODY_SIZE),)
         marker_x = LIST_INDENT_PT * depth
 
+        if not item.blocks:
+            # An empty item still gets a marker-only line so it doesn't
+            # vanish from the output. Source like `-\n- next\n-` produces
+            # three items; the empty ones must remain visible to match
+            # the author's intent.
+            out.append(
+                RenderedBlock(
+                    runs=(),
+                    space_above=0.0,
+                    space_below=0.0,
+                    body_indent=indent_for_items,
+                    marker_runs=marker_runs,
+                    marker_x=marker_x,
+                    compact=lst.tight and item_idx > 0,
+                )
+            )
+            continue
+
         first_of_item = True
         for sub_idx, child in enumerate(item.blocks):
             child_blocks = _render_block(child, family, depth + 1)
