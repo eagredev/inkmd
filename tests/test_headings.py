@@ -71,9 +71,12 @@ def test_atx_allows_indent_up_to_three_spaces():
 
 def test_atx_four_space_indent_is_not_heading():
     """Four-space indent is a code block context — not heading."""
+    from inkmd.ast import CodeBlock
     doc = parse("    # NotAHeading")
-    # Code blocks aren't implemented yet, so this falls through to paragraph.
-    assert isinstance(doc.blocks[0], Paragraph)
+    # Indented code block (CommonMark section 4.4) — the `#` is literal
+    # code content, not a heading marker.
+    assert isinstance(doc.blocks[0], CodeBlock)
+    assert doc.blocks[0].content == "# NotAHeading\n"
 
 
 def test_atx_with_inline_emphasis():
