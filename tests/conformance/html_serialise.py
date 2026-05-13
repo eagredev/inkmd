@@ -138,7 +138,10 @@ def render_inline(node) -> str:
         # recognised HTML construct emits the literal source bytes.
         return node.raw
     if isinstance(node, HardBreak):
-        return "<br />"
+        # CommonMark reference renderer emits "<br />\n" so the next
+        # piece of content appears on its own source line. Conformance
+        # tests compare byte-for-byte.
+        return "<br />\n"
     if isinstance(node, Subscript):
         return f"<sub>{render_inlines(node.inlines)}</sub>"
     if isinstance(node, Superscript):

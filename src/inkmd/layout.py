@@ -359,6 +359,13 @@ def wrap_runs(
         return line
 
     for tok in tokens:
+        # Hard-break sentinel: force a line break and consume the token.
+        # The HardBreak inline emits a single-char run with text "\x00".
+        if tok.text == "\x00":
+            lines.append(strip_edges(current))
+            current = []
+            current_width = 0.0
+            continue
         tok_w = text_width(tok.text, tok.font, tok.size)
         # If the very next token is a space and current line is empty,
         # skip it — don't start a wrapped line with leading whitespace.

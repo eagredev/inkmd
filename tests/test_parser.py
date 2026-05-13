@@ -91,11 +91,27 @@ def test_parse_internal_newlines_preserved_as_soft_breaks():
     assert doc.blocks[0].inlines == (Text("Line one\nLine two\nLine three"),)
 
 
-def test_parse_internal_trailing_whitespace_collapsed():
+def test_parse_internal_trailing_whitespace_becomes_hard_break():
+    """Two-or-more trailing spaces before a newline are the CommonMark
+    hard-break marker (section 6.7). The result is a HardBreak inline
+    node, not a soft-break newline."""
+    from inkmd.ast import HardBreak
+
     doc = parse("Line one   \nLine two")
-    # Trailing spaces on a soft-break line are stripped per spec;
-    # the soft break itself survives as a literal newline.
-    assert doc.blocks[0].inlines == (Text("Line one\nLine two"),)
+    inlines = doc.blocks[0].inlines
+    assert inlines == (
+        Text("Line one"),
+        HardBreak(),
+        Text("Line two"),
+    )
+
+
+def test_parse_single_trailing_space_stays_soft_break():
+    """One trailing space is not enough for a hard break; the newline
+    is a soft break and the trailing space is stripped per spec."""
+    doc = parse("Line one \nLine two")
+    inlines = doc.blocks[0].inlines
+    assert inlines == (Text("Line one\nLine two"),)
 
 
 # --- parse: AST shape -----------------------------------------------------
