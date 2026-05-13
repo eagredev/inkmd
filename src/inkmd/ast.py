@@ -296,5 +296,33 @@ Block = Union[Paragraph, Heading, List, BlockQuote, CodeBlock, Table, ThematicBr
 
 @dataclass(frozen=True)
 class Document:
-    """The top-level AST node."""
+    """The top-level AST node.
+
+    ``link_references`` is a tuple of ``(label, url, title)`` triples,
+    populated by the parser's first pass when it sees CommonMark link
+    reference definitions of the form ``[label]: url "title"``
+    (section 6.3). Labels are stored already normalised (Unicode case-
+    fold, surrounding whitespace stripped, internal whitespace runs
+    collapsed to a single space) so inline resolution can do a direct
+    lookup after normalising the reference's label the same way.
+
+    A tuple (not a dict) so Document remains a pure frozen-dataclass
+    value type; the parser builds the list, deduplicates first-wins
+    per spec, and passes the resulting tuple in. Helper
+    ``link_reference_table()`` builds the lookup dict from the tuple.
+    """
     blocks: tuple[Block, ...]
+    link_references: tuple[tuple[str, str, str], ...] = ()
+
+    def link_reference_table(self) -> dict[str, tuple[str, str]]:
+        """Build a label -> (url, title) lookup from ``link_references``.
+
+        First-wins: if the same label appears multiple times in the
+        source, the earlier definition is the one kept (CommonMark
+        section 6.3 example 213).
+        """
+        table: dict[str, tuple[str, str]] = {}
+        for label, url, title in self.link_references:
+            if label not in table:
+                table[label] = (url, title)
+        return table
