@@ -489,6 +489,14 @@ class _BlockParser:
         self._code_indent: int = 0
         self._code_info: str = ""
         self._code_lines: list[str] = []
+        # Indented code block state (CommonMark section 4.4): lines
+        # indented by at least 4 spaces become a code block at the
+        # document level, unless they would continue a paragraph (lazy
+        # continuation). Blanks inside an indented code block are
+        # provisionally buffered; if non-indented content follows, the
+        # trailing blanks are dropped before emitting the CodeBlock.
+        self._indented_code_lines: list[str] = []
+        self._indented_code_blank_buffer: list[str] = []
         # Blockquote state — when active, lines stripped of `>` prefix are
         # accumulated, then parsed recursively into child blocks on close.
         self._in_quote: bool = False
@@ -512,6 +520,39 @@ class _BlockParser:
             else:
                 self._code_lines.append(_strip_code_indent(line, self._code_indent))
             return
+
+        # Indented code block (CommonMark section 4.4) — document level
+        # only. Active when at least 4 leading spaces AND no open
+        # paragraph could absorb the line as lazy continuation.
+        if (
+            self._indented_code_lines
+            and not self.list_stack
+        ):
+            if line.strip() == "":
+                # Blank-or-spaces-only line: buffer it. CommonMark
+                # preserves the leading-space remainder past column 4
+                # if the block continues (example 112), so we buffer
+                # the line in its dedented form, and drop the buffer
+                # only if the block ends without seeing another
+                # indented content line.
+                if len(line) >= 4:
+                    self._indented_code_blank_buffer.append(line[4:])
+                else:
+                    self._indented_code_blank_buffer.append("")
+                return
+            stripped = line.lstrip(" ")
+            leading = len(line) - len(stripped)
+            if leading >= 4:
+                # Flush any buffered blanks as in-block blank lines, then
+                # add this line stripped of its first 4 leading spaces.
+                if self._indented_code_blank_buffer:
+                    self._indented_code_lines.extend(self._indented_code_blank_buffer)
+                    self._indented_code_blank_buffer.clear()
+                self._indented_code_lines.append(line[4:])
+                return
+            # Non-indented non-blank: close the indented code block,
+            # then fall through to handle this line normally.
+            self._close_indented_code()
 
         # Inside a table at the document level, every non-blank pipe line
         # is a body row; blank or non-row closes the table.
@@ -546,6 +587,22 @@ class _BlockParser:
         # Compute the line's leading indent column.
         stripped_line = line.lstrip(" ")
         line_indent = len(line) - len(stripped_line)
+
+        # Indented code block opener (CommonMark section 4.4). At
+        # document level only; inside lists the same 4-space indent
+        # belongs to the list's content column. A line indented at
+        # least 4 spaces opens (or continues) an indented code block
+        # provided no open paragraph would absorb it as lazy
+        # continuation.
+        if (
+            not self.list_stack
+            and not self._in_quote
+            and not self._doc_paragraph_lines
+            and not self._in_table
+            and line_indent >= 4
+        ):
+            self._indented_code_lines.append(line[4:])
+            return
 
         # Fence open at column 0 (no list active) — short-circuit before
         # list-stack walking. Fence-opens inside list items are handled
@@ -636,6 +693,8 @@ class _BlockParser:
         # A fence that's never closed still emits a CodeBlock (EOF closes it).
         if self._code_fence_char is not None:
             self._close_code_fence()
+        if self._indented_code_lines:
+            self._close_indented_code()
         while self.list_stack:
             self._close_top_list()
         if self._in_quote:
@@ -644,6 +703,21 @@ class _BlockParser:
             self._close_table()
         self._flush_doc_paragraph()
         return self.doc_blocks
+
+    def _close_indented_code(self) -> None:
+        """Emit the accumulated indented code block and reset state.
+
+        Trailing blank lines buffered while we waited to see whether the
+        block continued are dropped — they belong to the inter-block
+        gap, not the code content.
+        """
+        if not self._indented_code_lines:
+            self._indented_code_blank_buffer.clear()
+            return
+        content = "\n".join(self._indented_code_lines) + "\n"
+        self.doc_blocks.append(CodeBlock(content=content, info=""))
+        self._indented_code_lines.clear()
+        self._indented_code_blank_buffer.clear()
 
     # --- Container matching ----------------------------------------------
 
