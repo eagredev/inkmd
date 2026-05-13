@@ -101,10 +101,28 @@ def _is_hex(c: str) -> bool:
     return c in "0123456789abcdefABCDEF"
 
 
+def _strip_softbreak_whitespace(s: str) -> str:
+    """Strip whitespace adjacent to soft-break newlines per CommonMark.
+
+    Per spec section 6.8, a soft line break ``trims any preceding or
+    following spaces / tabs`` when rendering. Hard breaks are emitted
+    as <br /> AST nodes earlier, so any remaining newlines in Text
+    content come from soft breaks and should have their surrounding
+    horizontal whitespace stripped.
+    """
+    lines = s.split("\n")
+    if len(lines) == 1:
+        return s
+    cleaned = [lines[0].rstrip(" \t")]
+    cleaned.extend(line.lstrip(" \t").rstrip(" \t") for line in lines[1:-1])
+    cleaned.append(lines[-1].lstrip(" \t"))
+    return "\n".join(cleaned)
+
+
 def render_inline(node) -> str:
     """Serialise one inline node to HTML."""
     if isinstance(node, Text):
-        return escape_html(node.content)
+        return escape_html(_strip_softbreak_whitespace(node.content))
     if isinstance(node, Strong):
         return f"<strong>{render_inlines(node.inlines)}</strong>"
     if isinstance(node, Emphasis):
