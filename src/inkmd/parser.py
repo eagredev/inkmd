@@ -254,7 +254,11 @@ def _try_parse_link_ref_def(
         title_buf = ""
         title_terminated = False
         while k < n:
-            if text[k] == "\\" and k + 1 < n:
+            if (
+                text[k] == "\\"
+                and k + 1 < n
+                and text[k + 1] in _ASCII_PUNCT
+            ):
                 title_buf += text[k + 1]
                 k += 2
                 continue
@@ -577,7 +581,42 @@ class _BlockParser:
                 self._handle_quote_line(quote_stripped)
                 return
             if self._in_quote:
-                # Non-quote line ends the blockquote (no lazy continuation in v0.1).
+                # Lazy continuation (CommonMark section 5.1): an
+                # unprefixed line continues an open paragraph inside
+                # the blockquote provided BOTH lines are paragraph-
+                # shaped. The previous quoted line must be non-blank
+                # AND not itself an indented code block (≥4 spaces)
+                # or other non-paragraph construct; the new line must
+                # also be paragraph-content shaped (not a new block
+                # opener, not a blank).
+                prev_line = self._quote_lines[-1] if self._quote_lines else ""
+                prev_is_para_shape = (
+                    prev_line.strip() != ""
+                    and not prev_line.startswith("    ")
+                    and _try_atx_heading(prev_line) is None
+                    and _try_fence_open(prev_line) is None
+                    and _try_marker(prev_line) is None
+                    and not _is_thematic_break(prev_line)
+                )
+                if (
+                    line.strip() != ""
+                    and prev_is_para_shape
+                    and _try_atx_heading(line) is None
+                    and _try_fence_open(line) is None
+                    and _try_marker(line) is None
+                    and not _is_thematic_break(line)
+                ):
+                    # Setext underline is NOT a blocker for lazy
+                    # continuation into a blockquote: the spec says
+                    # `===` arriving as a lazy continuation becomes
+                    # paragraph text, not a heading promotion
+                    # (example 93). The quote's inner block parser
+                    # will see it as part of the paragraph because
+                    # only the FIRST setext-underline within a single
+                    # paragraph's accumulated lines promotes.
+                    self._quote_lines.append(line.lstrip(" "))
+                    return
+                # Non-quote line ends the blockquote.
                 self._close_quote()
 
         if line.strip() == "":
@@ -777,6 +816,22 @@ class _BlockParser:
         # 5. List marker: starts a new list, a new item, or nests.
         marker = _try_marker(remaining)
         if marker is not None:
+            # CommonMark example 304: an ordered-list marker whose
+            # start number is not 1 cannot interrupt a paragraph.
+            # Bulleted markers, ordered markers starting with 1, and
+            # markers on a new paragraph all proceed normally.
+            interrupts_para = self._has_open_paragraph()
+            if (
+                interrupts_para
+                and marker.ordered
+                and marker.start != 1
+            ):
+                self._add_paragraph_line(remaining)
+                return
+            # CommonMark also forbids list markers (any kind) from
+            # interrupting a paragraph when the item content is
+            # blank — but that's an unusual edge case; we don't gate
+            # on it for v0.2.
             self._handle_marker(remaining, marker)
             return
 
@@ -2326,34 +2381,45 @@ def _try_link_body(
         return None
     j = i + 2
     # 3. Skip optional whitespace before URL.
-    while j < n and text[j] in " \t":
+    while j < n and text[j] in " \t\n":
         j += 1
-    # 4. Parse URL.
-    url, j = _parse_link_url(text, j)
-    if url is None:
-        return None
-    url = _decode_inline_escapes(url)
+    # 4. Parse URL. A missing URL is allowed: ``[link]()`` produces a
+    # link with an empty href per CommonMark example 485. URL content
+    # then gets HTML-entity decoded so ``&auml;`` becomes the literal
+    # ``ä`` (which the HTML serialiser percent-encodes as %C3%A4).
+    if j < n and text[j] == ")":
+        url = ""
+    else:
+        parsed_url, j = _parse_link_url(text, j)
+        if parsed_url is None:
+            return None
+        url = _decode_entities(parsed_url)
     # 5. Optional title.
-    while j < n and text[j] in " \t":
+    while j < n and text[j] in " \t\n":
         j += 1
     title = ""
-    if j < n and text[j] in '"\'':
+    if j < n and text[j] in '"\'(':
         quote = text[j]
+        close = ")" if quote == "(" else quote
         j += 1
         title_buf = ""
-        while j < n and text[j] != quote:
-            if text[j] == "\\" and j + 1 < n:
+        while j < n and text[j] != close:
+            if (
+                text[j] == "\\"
+                and j + 1 < n
+                and text[j + 1] in _ASCII_PUNCT
+            ):
                 title_buf += text[j + 1]
                 j += 2
                 continue
             title_buf += text[j]
             j += 1
-        if j >= n or text[j] != quote:
+        if j >= n or text[j] != close:
             return None
         title = _decode_inline_escapes(title_buf)
         j += 1
     # 6. Skip whitespace before closing ')'.
-    while j < n and text[j] in " \t":
+    while j < n and text[j] in " \t\n":
         j += 1
     if j >= n or text[j] != ")":
         return None
@@ -2363,9 +2429,12 @@ def _try_link_body(
 def _parse_link_url(text: str, start: int) -> tuple[str | None, int]:
     """Parse the URL portion of an inline link. Returns ``(url, next_idx)``.
 
-    Supports the ``<url>`` form (everything until ``>``) and the bare form
-    (everything until whitespace or ``)``). Backslash escapes are
-    honoured per CommonMark.
+    Supports the ``<url>`` form (everything until ``>``, where the URL
+    body may be empty and ``\\>`` escapes the close-bracket) and the
+    bare form (everything until whitespace or ``)``). Backslash escapes
+    are recognised only when followed by an ASCII-punctuation
+    character; otherwise the backslash is preserved literally per
+    CommonMark §2.4.
     """
     n = len(text)
     if start >= n:
@@ -2376,7 +2445,11 @@ def _parse_link_url(text: str, start: int) -> tuple[str | None, int]:
         while i < n and text[i] != ">":
             if text[i] == "\n":
                 return None, start
-            if text[i] == "\\" and i + 1 < n:
+            if (
+                text[i] == "\\"
+                and i + 1 < n
+                and text[i + 1] in _ASCII_PUNCT
+            ):
                 buf += text[i + 1]
                 i += 2
                 continue
@@ -2384,6 +2457,7 @@ def _parse_link_url(text: str, start: int) -> tuple[str | None, int]:
             i += 1
         if i >= n:
             return None, start
+        # Empty <> URL is valid (example 487 produces an empty-href link).
         return buf, i + 1
     # Bare URL: until whitespace, ')', or end of text.
     i = start
@@ -2399,13 +2473,20 @@ def _parse_link_url(text: str, start: int) -> tuple[str | None, int]:
             if paren_depth == 0:
                 break
             paren_depth -= 1
-        if ch == "\\" and i + 1 < n:
+        if (
+            ch == "\\"
+            and i + 1 < n
+            and text[i + 1] in _ASCII_PUNCT
+        ):
             buf += text[i + 1]
             i += 2
             continue
         buf += ch
         i += 1
     if not buf:
+        # Bare-form URL must be non-empty: the bare form has no
+        # delimiter to bound an empty URL. Caller can still recover
+        # an explicit ``<>`` form above.
         return None, start
     return buf, i
 
@@ -2609,6 +2690,27 @@ def _try_html_tag(text: str, start: int) -> tuple[str, int] | None:
     return None
 
 
+_AUTOLINK_EMAIL_LOCAL = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    ".!#$%&'*+/=?^_`{|}~-"
+)
+
+
+def _is_valid_autolink_email(s: str) -> bool:
+    """Validate the local-part of an email autolink per CommonMark §6.5.
+
+    Allowed chars are ASCII letters, digits, and a specific punctuation
+    set (no backslash). The local-part ends at the first ``@``; whatever
+    follows must be a domain (we trust the broader scanner that already
+    rejected whitespace and ``<``).
+    """
+    at = s.find("@")
+    if at <= 0:
+        return False
+    local = s[:at]
+    return all(c in _AUTOLINK_EMAIL_LOCAL for c in local)
+
+
 def _try_autolink(text: str, start: int) -> tuple[AutoLink, int] | None:
     """If ``text[start:]`` is ``<url>``, parse it. Returns (AutoLink, end_pos)."""
     if text[start] != "<":
@@ -2625,8 +2727,11 @@ def _try_autolink(text: str, start: int) -> tuple[AutoLink, int] | None:
     # 2-32 valid scheme chars.
     colon = inner.find(":")
     if colon == -1:
-        # Try email shape: local@domain.tld
-        if "@" in inner:
+        # Try email shape: local@domain.tld. Validate against the
+        # CommonMark spec section 6.5 character set (RFC 5322 with a
+        # few extensions); backslash, control bytes, and anything
+        # outside the allowed punctuation rejects the autolink.
+        if "@" in inner and _is_valid_autolink_email(inner):
             return AutoLink(url="mailto:" + inner, text=inner), end + 1
         return None
     scheme = inner[:colon]

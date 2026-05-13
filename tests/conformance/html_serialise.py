@@ -64,7 +64,7 @@ def escape_html(text: str) -> str:
 # few others get encoded.
 _URL_SAFE = set(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-    "-._~:/?#[]@!$&'()*+,;=%"
+    "-._~:/?#@!$&'()*+,;=%"
 )
 
 
