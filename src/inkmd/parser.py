@@ -67,6 +67,13 @@ _AUTOLINKS_ENABLED = True
 # allow-list applied later in inkmd.html_filter.
 _HTML_PASSTHROUGH_ENABLED = True
 
+# Reference-link lookup table consulted by inline parsing. Populated in
+# the block parser's first pass when ``[label]: url "title"`` definitions
+# are seen; consulted by ``_try_inline_link_ref`` when it sees a
+# ``[text][label]`` / ``[label][]`` / ``[label]`` reference. Maps
+# normalised label -> (url, title). Reset on every parse() call.
+_LINK_REFS: dict[str, tuple[str, str]] = {}
+
 
 def parse(
     text: str,
@@ -88,18 +95,306 @@ def parse(
     CommonMark behaviour). Set False to escape every ``<`` as literal
     text (the v0.1 inkmd behaviour).
     """
-    global _AUTOLINKS_ENABLED, _HTML_PASSTHROUGH_ENABLED
+    global _AUTOLINKS_ENABLED, _HTML_PASSTHROUGH_ENABLED, _LINK_REFS
     prev_auto = _AUTOLINKS_ENABLED
     prev_html = _HTML_PASSTHROUGH_ENABLED
+    prev_refs = _LINK_REFS
     _AUTOLINKS_ENABLED = autolinks
     _HTML_PASSTHROUGH_ENABLED = html
+    # Two-pass shape: block parsing gathers reference definitions into
+    # a shared list (peeling them off paragraph fronts at flush time),
+    # then inline parsing during the same walk consults the global
+    # table for resolution. Definitions can appear anywhere in the
+    # source — a reference earlier in the source can resolve a
+    # definition later in the source — because the block parser keeps
+    # building the table as it sees more paragraphs while the inline
+    # parser only runs once each paragraph flushes.
+    #
+    # This means a reference whose definition appears AFTER the
+    # paragraph that uses it still resolves correctly: the paragraph
+    # only flushes (and inline-parses) when the next block starts or
+    # at EOF, by which point any subsequent definition has been seen.
+    # The trick is that paragraphs CAN'T flush mid-line: a reference
+    # in paragraph N can only resolve to a definition in paragraph
+    # M < N if M flushed before N. The CommonMark spec works the same
+    # way — definitions are document-scoped, not stream-scoped — so
+    # we run a full document pre-scan up front to populate _LINK_REFS
+    # before any inline parsing runs.
+    normalised = _normalise(text)
+    refs_list, stripped = _scan_link_references(normalised)
+    refs_table: dict[str, tuple[str, str]] = {}
+    for label, url, title in refs_list:
+        if label not in refs_table:
+            refs_table[label] = (url, title)
+    _LINK_REFS = refs_table
     try:
-        normalised = _normalise(text)
-        blocks = _parse_blocks(normalised)
-        return Document(blocks=tuple(blocks))
+        blocks = _parse_blocks(stripped)
+        return Document(
+            blocks=tuple(blocks),
+            link_references=tuple(refs_list),
+        )
     finally:
         _AUTOLINKS_ENABLED = prev_auto
         _HTML_PASSTHROUGH_ENABLED = prev_html
+        _LINK_REFS = prev_refs
+
+
+def _normalise_link_label(label: str) -> str:
+    """Canonicalise a link reference label per CommonMark section 6.3.
+
+    Steps: Unicode case-fold, strip surrounding whitespace, collapse
+    every run of internal whitespace (including newlines / tabs) to a
+    single ASCII space. Used both when storing definitions and when
+    resolving references so the two sides compare equal regardless of
+    case, spacing, or wrapping.
+    """
+    folded = label.casefold()
+    parts = folded.split()
+    return " ".join(parts)
+
+
+def _try_parse_link_ref_def(
+    text: str, start: int
+) -> tuple[str, str, str, int] | None:
+    """Try to parse a CommonMark link reference definition at ``text[start:]``.
+
+    Returns ``(normalised_label, url, title, end_pos)`` on success where
+    ``end_pos`` is the offset just after the consumed text (typically
+    the newline after the title, or the newline after the URL when no
+    title is present, or the end of text). Returns None if the bytes
+    at ``start`` do not form a complete reference definition.
+
+    A reference definition (CommonMark section 4.7) is:
+        [label]: url
+        [label]: url "title"
+        [label]:
+          url
+          "title"
+
+    Up to 3 leading spaces are permitted before the ``[``. The label,
+    URL, and title may collectively span up to multiple lines provided
+    each component itself is valid; in practice CommonMark allows the
+    URL and title to be on separate lines from the label so long as
+    no blank line interrupts.
+    """
+    n = len(text)
+    i = start
+    # Up to 3 leading spaces.
+    indent = 0
+    while i < n and indent < 3 and text[i] == " ":
+        i += 1
+        indent += 1
+    if i >= n or text[i] != "[":
+        return None
+    label_start = i + 1
+    i = label_start
+    label_buf = ""
+    # CommonMark: label is between [ and ]; brackets can be escaped;
+    # max 999 chars (we don't enforce — internal use, malicious input
+    # truncated by source size). Newlines allowed (but a blank line
+    # breaks the definition; we detect that below).
+    while i < n:
+        ch = text[i]
+        if ch == "\\" and i + 1 < n:
+            label_buf += text[i + 1]
+            i += 2
+            continue
+        if ch == "[":
+            return None  # Nested [ not allowed in label.
+        if ch == "]":
+            break
+        if ch == "\n":
+            # Newline inside label: ok unless followed by a blank line.
+            if i + 1 < n and text[i + 1] == "\n":
+                return None
+            label_buf += ch
+            i += 1
+            continue
+        label_buf += ch
+        i += 1
+    if i >= n or text[i] != "]":
+        return None
+    # Label must contain something other than whitespace.
+    if not label_buf.strip():
+        return None
+    i += 1  # past ']'
+    # Required ':'.
+    if i >= n or text[i] != ":":
+        return None
+    i += 1
+    # Optional whitespace (including AT MOST one newline) before URL.
+    newlines_seen = 0
+    while i < n and text[i] in " \t\n":
+        if text[i] == "\n":
+            newlines_seen += 1
+            if newlines_seen > 1:
+                return None
+        i += 1
+    # URL.
+    url, i = _parse_link_url(text, i)
+    if url is None:
+        return None
+    # Try to find an optional title. Title must start after whitespace,
+    # with at most one newline between URL and title.
+    title = ""
+    after_url = i
+    nl = 0
+    j = i
+    while j < n and text[j] in " \t":
+        j += 1
+    if j < n and text[j] == "\n":
+        nl += 1
+        j += 1
+        while j < n and text[j] in " \t":
+            j += 1
+    if j < n and text[j] in '"\'(':
+        quote = text[j]
+        close = ")" if quote == "(" else quote
+        k = j + 1
+        title_buf = ""
+        title_terminated = False
+        while k < n:
+            if text[k] == "\\" and k + 1 < n:
+                title_buf += text[k + 1]
+                k += 2
+                continue
+            if text[k] == close:
+                title_terminated = True
+                break
+            if text[k] == "\n":
+                # Blank line inside title kills the definition entirely.
+                if k + 1 < n and text[k + 1] == "\n":
+                    title_terminated = False
+                    break
+            title_buf += text[k]
+            k += 1
+        if title_terminated and k < n and text[k] == close:
+            # Title only counts if rest of its line is blank.
+            after_title = k + 1
+            m = after_title
+            while m < n and text[m] in " \t":
+                m += 1
+            if m >= n or text[m] == "\n":
+                title = _decode_inline_escapes(title_buf)
+                i = m + 1 if m < n else n
+                normalised = _normalise_link_label(label_buf)
+                return (normalised, _decode_inline_escapes(url), title, i)
+            # Title bytes appeared to close, but trailing junk on the
+            # same line means we DON'T accept the title. Fall through
+            # and accept the bare-URL form if the URL's own line is
+            # otherwise clean.
+    # No title (or title rejected). Accept the bare-URL form if the
+    # URL's line ends cleanly (only whitespace before newline / EOF).
+    m = after_url
+    while m < n and text[m] in " \t":
+        m += 1
+    if m >= n:
+        i = m
+    elif text[m] == "\n":
+        i = m + 1
+    else:
+        return None
+    normalised = _normalise_link_label(label_buf)
+    return (normalised, _decode_inline_escapes(url), title, i)
+
+
+def _scan_link_references(
+    text: str,
+) -> tuple[list[tuple[str, str, str]], str]:
+    """Walk ``text`` and collect every link reference definition.
+
+    Pre-scan run once at parse time so inline parsing has a complete
+    reference table when it starts. A definition can only begin where a
+    paragraph could begin — at the start of the document, after a blank
+    line, or after a block construct that closes a paragraph (heading,
+    list end, etc.). We mimic that by tracking a "paragraph could start
+    here" flag as we scan line-by-line and only attempting a
+    reference-def parse when it's true.
+
+    Lines inside a fenced code block or an indented code block are
+    skipped — definitions are not allowed there. Returns
+    ``(definitions, stripped_text)`` where ``stripped_text`` is the
+    input with the consumed reference-definition lines replaced by
+    blank lines (so block line numbering is preserved for any future
+    diagnostics).
+    """
+    out: list[tuple[str, str, str]] = []
+    lines = text.split("\n")
+    n_lines = len(lines)
+    in_fence = False
+    fence_char = ""
+    fence_len = 0
+    can_start = True
+    i = 0
+    consumed_mask = [False] * n_lines
+    while i < n_lines:
+        line = lines[i]
+        # Track code-fence state — definitions inside fences must be ignored.
+        if in_fence:
+            if _is_close_fence(line, fence_char, fence_len):
+                in_fence = False
+                fence_char = ""
+                fence_len = 0
+            i += 1
+            can_start = False
+            continue
+        fence_info = _try_fence_open(line)
+        if fence_info is not None:
+            in_fence = True
+            fence_char = fence_info.char
+            fence_len = fence_info.length
+            i += 1
+            can_start = False
+            continue
+        if not line.strip():
+            can_start = True
+            i += 1
+            continue
+        # ATX heading, thematic break, and blockquote prefix close any
+        # would-be paragraph and let the NEXT line start one again. We
+        # accept the current line as "not a definition" and re-arm.
+        if _try_atx_heading(line) is not None:
+            can_start = True
+            i += 1
+            continue
+        if _is_thematic_break(line):
+            can_start = True
+            i += 1
+            continue
+        if not can_start:
+            i += 1
+            continue
+        # Lines at 4+ spaces of indent are indented code blocks; skip.
+        stripped_left = line.lstrip(" ")
+        leading = len(line) - len(stripped_left)
+        if leading >= 4:
+            can_start = False
+            i += 1
+            continue
+        # Try to parse a definition spanning one or more consecutive lines.
+        candidate = "\n".join(lines[i:]) + "\n"
+        result = _try_parse_link_ref_def(candidate, 0)
+        if result is None:
+            can_start = False
+            i += 1
+            continue
+        label, url, title, end_pos = result
+        out.append((label, url, title))
+        # Count how many source lines we consumed (a definition can
+        # span up to 3 logical lines if URL/title are continuation-
+        # wrapped). At minimum 1 line, even if the parser returned a
+        # zero-length span (shouldn't happen, defensive).
+        consumed = candidate[:end_pos].count("\n")
+        consumed = max(consumed, 1)
+        for k in range(i, min(i + consumed, n_lines)):
+            consumed_mask[k] = True
+        i += consumed
+        can_start = True
+    stripped_lines = [
+        "" if consumed_mask[k] else lines[k]
+        for k in range(n_lines)
+    ]
+    return out, "\n".join(stripped_lines)
 
 
 def _strip_for_hardbreak(line: str) -> str:
@@ -1379,7 +1674,9 @@ def _tokenise(text: str) -> list[_Tok]:
             continue
 
         # Inline image: ![alt](url) — checked before `[` so the `!`
-        # prefix isn't consumed as text.
+        # prefix isn't consumed as text. Reference image variants
+        # ``![alt][label]``, ``![alt][]``, and ``![alt]`` fall through
+        # to the same ``!`` branch if the inline form fails.
         if ch == "!":
             image_match = _try_inline_image(text, i)
             if image_match is not None:
@@ -1388,12 +1685,29 @@ def _tokenise(text: str) -> list[_Tok]:
                 tokens.append(_Tok(image=image_node))
                 i = end_pos
                 continue
+            image_ref_match = _try_reference_image(text, i)
+            if image_ref_match is not None:
+                image_node, end_pos = image_ref_match
+                flush_text()
+                tokens.append(_Tok(image=image_node))
+                i = end_pos
+                continue
 
-        # Inline link: [text](url) or [text](url "title").
+        # Inline link: [text](url) or [text](url "title"). Reference-style
+        # variants ``[text][label]``, ``[label][]``, and ``[label]``
+        # fall through to ``_try_reference_link`` when the inline form
+        # doesn't match.
         if ch == "[":
             link_match = _try_inline_link(text, i)
             if link_match is not None:
                 link_node, end_pos = link_match
+                flush_text()
+                tokens.append(_Tok(link=link_node))
+                i = end_pos
+                continue
+            ref_match = _try_reference_link(text, i)
+            if ref_match is not None:
+                link_node, end_pos = ref_match
                 flush_text()
                 tokens.append(_Tok(link=link_node))
                 i = end_pos
@@ -1763,6 +2077,146 @@ def _try_inline_image(text: str, start: int) -> tuple[Image, int] | None:
     # renderers flatten them to plain text for HTML alt attributes.
     inner_inlines = _parse_inlines(alt)
     return Image(inlines=inner_inlines, url=url, title=title), end_pos
+
+
+def _parse_bracketed_text(text: str, start: int) -> tuple[int, int, int] | None:
+    """Parse a ``[...]`` span starting at ``text[start]``.
+
+    Returns ``(text_start, text_end, end_pos)`` where ``text_start`` is
+    just past the ``[`` and ``end_pos`` is just past the closing ``]``,
+    or None if no matching ``]`` is found. Backslash escapes pass
+    through; nested ``[`` is rejected (the spec disallows nested
+    references and matched-bracket counting is simpler than the
+    full CommonMark "find matching ] across nested brackets" rule —
+    a v0.3 refinement if real-world cases demand it).
+    """
+    if start >= len(text) or text[start] != "[":
+        return None
+    i = start + 1
+    n = len(text)
+    text_start = i
+    while i < n:
+        ch = text[i]
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if ch == "]":
+            return text_start, i, i + 1
+        if ch == "[":
+            return None
+        i += 1
+    return None
+
+
+def _resolve_reference(
+    label: str,
+) -> tuple[str, str] | None:
+    """Look up ``label`` in the global ``_LINK_REFS`` table.
+
+    Returns ``(url, title)`` on hit, or None on miss. Backslash escapes
+    inside the reference label are decoded (so ``[foo\\]bar]`` resolves
+    against the same key as ``[foo]: ...`` would store under
+    ``foo]bar``), then the result is normalised the same way as on the
+    storing side.
+    """
+    decoded = _decode_inline_escapes(label)
+    key = _normalise_link_label(decoded)
+    if not key:
+        return None
+    return _LINK_REFS.get(key)
+
+
+def _try_reference_link(
+    text: str, start: int
+) -> tuple[Link, int] | None:
+    """Try to parse a reference-style link at ``text[start:]``.
+
+    Recognises the three CommonMark reference forms (section 6.3):
+
+      * ``[text][label]``  — full reference
+      * ``[label][]``      — collapsed reference (text === label)
+      * ``[label]``        — shortcut reference (no second brackets)
+
+    Returns ``(Link, end_pos)`` on a successful lookup against
+    ``_LINK_REFS``; otherwise returns None and the caller falls back to
+    treating the bytes as literal text.
+
+    The two-bracket forms are tried first; if the second-bracket span
+    is present but does not resolve, parsing of THIS construct fails
+    entirely (the bytes go through as literal text). The shortcut form
+    is only attempted when no second-bracket span follows.
+    """
+    first = _parse_bracketed_text(text, start)
+    if first is None:
+        return None
+    text_start, text_end, end_first = first
+    first_label = text[text_start:text_end]
+    n = len(text)
+    # Full / collapsed reference: another `[...]` follows immediately.
+    if end_first < n and text[end_first] == "[":
+        second = _parse_bracketed_text(text, end_first)
+        if second is None:
+            return None
+        s_text_start, s_text_end, end_second = second
+        second_label = text[s_text_start:s_text_end]
+        # Collapsed: ``[label][]`` — empty second bracket means use first
+        # label for lookup; visible text is also the first label.
+        if not second_label.strip():
+            resolved = _resolve_reference(first_label)
+            if resolved is None:
+                return None
+            url, title = resolved
+            return _build_reference_link(first_label, url, title), end_second
+        # Full: ``[text][label]`` — lookup uses second label; visible
+        # text is the first bracket content.
+        resolved = _resolve_reference(second_label)
+        if resolved is None:
+            return None
+        url, title = resolved
+        return _build_reference_link(first_label, url, title), end_second
+    # Shortcut form: ``[label]`` — lookup uses the bracketed text.
+    resolved = _resolve_reference(first_label)
+    if resolved is None:
+        return None
+    url, title = resolved
+    return _build_reference_link(first_label, url, title), end_first
+
+
+def _try_reference_image(
+    text: str, start: int
+) -> tuple[Image, int] | None:
+    """Try to parse a reference-style image at ``text[start:]``.
+
+    Mirrors ``_try_reference_link`` but expects a leading ``!`` and
+    builds an Image node. The visible alt text comes from the first
+    bracket content; the URL/title come from the reference table.
+    """
+    if start >= len(text) or text[start] != "!":
+        return None
+    if start + 1 >= len(text) or text[start + 1] != "[":
+        return None
+    inner = _try_reference_link(text, start + 1)
+    if inner is None:
+        return None
+    link, end_pos = inner
+    return Image(inlines=link.inlines, url=link.url, title=link.title), end_pos
+
+
+def _build_reference_link(visible_label: str, url: str, title: str) -> Link:
+    """Build a Link node for a reference, parsing visible text as inline.
+
+    Reference resolution disables inner autolinks (per the same rule
+    inline links use) so a bare URL appearing inside reference text
+    doesn't become a nested AutoLink overlapping the outer Link.
+    """
+    global _AUTOLINKS_ENABLED
+    prev = _AUTOLINKS_ENABLED
+    _AUTOLINKS_ENABLED = False
+    try:
+        inner_inlines = _parse_inlines(visible_label)
+    finally:
+        _AUTOLINKS_ENABLED = prev
+    return Link(inlines=inner_inlines, url=url, title=title)
 
 
 def _try_link_body(
