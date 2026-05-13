@@ -400,18 +400,16 @@ def _scan_link_references(
 
 
 def _strip_for_hardbreak(line: str) -> str:
-    """lstrip a paragraph line; preserve trailing spaces ONLY if there
-    are at least 2 (the CommonMark hard-break marker). A single trailing
-    space carries no meaning per spec and is stripped.
+    """lstrip a paragraph line; trailing whitespace is preserved verbatim.
+
+    The inline tokeniser inspects trailing spaces directly when deciding
+    whether to emit a HardBreak (it requires two-or-more spaces before
+    a newline). Stripping a single trailing space at flush time would
+    also strip meaningful whitespace inside code spans whose content
+    happens to be on the last line — so we preserve everything and
+    rely on the tokeniser to discriminate.
     """
-    line = line.lstrip()
-    # Count trailing spaces.
-    n = 0
-    while n < len(line) and line[len(line) - 1 - n] == " ":
-        n += 1
-    if n == 1:
-        return line[:-1]
-    return line
+    return line.lstrip()
 
 
 def _normalise(text: str) -> str:
@@ -750,11 +748,24 @@ class _BlockParser:
                 kept = idx + 1
                 continue
             # Not deep enough to continue the item. Maybe a sibling marker?
-            if line_indent == ctx.marker_indent:
+            # CommonMark §5.2 allows a sibling marker whose indent is
+            # anywhere from this list's marker column up to (but not
+            # reaching) the item content column — so off-by-one
+            # indents in a flat bullet list stay siblings, not nested
+            # lists (examples 310, 311, 312).
+            if ctx.marker_indent <= line_indent < item_indent:
+                # CommonMark §4.1: a thematic break wins over a list
+                # marker when the bytes are ambiguous. ``* * *`` at the
+                # outer-list's marker column is a thematic break, not a
+                # sibling item containing ``* *``. Check thematic-break
+                # shape BEFORE list-sibling matching at the same column.
+                if _is_thematic_break(line[ctx.marker_indent:]):
+                    kept = idx
+                    break
                 # The marker sits at ctx.marker_indent absolute; check the
                 # marker by stripping exactly that much leading space, so
                 # _try_marker sees the marker at column 0 of the remainder.
-                marker = _try_marker(line[ctx.marker_indent:])
+                marker = _try_marker(line[line_indent:])
                 if marker is not None and _marker_matches_list(marker, ctx):
                     sibling = (idx, marker)
                     kept = idx + 1
