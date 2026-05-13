@@ -934,10 +934,12 @@ def _render_inline(
         return [_with_border(r, KBD_BORDER) for r in runs]
 
     if isinstance(inline, HardBreak):
-        # Encode as a Run with a special sentinel; layout treats it as
-        # an explicit newline. Empty-text run with a marker character
-        # (\\n) so the wrapper sees it.
-        return [Run(text="\n", font=font, size=size)]
+        # Sentinel marker the layout wrapper interprets as a forced
+        # line break. The text is the literal byte "\x00" which never
+        # appears in user content (the parser maps NUL to U+FFFD per
+        # CommonMark normalisation) so the wrapper can recognise it
+        # unambiguously.
+        return [Run(text="\x00", font=font, size=size)]
 
     if isinstance(inline, HtmlInline):
         # An HtmlInline that survived to render time means our

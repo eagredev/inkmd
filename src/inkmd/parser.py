@@ -102,6 +102,21 @@ def parse(
         _HTML_PASSTHROUGH_ENABLED = prev_html
 
 
+def _strip_for_hardbreak(line: str) -> str:
+    """lstrip a paragraph line; preserve trailing spaces ONLY if there
+    are at least 2 (the CommonMark hard-break marker). A single trailing
+    space carries no meaning per spec and is stripped.
+    """
+    line = line.lstrip()
+    # Count trailing spaces.
+    n = 0
+    while n < len(line) and line[len(line) - 1 - n] == " ":
+        n += 1
+    if n == 1:
+        return line[:-1]
+    return line
+
+
 def _normalise(text: str) -> str:
     """Normalise line endings and tabs per CommonMark §2.2."""
     text = text.replace("\x00", "�")
@@ -464,9 +479,14 @@ class _BlockParser:
             if top.blank_before_next_item:
                 top.force_loose = True
                 top.blank_before_next_item = False
-            item.paragraph_lines.append(line.strip())
+            # lstrip-only: preserve trailing whitespace so the inline
+            # parser can detect the CommonMark hard-break form
+            # (two-or-more trailing spaces before a newline). A single
+            # trailing space is meaningless per spec; collapse it so
+            # only the genuine hard-break-marker survives.
+            item.paragraph_lines.append(_strip_for_hardbreak(line))
         else:
-            self._doc_paragraph_lines.append(line.strip())
+            self._doc_paragraph_lines.append(_strip_for_hardbreak(line))
 
     def _add_block(self, block: Block) -> None:
         self._flush_current_paragraph()
@@ -484,13 +504,20 @@ class _BlockParser:
 
     def _flush_item_paragraph(self, item: _ItemCtx) -> None:
         if item.paragraph_lines:
-            joined = "\n".join(item.paragraph_lines)
+            # Strip trailing whitespace on the LAST line: a hard-break
+            # marker at the very end of a paragraph has nothing to break
+            # to and degrades to a normal line ending per spec.
+            lines = list(item.paragraph_lines)
+            lines[-1] = lines[-1].rstrip()
+            joined = "\n".join(lines)
             item.blocks.append(Paragraph(inlines=_parse_inlines(joined)))
             item.paragraph_lines.clear()
 
     def _flush_doc_paragraph(self) -> None:
         if self._doc_paragraph_lines:
-            joined = "\n".join(self._doc_paragraph_lines)
+            lines = list(self._doc_paragraph_lines)
+            lines[-1] = lines[-1].rstrip()
+            joined = "\n".join(lines)
             self.doc_blocks.append(Paragraph(inlines=_parse_inlines(joined)))
             self._doc_paragraph_lines.clear()
 
@@ -500,14 +527,22 @@ class _BlockParser:
         return bool(self._doc_paragraph_lines)
 
     def _convert_paragraph_to_heading(self, level: int) -> None:
-        """Drain the current paragraph accumulator and emit a Heading."""
+        """Drain the current paragraph accumulator and emit a Heading.
+
+        Setext headings do not permit a hard-break marker; per spec the
+        underline-line trims trailing whitespace on the content lines.
+        We rstrip each accumulated line so trailing two-or-more spaces
+        do not promote to a HardBreak when the inline parser runs.
+        """
         if self.list_stack:
             item = self.list_stack[-1].items[-1]
-            joined = "\n".join(item.paragraph_lines)
+            lines = [ln.rstrip() for ln in item.paragraph_lines]
+            joined = "\n".join(lines)
             item.paragraph_lines.clear()
             item.blocks.append(Heading(level=level, inlines=_parse_inlines(joined)))
         else:
-            joined = "\n".join(self._doc_paragraph_lines)
+            lines = [ln.rstrip() for ln in self._doc_paragraph_lines]
+            joined = "\n".join(lines)
             self._doc_paragraph_lines.clear()
             self.doc_blocks.append(Heading(level=level, inlines=_parse_inlines(joined)))
 
@@ -1210,6 +1245,7 @@ class _Tok:
     autolink: "AutoLink | None" = None
     image: "Image | None" = None
     html: "HtmlInline | None" = None
+    hardbreak: bool = False
 
 
 def _parse_inlines(text: str) -> tuple[Inline, ...]:
@@ -1258,11 +1294,45 @@ def _tokenise(text: str) -> list[_Tok]:
     while i < n:
         ch = text[i]
 
+        # CommonMark hard line break (backslash form): backslash
+        # immediately before a newline becomes a <br />, NOT a backslash
+        # escape. Must be checked before the generic backslash-escape
+        # branch below. Spec section 6.7.
+        if ch == "\\" and i + 1 < n and text[i + 1] == "\n":
+            flush_text()
+            tokens.append(_Tok(hardbreak=True))
+            # Consume the backslash + newline, then any leading
+            # whitespace on the next line (spec strips it).
+            i += 2
+            while i < n and text[i] in " \t":
+                i += 1
+            continue
+
         # Backslash escape: \X where X is ASCII punctuation → literal X.
         if ch == "\\" and i + 1 < n and text[i + 1] in _ESCAPABLE:
             buf += text[i + 1]
             i += 2
             continue
+
+        # CommonMark hard line break (trailing-spaces form): two-or-more
+        # trailing spaces before a newline -> <br />. Tabs do not count
+        # per the spec.
+        if ch == " ":
+            # Look ahead for run of spaces then a newline.
+            k = i
+            while k < n and text[k] == " ":
+                k += 1
+            if k - i >= 2 and k < n and text[k] == "\n":
+                flush_text()
+                tokens.append(_Tok(hardbreak=True))
+                # Consume the spaces, the newline, and any leading
+                # whitespace on the next line.
+                i = k + 1
+                while i < n and text[i] in " \t":
+                    i += 1
+                continue
+            # Not a hard break — fall through; the space becomes part
+            # of the running text buffer.
 
         # Entity / numeric character reference (CommonMark §6.5):
         # &name; | &#NNN; | &#xHH;. Unknown references stay literal.
@@ -2256,6 +2326,10 @@ def _emit_inner(tokens: list[_Tok]) -> tuple[Inline, ...]:
         if tok.html is not None:
             flush()
             out.append(tok.html)
+            continue
+        if tok.hardbreak:
+            flush()
+            out.append(HardBreak())
             continue
         if tok.text is not None:
             text_buf += tok.text
