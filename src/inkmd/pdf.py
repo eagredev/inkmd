@@ -438,8 +438,9 @@ def _styled_page_content_stream(page: Page, image_xobject_names: dict[str, str] 
                 r, g, b = target_rg
                 parts.append(f"{_fmt(r)} {_fmt(g)} {_fmt(b)} rg".encode("ascii"))
                 current_text_rg = target_rg
+            run_y = run.y + getattr(run, "y_shift", 0.0)
             parts.append(
-                f"1 0 0 1 {_fmt(run.x)} {_fmt(run.y)} Tm".encode("ascii")
+                f"1 0 0 1 {_fmt(run.x)} {_fmt(run_y)} Tm".encode("ascii")
             )
             parts.append(_show_text_operator(run.text, run.font))
     parts.append(b"ET")
