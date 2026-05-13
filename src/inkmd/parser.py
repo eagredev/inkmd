@@ -2320,22 +2320,21 @@ def _scan_url_body_after_host(text: str, start: int) -> int:
     """Scan path/query/fragment portion of a URL starting at ``start``
     (which points at the first '/' after the host).
 
-    Trims trailing punctuation and balances parens like _scan_url_body.
+    Per GFM section 6.9, unbalanced close-parens inside the URL body
+    are consumed greedily and only trimmed at the very end of the
+    scan — so ``...q=(business))+ok`` extends through the second
+    ``)`` because the URL continues with ``+ok``. Trailing
+    sentence punctuation is then trimmed.
     """
     n = len(text)
     i = start
-    paren_depth = 0
     while i < n and text[i] in _URL_BODY_CHARS:
-        if text[i] == "(":
-            paren_depth += 1
-        elif text[i] == ")":
-            if paren_depth == 0:
-                break
-            paren_depth -= 1
         i += 1
     while i > start + 1 and text[i - 1] in _BARE_URL_TRAILING_PUNCT:
         i -= 1
-    # Trim trailing unbalanced ')'.
+    # Trim trailing unbalanced ')' — only at the very end after the
+    # body has been consumed greedily. This matches GFM example 626
+    # where ``)+ok`` after balanced parens stays inside the URL.
     closes = sum(1 for c in text[start:i] if c == ")")
     opens = sum(1 for c in text[start:i] if c == "(")
     while i > start and closes > opens and text[i - 1] == ")":
@@ -2365,21 +2364,18 @@ def _scan_url_body(text: str, start: int) -> int | None:
         host_end += 1
     if not saw_dot:
         return None
-    # Continue past path/query/fragment.
+    # Continue past path/query/fragment. Per GFM section 6.9, unbalanced
+    # close-parens inside the URL body are consumed greedily and only
+    # trimmed at the very end of the scan — so ``...q=(business))+ok``
+    # extends through the second ``)`` because the URL continues with
+    # ``+ok`` (example 626).
     i = host_end
-    paren_depth = 0
     while i < n and text[i] in _URL_BODY_CHARS:
-        if text[i] == "(":
-            paren_depth += 1
-        elif text[i] == ")":
-            if paren_depth == 0:
-                break  # unmatched ) belongs to surrounding text
-            paren_depth -= 1
         i += 1
     # Trim trailing punctuation per GFM (period, comma, etc).
     while i > start + 1 and text[i - 1] in _BARE_URL_TRAILING_PUNCT:
         i -= 1
-    # Trim trailing ')' beyond what the URL opened.
+    # Trim trailing ')' beyond what the URL opened — only at the end.
     closes = sum(1 for c in text[start:i] if c == ")")
     opens = sum(1 for c in text[start:i] if c == "(")
     while i > start and closes > opens and text[i - 1] == ")":
