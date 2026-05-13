@@ -52,9 +52,24 @@ def test_blockquote_ends_at_blank_unprefixed_line():
     assert isinstance(doc.blocks[1], Paragraph)
 
 
-def test_blockquote_ends_at_unprefixed_line():
-    """Without lazy continuation (v0.1), an unprefixed line ends the blockquote."""
-    doc = parse("> quoted\nUnprefixed line.")
+def test_blockquote_lazy_continues_paragraph():
+    """An unprefixed paragraph line lazily continues a quoted paragraph."""
+    doc = parse("> quoted\nUnprefixed continuation.")
+    assert len(doc.blocks) == 1
+    assert isinstance(doc.blocks[0], BlockQuote)
+
+
+def test_blockquote_ends_at_blank_line():
+    """A blank line cleanly ends an open blockquote paragraph."""
+    doc = parse("> quoted\n\nSeparate paragraph.")
+    assert len(doc.blocks) == 2
+    assert isinstance(doc.blocks[0], BlockQuote)
+    assert isinstance(doc.blocks[1], Paragraph)
+
+
+def test_blockquote_ends_at_block_construct():
+    """A heading line after a quote ends the quote (no lazy continuation)."""
+    doc = parse("> quoted\n# Heading")
     assert len(doc.blocks) == 2
     assert isinstance(doc.blocks[0], BlockQuote)
 
