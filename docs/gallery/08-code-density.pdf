@@ -385,7 +385,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R /F4 6 0 R /F5 7 0 R /F6 8 0 R /F7 9 0 R /F8 10 0 R >> >> /Contents 14 0 R >>
 endobj
 14 0 obj
-<< /Length 6360 >>
+<< /Length 6357 >>
 stream
 0.95 0.95 0.95 rg
 72 622.4 468 101.6 re f
@@ -399,7 +399,7 @@ BT
 1 0 0 1 76 693 Tm
 (  Indented within the code block — preserved.) Tj
 1 0 0 1 76 666 Tm
-(    Tab character at start — also preserved.) Tj
+(	Tab character at start — also preserved.) Tj
 1 0 0 1 76 639 Tm
 (A line with **markdown syntax** that should NOT be parsed.) Tj
 1 0 0 1 76 626.4 Tm
@@ -773,10 +773,10 @@ xref
 0000001136 00000 n 
 0000007640 00000 n 
 0000007839 00000 n 
-0000014252 00000 n 
-0000014451 00000 n 
+0000014249 00000 n 
+0000014448 00000 n 
 trailer
 << /Size 17 /Root 1 0 R >>
 startxref
-14967
+14964
 %%EOF
