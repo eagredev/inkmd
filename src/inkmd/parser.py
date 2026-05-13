@@ -492,6 +492,14 @@ class _ItemCtx:
     # Set when a blank line is seen inside this item — used to detect
     # loose lists (a blank line inside an item forces the parent list loose).
     had_blank_inside: bool = False
+    # Indented code block accumulator for this item. A line indented at
+    # least 4 columns past the item's content column opens or continues
+    # this block; blanks are buffered until either another indented line
+    # arrives (in which case the buffer becomes in-block blanks) or a
+    # non-indented non-blank line arrives (in which case the buffer is
+    # dropped as inter-block padding before flushing the block).
+    indented_code_lines: list[str] = field(default_factory=list)
+    indented_code_blank_buffer: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -573,7 +581,23 @@ class _BlockParser:
         # Inside a fenced code block, lines are taken verbatim until the
         # matching close fence. Nothing else interrupts.
         if self._code_fence_char is not None:
-            if _is_close_fence(line, self._code_fence_char, self._code_fence_len):
+            # When the fence is inside a list item, the close fence
+            # may be indented up to the item content column + 3. Strip
+            # the item content column first so _is_close_fence sees
+            # the residual indent as 0-3 like at document level.
+            if self.list_stack:
+                inner = self.list_stack[-1]
+                content_col = inner.marker_indent + inner.content_indent
+                # Use tab-aware stripping so a leading \t inside the
+                # item is recognised against the content column.
+                close_check_line = _strip_leading_cols(line, content_col)
+            else:
+                close_check_line = line
+            if _is_close_fence(
+                close_check_line,
+                self._code_fence_char,
+                self._code_fence_len,
+            ):
                 self._close_code_fence()
             else:
                 self._code_lines.append(_strip_code_indent(line, self._code_indent))
@@ -743,7 +767,9 @@ class _BlockParser:
         sibling: tuple[int, _MarkerInfo] | None = None
         for idx, ctx in enumerate(self.list_stack):
             item_indent = ctx.marker_indent + ctx.content_indent
-            if line_indent >= item_indent:
+            # Use tab-aware column count so a leading \t is recognised
+            # against the item content column (CommonMark example 4).
+            if line_indent_cols >= item_indent:
                 # Continuation of this list's open item; move on inwards.
                 kept = idx + 1
                 continue
@@ -793,13 +819,49 @@ class _BlockParser:
 
         # Dedent the line by the kept lists' total indent so subsequent
         # block-level checks see the line as if it sat at the inner
-        # container's column-0.
+        # container's column-0. Tab-aware so a single leading \t at
+        # col 0 fully satisfies an inner content col of 4.
         if kept > 0:
             inner = self.list_stack[kept - 1]
             absolute_inner_content_col = inner.marker_indent + inner.content_indent
-            remaining = line[absolute_inner_content_col:] if line_indent >= absolute_inner_content_col else line.lstrip(" ")
+            if line_indent_cols >= absolute_inner_content_col:
+                remaining = _strip_leading_cols(line, absolute_inner_content_col)
+            else:
+                remaining = line.lstrip(" \t")
         else:
             remaining = line
+
+        # Indented code block inside a list item (CommonMark section
+        # 4.4 + 5.2): a line whose indent past the item's content
+        # column is at least 4 columns opens or continues an indented
+        # code block scoped to the innermost open item. Like the
+        # document-level case, this only fires when no open paragraph
+        # in the item could absorb the line as lazy continuation.
+        if kept > 0:
+            list_ctx = self.list_stack[kept - 1]
+            item = list_ctx.items[-1]
+            remaining_indent_cols = _leading_indent_cols(remaining)
+            if (
+                remaining_indent_cols >= 4
+                and not item.paragraph_lines
+            ):
+                # A blank line had to separate this from any prior
+                # content inside the item — the indented code path
+                # only fires when no paragraph is open. If a blank was
+                # buffered, the item is necessarily loose.
+                if list_ctx.blank_before_next_item:
+                    list_ctx.force_loose = True
+                    list_ctx.blank_before_next_item = False
+                if item.indented_code_blank_buffer:
+                    item.indented_code_lines.extend(item.indented_code_blank_buffer)
+                    item.indented_code_blank_buffer.clear()
+                item.indented_code_lines.append(_strip_leading_cols(remaining, 4))
+                return
+            if item.indented_code_lines and not item.paragraph_lines:
+                # Non-indented non-blank line inside an item with an
+                # open indented-code block: close it before falling
+                # through to normal content handling.
+                self._close_item_indented_code(item)
 
         self._handle_content_line(remaining)
 
@@ -847,6 +909,13 @@ class _BlockParser:
                 item = top.items[-1]
                 if item.paragraph_lines:
                     self._flush_item_paragraph(item)
+                elif item.indented_code_lines:
+                    # Blank inside an open indented code block in this
+                    # item: buffer it. If the block continues (next
+                    # non-blank is still indented past content column +
+                    # 4) we'll re-emit the buffered blanks; otherwise
+                    # they get dropped as inter-block padding.
+                    item.indented_code_blank_buffer.append("")
                 else:
                     item.had_blank_inside = False  # blank before any block in item
                 # A blank line *between* items inside a list signals loose.
@@ -959,11 +1028,22 @@ class _BlockParser:
 
         Re-runs content through heading / setext detection because the
         first line after a marker can be a heading, e.g. ``- # Title``.
+        Also opens an indented code block inside the current item when
+        the first content line has 4+ columns of leading whitespace
+        (CommonMark example 273 / 274 — marker followed by 5+ spaces
+        whose surplus becomes an indented code line).
         """
         atx = _try_atx_heading(content)
         if atx is not None:
             level, body = atx
             self._add_block(Heading(level=level, inlines=_parse_inlines(body)))
+            return
+        if (
+            self.list_stack
+            and _leading_indent_cols(content) >= 4
+        ):
+            item = self.list_stack[-1].items[-1]
+            item.indented_code_lines.append(_strip_leading_cols(content, 4))
             return
         self._add_paragraph_line(content)
 
@@ -973,6 +1053,12 @@ class _BlockParser:
         if self.list_stack:
             top = self.list_stack[-1]
             item = top.items[-1]
+            # If an indented code block was open in this item, close it
+            # before opening a paragraph — paragraph content does not
+            # belong to the code block, and any buffered blanks should
+            # drop as inter-block padding.
+            if item.indented_code_lines:
+                self._close_item_indented_code(item)
             # If a blank was seen since this item's last content, it's a
             # blank *inside* this item (because we got here without
             # crossing a sibling marker), so mark loose.
@@ -991,7 +1077,10 @@ class _BlockParser:
     def _add_block(self, block: Block) -> None:
         self._flush_current_paragraph()
         if self.list_stack:
-            self.list_stack[-1].items[-1].blocks.append(block)
+            item = self.list_stack[-1].items[-1]
+            if item.indented_code_lines:
+                self._close_item_indented_code(item)
+            item.blocks.append(block)
         else:
             self.doc_blocks.append(block)
 
@@ -1102,11 +1191,29 @@ class _BlockParser:
     # --- Fenced code handling --------------------------------------------
 
     def _open_code_fence(self, fence: "_FenceInfo") -> None:
-        """Start a fenced code block."""
+        """Start a fenced code block.
+
+        ``_code_indent`` is the number of leading-space columns to strip
+        from each content line. At document level that's the fence
+        line's own indent; inside a list item it must also include the
+        item's content column so subsequent content-aligned lines
+        produce code with no spurious leading whitespace.
+        """
         self._flush_current_paragraph()
+        # Also close any open indented-code-block on the current item;
+        # a fenced code block is its own block, not a continuation.
+        if self.list_stack:
+            item = self.list_stack[-1].items[-1]
+            if item.indented_code_lines:
+                self._close_item_indented_code(item)
         self._code_fence_char = fence.char
         self._code_fence_len = fence.length
-        self._code_indent = fence.indent
+        if self.list_stack:
+            inner = self.list_stack[-1]
+            content_col = inner.marker_indent + inner.content_indent
+            self._code_indent = content_col + fence.indent
+        else:
+            self._code_indent = fence.indent
         self._code_info = fence.info
         self._code_lines = []
 
@@ -1136,8 +1243,26 @@ class _BlockParser:
             return
         item = top.items[-1]
         self._flush_item_paragraph(item)
+        if item.indented_code_lines:
+            self._close_item_indented_code(item)
         if item.had_blank_inside:
             top.force_loose = True
+
+    def _close_item_indented_code(self, item: _ItemCtx) -> None:
+        """Emit the accumulated indented code block for ``item`` and clear.
+
+        Trailing buffered blanks (blanks seen while the block might
+        have continued) are dropped — they belong to the inter-block
+        gap between the code block and whatever follows, not to the
+        code content.
+        """
+        if not item.indented_code_lines:
+            item.indented_code_blank_buffer.clear()
+            return
+        content = "\n".join(item.indented_code_lines) + "\n"
+        item.blocks.append(CodeBlock(content=content, info=""))
+        item.indented_code_lines.clear()
+        item.indented_code_blank_buffer.clear()
 
     def _close_top_list(self) -> None:
         """Close the deepest open list and append its frozen List node."""
@@ -1240,12 +1365,42 @@ def _try_marker(line: str) -> _MarkerInfo | None:
     if stripped[0] in "-*+":
         ch = stripped[0]
         rest = stripped[1:]
-        # Must be followed by space or end-of-line.
-        if rest and not rest.startswith(" "):
+        # Must be followed by space, tab, or end-of-line.
+        if rest and rest[0] not in " \t":
             return None
-        content = rest[1:] if rest.startswith(" ") else ""
-        # Marker width: indent + 1 (marker) + 1 (space after) = consumed cols
-        marker_width = indent + 2 if rest else indent + 1
+        # Count the run of additional spaces / tabs (CommonMark section
+        # 5.2): the content column is marker + 1 + min(extra_ws, 3).
+        # If more than 4 cols of trailing whitespace, only consume 1
+        # (the required space) so the surplus becomes content indent.
+        extra = 0
+        j = 0
+        # _leading_indent_cols-like accounting on ``rest``.
+        col = 0
+        while j < len(rest):
+            c = rest[j]
+            if c == " ":
+                col += 1
+                j += 1
+            elif c == "\t":
+                col += 4 - (col % 4)
+                j += 1
+            else:
+                break
+        # CommonMark: if ``rest`` is whitespace-only, treat as empty
+        # marker (content col = marker col + 1). Otherwise content
+        # consumes 1 + (1..4) cols of whitespace; >=5 cols means
+        # consume only 1 and let the surplus carry into content.
+        ws_cols = col
+        is_blank_rest = j >= len(rest)
+        if is_blank_rest:
+            marker_width = indent + 1
+            content = ""
+        elif ws_cols >= 5:
+            marker_width = indent + 2  # marker + 1 space
+            content = rest[1:]
+        else:
+            marker_width = indent + 1 + ws_cols
+            content = rest[j:]
         return _MarkerInfo(
             ordered=False,
             marker_char=ch,
@@ -1265,10 +1420,33 @@ def _try_marker(line: str) -> _MarkerInfo | None:
             return None
         delim = stripped[i]
         rest = stripped[i + 1:]
-        if rest and not rest.startswith(" "):
+        if rest and rest[0] not in " \t":
             return None
-        content = rest[1:] if rest.startswith(" ") else ""
-        marker_width = indent + i + 1 + (1 if rest else 0)
+        # CommonMark §5.2 content-column rule (see bullet branch above).
+        col = 0
+        j = 0
+        while j < len(rest):
+            c = rest[j]
+            if c == " ":
+                col += 1
+                j += 1
+            elif c == "\t":
+                col += 4 - (col % 4)
+                j += 1
+            else:
+                break
+        ws_cols = col
+        is_blank_rest = j >= len(rest)
+        marker_chars = i + 1  # digits + delim
+        if is_blank_rest:
+            marker_width = indent + marker_chars
+            content = ""
+        elif ws_cols >= 5:
+            marker_width = indent + marker_chars + 1
+            content = rest[1:]
+        else:
+            marker_width = indent + marker_chars + ws_cols
+            content = rest[j:]
         return _MarkerInfo(
             ordered=True,
             marker_char=delim,
@@ -2450,14 +2628,32 @@ def _try_link_body(
     i = start + 1
     n = len(text)
     text_start = i
-    # 1. Find the matching ']'. Backslash escapes pass; nested [ not allowed.
+    # 1. Find the matching ']'. Backslash escapes pass; nested links
+    # are forbidden by spec (a ``[`` inside the link text rejects the
+    # parse), BUT an image-inside-link is allowed: an embedded
+    # ``![alt](url)`` or ``![alt][ref]`` inside link text is part of
+    # the link's content, not a parse failure (CommonMark example 517).
+    # We handle this by recognising a leading ``!`` followed by ``[``
+    # and skipping over the matching bracket pair.
+    depth = 0
     while i < n:
         if text[i] == "\\" and i + 1 < n:
             i += 2
             continue
         if text[i] == "]":
-            break
+            if depth == 0:
+                break
+            depth -= 1
+            i += 1
+            continue
         if text[i] == "[":
+            # Plain ``[`` inside link text is allowed only as the
+            # start of an inline image (``![``); the bare bracket
+            # case still rejects per spec.
+            if i > start + 1 and text[i - 1] == "!":
+                depth += 1
+                i += 1
+                continue
             return None
         i += 1
     if i >= n or text[i] != "]":
