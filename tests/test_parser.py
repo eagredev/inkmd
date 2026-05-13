@@ -21,8 +21,14 @@ def test_normalise_mixed_line_endings():
     assert _normalise("a\r\nb\rc\nd") == "a\nb\nc\nd"
 
 
-def test_normalise_tabs_to_four_spaces():
-    assert _normalise("a\tb") == "a   b"  # tab at col 1 → 3 spaces to next tab-stop
+def test_normalise_preserves_tabs():
+    """Tabs survive _normalise per CommonMark §2.2.
+
+    Tabs are treated as if expanded for indent-counting only; the
+    literal byte is preserved in content so code blocks render tabs
+    rather than substituted spaces.
+    """
+    assert _normalise("a\tb") == "a\tb"
 
 
 def test_normalise_null_to_replacement():

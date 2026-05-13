@@ -368,10 +368,8 @@ def _scan_link_references(
         if not can_start:
             i += 1
             continue
-        # Lines at 4+ spaces of indent are indented code blocks; skip.
-        stripped_left = line.lstrip(" ")
-        leading = len(line) - len(stripped_left)
-        if leading >= 4:
+        # Lines at 4+ columns of indent are indented code blocks; skip.
+        if _leading_indent_cols(line) >= 4:
             can_start = False
             i += 1
             continue
@@ -417,11 +415,69 @@ def _strip_for_hardbreak(line: str) -> str:
 
 
 def _normalise(text: str) -> str:
-    """Normalise line endings and tabs per CommonMark §2.2."""
+    """Normalise line endings and the NUL character per CommonMark §2.2.
+
+    Tabs are NOT expanded here. Per spec, tabs are treated as if expanded
+    for indent-counting purposes only — the byte itself is preserved in
+    content (code blocks, paragraph text). Indent-aware sites use
+    ``_leading_indent_cols()`` to count columns; everything else sees
+    the literal tab.
+    """
     text = text.replace("\x00", "�")
     text = text.replace("\r\n", "\n").replace("\r", "\n")
-    text = text.expandtabs(4)
     return text
+
+
+def _leading_indent_cols(line: str) -> int:
+    """Return the column position past leading whitespace (CommonMark §2.2).
+
+    Tabs advance to the next multiple-of-4 column. Spaces advance by 1.
+    Non-space-non-tab characters terminate the scan. Used wherever
+    block parsing needs an indent count without consuming tab bytes.
+    """
+    col = 0
+    for c in line:
+        if c == " ":
+            col += 1
+        elif c == "\t":
+            col += 4 - (col % 4)
+        else:
+            break
+    return col
+
+
+def _strip_leading_cols(line: str, want: int) -> str:
+    """Remove exactly ``want`` columns of leading whitespace from ``line``.
+
+    Used when an indented code block consumes 4 leading columns: the
+    line may have a literal tab whose first byte represents the
+    consumed indent and whose remaining "virtual columns" should be
+    re-emitted as spaces in the code content. Returns the remainder
+    of the line after that consumption.
+    """
+    col = 0
+    i = 0
+    n = len(line)
+    while i < n and col < want:
+        c = line[i]
+        if c == " ":
+            col += 1
+            i += 1
+        elif c == "\t":
+            tab_stop = 4 - (col % 4)
+            if col + tab_stop <= want:
+                col += tab_stop
+                i += 1
+            else:
+                # The tab partially overlaps the want boundary: split it
+                # into the consumed portion (drop) and the remainder
+                # (re-emit as spaces in the output).
+                remainder_spaces = (col + tab_stop) - want
+                col = want
+                return (" " * remainder_spaces) + line[i + 1:]
+        else:
+            break
+    return line[i:]
 
 
 _ATX_MAX_INDENT = 3
@@ -539,20 +595,22 @@ class _BlockParser:
                 # the line in its dedented form, and drop the buffer
                 # only if the block ends without seeing another
                 # indented content line.
-                if len(line) >= 4:
-                    self._indented_code_blank_buffer.append(line[4:])
+                if _leading_indent_cols(line) >= 4:
+                    self._indented_code_blank_buffer.append(_strip_leading_cols(line, 4))
                 else:
                     self._indented_code_blank_buffer.append("")
                 return
-            stripped = line.lstrip(" ")
-            leading = len(line) - len(stripped)
-            if leading >= 4:
+            indent_cols = _leading_indent_cols(line)
+            if indent_cols >= 4:
                 # Flush any buffered blanks as in-block blank lines, then
-                # add this line stripped of its first 4 leading spaces.
+                # add this line stripped of its first 4 leading columns.
+                # Tab-aware so a single leading \t (column 4) is fully
+                # consumed; a tab spanning the boundary leaves the
+                # remainder as spaces in the code content.
                 if self._indented_code_blank_buffer:
                     self._indented_code_lines.extend(self._indented_code_blank_buffer)
                     self._indented_code_blank_buffer.clear()
-                self._indented_code_lines.append(line[4:])
+                self._indented_code_lines.append(_strip_leading_cols(line, 4))
                 return
             # Non-indented non-blank: close the indented code block,
             # then fall through to handle this line normally.
@@ -623,24 +681,31 @@ class _BlockParser:
             self._handle_blank()
             return
 
-        # Compute the line's leading indent column.
+        # Compute the line's leading indent column. We keep two values:
+        # ``line_indent_cols`` is tab-aware (used for the >=4 indented-
+        # code-block test and list-stack column comparisons), while
+        # ``line_indent`` keeps the older space-count semantics for
+        # the marker / sibling-list logic that has not been ported to
+        # tab-aware accounting yet (list-stack alignment is space-only
+        # in practice for now).
         stripped_line = line.lstrip(" ")
         line_indent = len(line) - len(stripped_line)
+        line_indent_cols = _leading_indent_cols(line)
 
         # Indented code block opener (CommonMark section 4.4). At
         # document level only; inside lists the same 4-space indent
         # belongs to the list's content column. A line indented at
-        # least 4 spaces opens (or continues) an indented code block
-        # provided no open paragraph would absorb it as lazy
-        # continuation.
+        # least 4 columns (spaces or tab-stop-padded) opens or
+        # continues an indented code block provided no open paragraph
+        # would absorb it as lazy continuation.
         if (
             not self.list_stack
             and not self._in_quote
             and not self._doc_paragraph_lines
             and not self._in_table
-            and line_indent >= 4
+            and line_indent_cols >= 4
         ):
-            self._indented_code_lines.append(line[4:])
+            self._indented_code_lines.append(_strip_leading_cols(line, 4))
             return
 
         # Fence open at column 0 (no list active) — short-circuit before
@@ -1287,8 +1352,9 @@ def _try_blockquote_prefix(line: str) -> str | None:
     """Return the line with the ``>`` blockquote prefix stripped, else None.
 
     CommonMark §5.1: up to 3 spaces of indent, then ``>`` optionally
-    followed by one space. The content after the prefix is the
-    blockquote's contribution.
+    followed by one space (or a tab whose first column is consumed and
+    whose remaining columns survive as spaces). The content after the
+    prefix is the blockquote's contribution.
     """
     stripped = line.lstrip(" ")
     indent = len(line) - len(stripped)
@@ -1299,6 +1365,16 @@ def _try_blockquote_prefix(line: str) -> str | None:
     rest = stripped[1:]
     if rest.startswith(" "):
         rest = rest[1:]
+    elif rest.startswith("\t"):
+        # A tab immediately after `>` is treated as if expanded with
+        # the `>` at column 0: one column goes to the prefix's
+        # optional-space slot, the remaining tab columns become
+        # content. Full handling needs virtual-column accounting that
+        # propagates through subsequent indented-code-block detection;
+        # the simple substitution here suffices for paragraph content
+        # but not for nested code blocks (CommonMark example 6
+        # stays failing; queued for v0.3 list/quote indent refactor).
+        rest = "  " + rest[1:]
     return rest
 
 
