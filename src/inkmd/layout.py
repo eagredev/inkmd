@@ -310,6 +310,10 @@ def _tokenise_runs(runs: list[Run]) -> list[Run]:
                 out.append(Run(
                     text=" ", font=run.font, size=run.size,
                     link_url=run.link_url, color=run.color, strike=run.strike,
+                    y_shift=run.y_shift,
+                    background_fill=run.background_fill,
+                    border_fill=run.border_fill,
+                    underline=run.underline,
                 ))
             else:
                 while j < len(text) and not text[j].isspace():
@@ -317,6 +321,10 @@ def _tokenise_runs(runs: list[Run]) -> list[Run]:
                 out.append(Run(
                     text=text[i:j], font=run.font, size=run.size,
                     link_url=run.link_url, color=run.color, strike=run.strike,
+                    y_shift=run.y_shift,
+                    background_fill=run.background_fill,
+                    border_fill=run.border_fill,
+                    underline=run.underline,
                 ))
             i = j
     return out
@@ -560,11 +568,17 @@ def paginate_runs(
                         )
                     )
                 current_lines.append(StyledLine(tuple(positioned_list)))
-                # Link decorations within table cells.
+                # Backgrounds first (rendered behind text by the PDF
+                # emitter), then borders, then underlines/strikes.
+                for bg_rect in _background_decorations(positioned_list):
+                    current_shapes.append(bg_rect)
+                for bd_rect in _border_decorations(positioned_list):
+                    current_shapes.append(bd_rect)
                 for ul_rect, ann in _link_decorations(positioned_list):
                     current_shapes.append(ul_rect)
                     current_annotations.append(ann)
-                # Strikethrough decorations within table cells.
+                for u_rect in _underline_decorations(positioned_list):
+                    current_shapes.append(u_rect)
                 for sk_rect in _strike_decorations(positioned_list):
                     current_shapes.append(sk_rect)
             y_cursor = table_top_y - total_h
@@ -662,15 +676,25 @@ def paginate_runs(
                         link_url=run.link_url,
                         color=run.color,
                         strike=run.strike,
+                        y_shift=run.y_shift,
+                        background_fill=run.background_fill,
+                        border_fill=run.border_fill,
+                        underline=run.underline,
                     )
                 )
                 x += text_width(run.text, run.font, run.size)
             current_lines.append(StyledLine(tuple(positioned)))
-            # Collect link annotations + underline shapes for this line.
+            # Backgrounds first (under text), then borders, then
+            # link/explicit underlines, then strikes.
+            for bg_rect in _background_decorations(positioned):
+                current_shapes.append(bg_rect)
+            for bd_rect in _border_decorations(positioned):
+                current_shapes.append(bd_rect)
             for ul_rect, ann in _link_decorations(positioned):
                 current_shapes.append(ul_rect)
                 current_annotations.append(ann)
-            # Collect strikethrough shapes for this line.
+            for u_rect in _underline_decorations(positioned):
+                current_shapes.append(u_rect)
             for sk_rect in _strike_decorations(positioned):
                 current_shapes.append(sk_rect)
             # Per-line left rules for blockquotes. Multiple rules =
@@ -755,6 +779,128 @@ def _link_decorations(
             height=ann_h,
         )
         out.append((ul, ann))
+        i = j
+    return out
+
+
+def _background_decorations(positioned: list[PositionedRun]) -> list[Rect]:
+    """Yield a filled rect behind each run that has background_fill set.
+
+    Used by the HTML allow-list ``<mark>`` highlight. Adjacent runs with
+    the same fill colour merge into one rect to minimise PDF byte
+    output and produce a single visual block.
+    """
+    out: list[Rect] = []
+    i = 0
+    n = len(positioned)
+    while i < n:
+        run = positioned[i]
+        bg = run.background_fill
+        if bg is None:
+            i += 1
+            continue
+        start_x = run.x
+        last_run = run
+        j = i + 1
+        while j < n and positioned[j].background_fill == bg:
+            last_run = positioned[j]
+            j += 1
+        end_x = last_run.x + text_width(last_run.text, last_run.font, last_run.size)
+        size = run.size
+        # Vertical extents: from a little below baseline to about the
+        # glyph top, with small padding so glyph ascenders aren't clipped.
+        descender = size * 0.20
+        ascender = size * 0.95
+        out.append(
+            Rect(
+                x=start_x - 1.0,
+                y=run.y - descender,
+                width=end_x - start_x + 2.0,
+                height=descender + ascender,
+                fill=bg,
+            )
+        )
+        i = j
+    return out
+
+
+def _underline_decorations(positioned: list[PositionedRun]) -> list[Rect]:
+    """Yield a thin filled rect below each run with ``underline=True``.
+
+    Distinct from link underlines: link underlines come from link_url
+    being set; this is the explicit ``<u>`` form. Visual rule shared:
+    same thickness, same baseline offset.
+    """
+    out: list[Rect] = []
+    i = 0
+    n = len(positioned)
+    while i < n:
+        run = positioned[i]
+        if not run.underline:
+            i += 1
+            continue
+        start_x = run.x
+        last_run = run
+        j = i + 1
+        while j < n and positioned[j].underline:
+            last_run = positioned[j]
+            j += 1
+        end_x = last_run.x + text_width(last_run.text, last_run.font, last_run.size)
+        size = run.size
+        thickness = max(0.5, size * 0.05)
+        offset = size * 0.12
+        out.append(
+            Rect(
+                x=start_x,
+                y=run.y - offset - thickness,
+                width=end_x - start_x,
+                height=thickness,
+                fill=run.color or (0.0, 0.0, 0.0),
+            )
+        )
+        i = j
+    return out
+
+
+def _border_decorations(positioned: list[PositionedRun]) -> list[Rect]:
+    """Yield border-stroke rects around each run with ``border_fill`` set.
+
+    Used by the HTML allow-list ``<kbd>`` keyboard-key visual: a thin
+    grey rectangle just outside the run's glyph bounds. Emitted as four
+    Rects (top, bottom, left, right) per merged group so the existing
+    fill-based shape pipeline can paint them without needing a new
+    stroke primitive in the PDF emitter.
+    """
+    out: list[Rect] = []
+    i = 0
+    n = len(positioned)
+    while i < n:
+        run = positioned[i]
+        border = run.border_fill
+        if border is None:
+            i += 1
+            continue
+        start_x = run.x
+        last_run = run
+        j = i + 1
+        while j < n and positioned[j].border_fill == border:
+            last_run = positioned[j]
+            j += 1
+        end_x = last_run.x + text_width(last_run.text, last_run.font, last_run.size)
+        size = run.size
+        descender = size * 0.20
+        ascender = size * 0.90
+        pad = 1.0
+        x = start_x - pad
+        y = run.y - descender
+        w = end_x - start_x + 2 * pad
+        h = descender + ascender
+        thick = 0.5
+        # Four border strips: top, bottom, left, right.
+        out.append(Rect(x=x, y=y + h - thick, width=w, height=thick, fill=border))
+        out.append(Rect(x=x, y=y, width=w, height=thick, fill=border))
+        out.append(Rect(x=x, y=y, width=thick, height=h, fill=border))
+        out.append(Rect(x=x + w - thick, y=y, width=thick, height=h, fill=border))
         i = j
     return out
 
