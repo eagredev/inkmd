@@ -31,10 +31,10 @@ Measured against `WeasyPrint + markdown` (the closest pure-Python alternative) o
 
 | Metric | inkmd | WeasyPrint | Ratio |
 |--------|-------|------------|-------|
-| Install size (venv) | 11.6 MB | 74.5 MB | 6.4x smaller |
-| Cold-start render, ~1 page | 112 ms | 741 ms | 6.6x faster |
-| Cold-start render, ~11 pages | 148 ms | 1.40 s | 9.5x faster |
-| Peak RSS, ~11 pages | 17 MB | 122 MB | 7.3x lower |
+| Install size (venv) | 10.5 MB | 74.6 MB | 7.1x smaller |
+| Cold-start render, ~1 page | 132 ms | 814 ms | 6.2x faster |
+| Cold-start render, ~11 pages | 174 ms | 1.40 s | 8.0x faster |
+| Peak RSS, ~11 pages | 19 MB | 122 MB | 6.4x lower |
 
 WeasyPrint produces slightly smaller PDFs for documents over a few pages (it compresses content streams; inkmd does not). WeasyPrint also supports full Unicode, page-splitting tables, and CSS, which inkmd does not. inkmd does support images as of v0.2 (PNG and JPEG embedding). The right tool depends on your input and your environment — the [comparisons doc](docs/comparisons.md) has the full picture.
 
