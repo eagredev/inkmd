@@ -2,6 +2,8 @@
 
 **Markdown to PDF, pure Python, zero dependencies. MIT-licensed. Deterministic.**
 
+_Solo project — architected and built end-to-end through directed AI development (Claude Code). More of my work: [github.com/eagredev](https://github.com/eagredev)._
+
 ```sh
 pip install inkmd
 inkmd in.md -o out.pdf
@@ -67,7 +69,7 @@ For the longer, honest version of how inkmd compares against every realistic alt
 
 **v0.2, MIT-licensed.** 649 tests across 28 files. Stdlib-only, Python 3.9+. Byte-deterministic output.
 
-Conformance against the public spec suites: CommonMark 0.31.2 at 554/652 (85.0%); GFM extensions at 20/28 (71.4%). The full per-section breakdown, the v0.3-tier and v0.4-tier classification of remaining failures, and the real-world-impact framing are in [`docs/conformance.md`](docs/conformance.md). Threat model in [`docs/security.md`](docs/security.md). Edge-case render samples committed as PDFs in [`docs/gallery/`](docs/gallery/).
+Conformance against the public spec suites: CommonMark 0.31.2 at 554/652 (85.0%); GFM extensions at 20/28 (71.4%). The full per-section breakdown, the v0.3-tier and v0.4-tier classification of remaining failures, and the real-world-impact framing are in [`docs/conformance.md`](docs/conformance.md). Threat model in [`docs/security.md`](docs/security.md). Spec-edge render samples in [`docs/gallery/`](docs/gallery/), and a real-world rendering gallery (the Ruff README, a Rust Book chapter, a Simon Willison TIL, and inkmd's own README) in [`docs/gallery/real-world/`](docs/gallery/real-world/).
 
 The v0.2 design principle is **utter consistency**: for any markdown construct the CommonMark spec has a clear answer about, inkmd follows that answer. The conformance percentage is a proxy for "what GitHub showed you is what you get" — it isn't the goal in itself.
 
@@ -205,7 +207,7 @@ The public API is intentionally narrow: two functions, no classes to instantiate
 - Helvetica family (default) or Times family. Code uses Courier.
 - Standard PDF letter and A4 page sizes.
 - WinAnsi character encoding: em-dash, en-dash, curly quotes, ellipsis, most Western European glyphs.
-- Codepoints outside WinAnsi (CJK, Cyrillic, emoji, most non-Latin scripts) render as `?` in v0.1. v0.2 lifts this with font embedding.
+- Codepoints outside WinAnsi (CJK, Cyrillic, emoji, most non-Latin scripts) render as `?` in v0.1 and v0.2. v0.3 lifts this with TTF font embedding.
 
 ## Determinism
 
@@ -242,9 +244,9 @@ Four layers, each strictly above the previous:
 No layer imports a higher one. The whole pipeline is around 3,500 lines of pure-Python logic plus 4,700 lines of generated AFM kerning tables. That's it. For a deeper walk-through (the emphasis algorithm, AFM kerning, determinism mechanics), see [`docs/internals.md`](docs/internals.md). The complexity profile is in [`LIZARD-AUDIT.md`](LIZARD-AUDIT.md).
 
 <details>
-<summary><strong>A note on font rendering in v0.1</strong></summary>
+<summary><strong>A note on font rendering in v0.1 and v0.2</strong></summary>
 
-`inkmd` v0.1 uses PDF's **14 base fonts** (Helvetica, Times, Courier, Symbol, ZapfDingbats and their variants). These are spec-mandated to be available in every conforming PDF reader, so we don't ship any font files. The output stays tiny and dependency-free.
+`inkmd` v0.1 and v0.2 use PDF's **14 base fonts** (Helvetica, Times, Courier, Symbol, ZapfDingbats and their variants). These are spec-mandated to be available in every conforming PDF reader, so we don't ship any font files. The output stays tiny and dependency-free.
 
 The trade-off is that the *actual rendering* depends on which Helvetica (or Times, etc.) the reader's system provides:
 
@@ -255,7 +257,7 @@ The trade-off is that the *actual rendering* depends on which Helvetica (or Time
 
 The advance widths are correct everywhere (PDF readers honour the AFM-published metrics), so layout (page breaks, line wrapping, paragraph flow) is identical across systems. What varies is the precise glyph shape *within* each advance-width box, which can produce slightly different visual spacing.
 
-For most use cases this is fine. If you need pixel-identical rendering across every system (signed or archival documents, for example), wait for **v0.2 font embedding**, which will bundle font outlines inside each PDF.
+For most use cases this is fine. If you need pixel-identical rendering across every system (signed or archival documents, for example), wait for **v0.3 TTF font embedding**, which will bundle font outlines inside each PDF.
 
 </details>
 
@@ -279,4 +281,6 @@ The 14 standard PDF fonts and their AFM metric files are public-domain artefacts
 
 ## About
 
-Built by [Dylan Moir](https://www.linkedin.com/in/dylanmoir/). If `inkmd` saves you a fight with WeasyPrint or a 200MB Chrome install in your CI, a star on the repo is plenty.
+Built by [Dylan Moir](https://www.linkedin.com/in/dylanmoir/) — architecture, problem decomposition, and implementation directed end-to-end through AI tooling (Claude Code), with every output reviewed. Sister projects: [Nightjar](https://github.com/eagredev/nightjar), an autonomous LLM agent with a defence-in-depth security architecture, and [TORCH](https://github.com/eagredev/TORCH), an AI-orchestrated IDE.
+
+If `inkmd` saves you a fight with WeasyPrint or a 200MB Chrome install in your CI, a star on the repo is plenty.
