@@ -1,6 +1,6 @@
 # inkmd conformance
 
-> Last measured at commit `387122e`, end of v0.2 release prep.
+> Last measured at commit `e3aadb2`, end of v0.2 release prep.
 > Re-run any time with `python tests/conformance/run_commonmark.py`
 > and `python tests/conformance/run_gfm.py --extensions-only`. Both
 > harnesses live in `tests/conformance/` and accept `--verbose` or
@@ -15,8 +15,8 @@
 
 Up from v0.1 (`394/652` = 60.4%; `17/28` = 60.7%) via the v0.2 work:
 +160 CommonMark tests, +3 GFM extension tests. The progression is
-visible in the v0.2 commits between `b12e1b0` (task lists, first
-v0.2 feature commit) and `387122e` (GFM bare-URL paren handling).
+visible in the v0.2 commits between `73e635b` (task lists, first
+v0.2 feature commit) and `e3aadb2` (GFM bare-URL paren handling).
 
 The remaining gap to 100% is dominated by **block-level raw HTML**
 (42 of the 98 failing tests are in the HTML blocks section, which
@@ -78,37 +78,37 @@ Both spec sources are committed to the repo
 
 The headline gains, in approximate descending order of test impact:
 
-1. **Reference links and reference images** (commit `b2ccace`): full
+1. **Reference links and reference images** (commit `5809108`): full
    support for `[label]: url "title"` definitions plus the three
    reference forms (`[text][label]`, `[label][]`, `[label]`) and
    image variants. +64 CommonMark tests.
-2. **Indented code blocks** at document level (commit `e0540b3`) and
-   inside list items (commit `a9bc036`): the common README pattern
+2. **Indented code blocks** at document level (commit `ae1970d`) and
+   inside list items (commit `5869edf`): the common README pattern
    of placing a code sample under a bullet now renders correctly.
    +26 CommonMark, +6 List items tests, gallery output corrected.
-3. **Hard line breaks** (commit `f8d798a`): both the
+3. **Hard line breaks** (commit `d5d32e8`): both the
    two-trailing-spaces form and the backslash-before-newline form
    emit hard breaks. Section to 15/15.
-4. **Tab preservation in code blocks** (commit `3c48aab`): tabs are
+4. **Tab preservation in code blocks** (commit `d325c01`): tabs are
    not expanded at parse time; the literal byte survives into code
    block content. +4 Tabs tests at document level.
-5. **Conformance polish** (commit `ab1656e`): blockquote lazy
+5. **Conformance polish** (commit `9fd838b`): blockquote lazy
    continuation, link URL edges (`[link]()`, paren-form titles,
    multi-line URL/title), autolink email charset, URL percent-encode
    of `[` and `]`, `1.`-only ordered-marker-interrupts-paragraph.
    +15 CommonMark.
-6. **Code spans + soft breaks** (commit `97f9af2`): trailing-space
+6. **Code spans + soft breaks** (commit `4965238`): trailing-space
    preservation on paragraph lines so end-of-paragraph code spans
    keep meaningful whitespace; soft-break strip moved to serialise
    time per spec. +3 CommonMark.
-7. **Image-inside-link** (commit `a9bc036`): the
+7. **Image-inside-link** (commit `5869edf`): the
    `[![badge](badge.png)](/repo)` pattern parses correctly.
    +2 CommonMark.
-8. **Image AST + PNG/JPEG embedding** (commits `7c51ff3`, `89199de`):
+8. **Image AST + PNG/JPEG embedding** (commits `13b0bed`, `f12bedd`):
    AST node, parser, conformance serialiser, and the full PDF
    embedding pipeline. +14 Images tests, +inkmd renders actual
    images in PDFs.
-9. **HTML passthrough Option B** (commit `8c6f0d2`): inline HTML
+9. **HTML passthrough Option B** (commit `bcf8802`): inline HTML
    recognition with a typed/promoted/dropped allow-list. Section
    to 18/20 Raw HTML; surface visible via `<sub>`, `<mark>`,
    `<u>`, `<kbd>`, etc. visual decorations.

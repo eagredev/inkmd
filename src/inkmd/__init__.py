@@ -1,14 +1,26 @@
-"""inkmd — pure-Python markdown to PDF compiler.
+"""inkmd: pure-Python markdown to PDF compiler.
 
-Public API:
+inkmd compiles markdown text into PDF bytes with zero runtime
+dependencies and byte-deterministic output. Two public functions form
+the entire API:
 
-    inkmd.compile(md_text: str, page_size: str = "letter", family: str = "helvetica") -> bytes
-        Parse markdown into PDF bytes.
+* :func:`compile` accepts markdown text and returns PDF bytes.
+* :func:`render_file` reads a markdown file and writes a PDF file.
 
-    inkmd.render_file(in_path, out_path, page_size: str = "letter", family: str = "helvetica") -> None
-        Read a markdown file, write a PDF file.
+Both take the same keyword arguments. See each function's docstring
+for the full list and defaults.
 
-Font family choices: 'helvetica' (default, sans-serif) or 'times' (serif).
+Typical use::
+
+    import inkmd
+
+    pdf_bytes = inkmd.compile("# Hello\\n\\nWorld.")
+
+    inkmd.render_file("report.md", "report.pdf")
+
+The library performs no network I/O, no subprocess execution, and no
+template evaluation. The full security posture is documented in
+``docs/security.md`` in the source repository.
 """
 
 from __future__ import annotations
@@ -25,6 +37,8 @@ from inkmd.url_filter import filter_document
 
 __version__ = "0.2.0"
 
+__all__ = ["compile", "render_file", "__version__"]
+
 
 def compile(
     md_text: str,
@@ -39,28 +53,62 @@ def compile(
 ) -> bytes:
     """Compile markdown text into PDF bytes.
 
-    ``autolinks`` controls GFM-style detection of bare URLs and email
-    addresses (default True). Set False for strict CommonMark — bare
-    URLs render as plain text and only `<url>` / `[text](url)` produce
-    links.
+    Args:
+        md_text: The markdown source to compile. UTF-8 text.
+        page_size: Page size identifier. Accepts ``"letter"`` (8.5x11
+            inches, default) or ``"A4"`` (210x297 mm).
+        family: Font family for body text. Accepts ``"helvetica"``
+            (sans-serif, default) or ``"times"`` (serif). Code blocks
+            and inline code always render in Courier regardless.
+        autolinks: When True (default), GFM-style bare URLs and email
+            addresses are auto-linked (``https://example.com`` and
+            ``user@example.com`` become clickable). Set False for
+            strict CommonMark mode, where only ``<url>`` and
+            ``[text](url)`` produce links.
+        safe: When True (default), only the URL schemes ``http``,
+            ``https``, ``mailto``, ``tel``, ``ftp``, and ``xmpp``
+            produce clickable PDF link annotations. Other schemes
+            (``javascript:``, ``data:``, ``vbscript:``, ``file:``,
+            custom application schemes) render as plain text with
+            the link annotation dropped. Set False to disable the
+            filter for trusted-content use cases. The threat model
+            is documented in ``docs/security.md``.
+        html: When True (default), the curated inline HTML allow-list
+            is active: tags such as ``<sub>``, ``<sup>``, ``<u>``,
+            ``<mark>``, ``<kbd>``, ``<s>``, ``<del>``, and ``<br>``
+            get typed PDF rendering; ``<span>``, ``<em>``, ``<strong>``
+            unwrap to their content; ``<script>``, ``<style>``,
+            ``<iframe>``, and similar tags are dropped with their
+            content. Set False to render all HTML tags as literal
+            text. The full allow-list and rationale are in
+            ``docs/design/html-passthrough.md``.
+        base_dir: Directory that relative image paths in markdown
+            resolve against. When None (default), relative paths
+            resolve against the process's current working directory.
+            :func:`render_file` sets this to the parent directory of
+            the source markdown file.
+        allow_remote_images: When False (default), only local file
+            paths and ``data:`` URIs are loaded for ``![alt](url)``
+            image references; ``http(s)://`` URLs render with the
+            alt-text fallback. Set True to fetch HTTP and HTTPS image
+            URLs at compile time. Off by default to preserve inkmd's
+            zero-network posture.
 
-    ``safe`` controls URL-scheme filtering on link annotations (default
-    True). With ``safe=True``, only http(s), mailto, tel, ftp, and xmpp
-    schemes pass through; anything else (javascript:, data:, vbscript:,
-    file:, custom app schemes) renders as plain text with no clickable
-    link. Set ``safe=False`` to disable the filter for trusted-content
-    use cases.
+    Returns:
+        The compiled PDF as a ``bytes`` object. Byte-identical for the
+        same input across platforms, Python versions, and repeated
+        runs: no timestamps, no random identifiers, no platform-
+        dependent iteration order.
 
-    ``base_dir`` is the directory that relative image paths in markdown
-    resolve against. When omitted (the default), relative paths resolve
-    against the process's current working directory. ``render_file``
-    sets ``base_dir`` to the directory of the source markdown file.
+    Raises:
+        ValueError: If ``family`` is not one of the supported families.
+        KeyError: If ``page_size`` is not one of the supported sizes.
 
-    ``allow_remote_images`` controls whether ``![alt](http://...)``
-    image URLs are fetched at compile time. Off by default to preserve
-    inkmd's zero-network promise; opt in for use cases (CI rendering
-    of READMEs that pull in external badge images, etc.) that genuinely
-    need it.
+    Example:
+        >>> import inkmd
+        >>> pdf = inkmd.compile("# Hello\\n\\nWorld.")
+        >>> pdf[:4]
+        b'%PDF'
     """
     if family not in FAMILIES:
         raise ValueError(f"unknown family {family!r}; available: {tuple(FAMILIES)}")
@@ -83,10 +131,39 @@ def render_file(
     html: bool = True,
     allow_remote_images: bool = False,
 ) -> None:
-    """Read markdown from ``in_path``; write PDF to ``out_path``.
+    """Read markdown from a file and write the compiled PDF to another file.
 
-    Relative image paths in the markdown resolve against the directory
-    of ``in_path`` (not the process cwd).
+    Equivalent to reading ``in_path`` as UTF-8 text, calling
+    :func:`compile` on the contents, and writing the resulting bytes to
+    ``out_path``. Relative image paths in the markdown resolve against
+    the directory of ``in_path`` (not the process's current working
+    directory).
+
+    Args:
+        in_path: Path to the markdown source file. Read as UTF-8.
+        out_path: Path the compiled PDF will be written to. Overwrites
+            any existing file.
+        page_size: Page size identifier. See :func:`compile`.
+        family: Font family for body text. See :func:`compile`.
+        autolinks: GFM bare-URL/email autolinking. See :func:`compile`.
+        safe: URL-scheme filter for link annotations. See
+            :func:`compile`.
+        html: Inline HTML allow-list. See :func:`compile`.
+        allow_remote_images: Allow fetching ``http(s)://`` image URLs
+            at compile time. See :func:`compile`.
+
+    Returns:
+        None. The PDF is written to ``out_path`` as a side effect.
+
+    Raises:
+        ValueError: If ``family`` is not one of the supported families.
+        KeyError: If ``page_size`` is not one of the supported sizes.
+        OSError: If ``in_path`` cannot be read or ``out_path`` cannot
+            be written.
+
+    Example:
+        >>> import inkmd
+        >>> inkmd.render_file("report.md", "report.pdf")
     """
     src = Path(in_path)
     md = src.read_text(encoding="utf-8")

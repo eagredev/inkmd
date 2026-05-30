@@ -1,0 +1,66 @@
+name: Bug report
+description: Something is rendering wrong, crashing, or otherwise misbehaving.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: input
+    attributes:
+      label: Minimal markdown input
+      description: The smallest markdown snippet that reproduces the problem.
+      render: markdown
+      placeholder: |
+        # Hello
+
+        Some **markdown** that misrenders.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      description: What you expected the PDF (or the parser AST) to look like.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: What you got instead. A screenshot or attached PDF helps.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: inkmd version
+      description: Output of `inkmd --version`, or the commit SHA if running from a checkout.
+      placeholder: "0.2.0"
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      description: Output of `python --version`.
+      placeholder: "Python 3.11.7"
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Operating system
+      placeholder: "Ubuntu 22.04 / macOS 14.4 / Windows 11"
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Stack trace, surrounding context, what you tried, anything you think might be relevant.
+    validations:
+      required: false

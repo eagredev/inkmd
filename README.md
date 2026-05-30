@@ -2,8 +2,6 @@
 
 **Markdown to PDF, pure Python, zero dependencies. MIT-licensed. Deterministic.**
 
-_Solo project — architected and built end-to-end through directed AI development (Claude Code). More of my work: [github.com/eagredev](https://github.com/eagredev)._
-
 ```sh
 pip install inkmd
 inkmd in.md -o out.pdf

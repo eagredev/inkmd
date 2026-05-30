@@ -2,7 +2,7 @@
 
 > This document describes inkmd's threat model, what it does and
 > does not execute, known issues, and the responsibilities of
-> callers who feed it untrusted input. Current as of v0.1.0.
+> callers who feed it untrusted input. Current as of v0.2.0.
 
 ## Summary
 

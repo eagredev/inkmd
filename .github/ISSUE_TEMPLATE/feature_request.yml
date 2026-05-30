@@ -1,0 +1,43 @@
+name: Feature request
+description: Suggest a markdown feature, CLI flag, or behaviour change.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, please check the roadmap in `README.md` and the
+        v0.3 / v0.4 tier lists in `docs/conformance.md`. If your idea is
+        already planned, a comment on the relevant issue (or a PR
+        implementing it) is more useful than a duplicate.
+
+  - type: textarea
+    id: feature
+    attributes:
+      label: What feature
+      description: A short description of what should change or be added.
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Why
+      description: What does this enable that isn't possible (or is painful) today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Existing workarounds, other tools that handle this differently, anything that ruled them out.
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Examples, references to the CommonMark or GFM spec, prior art, anything else relevant.
+    validations:
+      required: false
