@@ -10,6 +10,7 @@ reading PDF bytes; for now they document the why of each piece.
 
 from __future__ import annotations
 
+import zlib
 from dataclasses import dataclass, field
 
 from inkmd.layout import (
@@ -508,7 +509,13 @@ def styled_pdf(
     fixed_objects = 2  # catalog + pages tree
     n_fonts = len(FONT_SLOTS)
     n_images = len(image_order)
-    cursor = fixed_objects + n_fonts + n_images + 1
+    # Transparent images (indexed PNG + tRNS) each need a second object for
+    # their soft mask, so reserve those object numbers up front too.
+    n_smasks = sum(
+        1 for image_id in image_order
+        if _image_needs_smask(image_data_by_id[image_id])
+    )
+    cursor = fixed_objects + n_fonts + n_images + n_smasks + 1
 
     n_pages = len(pages)
     page_obj_nums: list[int] = []
@@ -542,12 +549,16 @@ def styled_pdf(
         )
         font_obj_nums[font_name] = obj_n
 
-    # Image XObjects.
+    # Image XObjects. A transparent image emits its soft-mask object
+    # first (so the image dict can reference it by number), then the image
+    # itself. The reserved-object count above accounts for both.
     image_obj_nums: dict[str, int] = {}
     for image_id in image_order:
         data = image_data_by_id[image_id]
-        body = _image_xobject_body(data)
-        obj_n = writer.add_object(body)
+        smask_n: int | None = None
+        if _image_needs_smask(data):
+            smask_n = writer.add_object(_smask_xobject_body(data))
+        obj_n = writer.add_object(_image_xobject_body(data, smask_obj_num=smask_n))
         image_obj_nums[image_id] = obj_n
 
     # Resource fragments.
@@ -595,7 +606,7 @@ def styled_pdf(
     return writer.serialise(root_obj_num=catalog_n)
 
 
-def _image_xobject_body(data) -> bytes:
+def _image_xobject_body(data, smask_obj_num: int | None = None) -> bytes:
     """Build the body of an Image XObject for a PNG or JPEG image.
 
     JPEG: the file body is passed through with /DCTDecode. PDF readers
@@ -606,7 +617,13 @@ def _image_xobject_body(data) -> bytes:
     We rely on PDF 1.5's /Predictor 15 flag which tells the reader to
     apply PNG row filtering after FlateDecode, so we can pass the IDAT
     bytes through verbatim (concatenated across chunks if there are
-    several).
+    several). Indexed (palette) PNGs use an /Indexed colour space built
+    from the PLTE chunk; per-palette transparency (tRNS) becomes a
+    separate /SMask image — see :func:`_image_needs_smask` and
+    :func:`_smask_xobject_body`.
+
+    ``smask_obj_num`` is the object number of the soft-mask XObject this
+    image references via /SMask, or None if the image is fully opaque.
     """
     fmt = data.format
     width = data.width
@@ -626,88 +643,220 @@ def _image_xobject_body(data) -> bytes:
         header = "<< " + " ".join(dict_pairs) + " >>"
         return header.encode("ascii") + b"\nstream\n" + body + b"\nendstream"
     if fmt == "png":
-        png_payload, colorspace, bpc, predictor_columns, png_colors = _png_xobject_pieces(data)
+        pieces = _png_xobject_pieces(data)
         dict_pairs = [
             "/Type /XObject",
             "/Subtype /Image",
             f"/Width {width}",
             f"/Height {height}",
-            f"/ColorSpace {colorspace}",
-            f"/BitsPerComponent {bpc}",
+            f"/ColorSpace {pieces.colorspace}",
+            f"/BitsPerComponent {pieces.bit_depth}",
             "/Filter /FlateDecode",
             (
                 "/DecodeParms << /Predictor 15 "
-                f"/Colors {png_colors} /BitsPerComponent {bpc} "
-                f"/Columns {predictor_columns} >>"
+                f"/Colors {pieces.components} /BitsPerComponent {pieces.bit_depth} "
+                f"/Columns {width} >>"
             ),
-            f"/Length {len(png_payload)}",
         ]
+        if smask_obj_num is not None:
+            dict_pairs.append(f"/SMask {smask_obj_num} 0 R")
+        dict_pairs.append(f"/Length {len(pieces.idat)}")
         header = "<< " + " ".join(dict_pairs) + " >>"
-        return header.encode("ascii") + b"\nstream\n" + png_payload + b"\nendstream"
+        return header.encode("ascii") + b"\nstream\n" + pieces.idat + b"\nendstream"
     raise ValueError(f"unsupported image format: {fmt}")
 
 
-def _png_xobject_pieces(data) -> tuple[bytes, str, int, int, int]:
-    """Extract the IDAT byte stream + colour metadata from a PNG.
+def _image_needs_smask(data) -> bool:
+    """True if this image carries transparency that must be emitted as a
+    separate /SMask XObject (indexed PNG with a tRNS chunk)."""
+    if data.format != "png":
+        return False
+    return _png_xobject_pieces(data).alpha is not None
 
-    Returns (idat_bytes, colorspace, bits_per_component, width,
-    colour_components).
+
+def _smask_xobject_body(data) -> bytes:
+    """Build the soft-mask (/SMask) XObject body for a transparent PNG.
+
+    The soft mask is an 8-bit DeviceGray image, one alpha byte per pixel
+    (255 = opaque, 0 = fully transparent), Flate-compressed with no
+    predictor. Only valid for images where :func:`_image_needs_smask`
+    is True.
     """
-    raw = data.data
-    # IHDR is at bytes 8..33 (after 8-byte signature, 4 length, 4 "IHDR",
-    # 13 data, 4 CRC). The 13 bytes of IHDR data:
-    #   0..3   width
-    #   4..7   height
-    #   8      bit depth
-    #   9      colour type
-    #   10     compression method (0)
-    #   11     filter method (0)
-    #   12     interlace method (0 or 1)
+    pieces = _png_xobject_pieces(data)
+    if pieces.alpha is None:
+        raise ValueError("image has no alpha channel for an SMask")
+    payload = zlib.compress(pieces.alpha)
+    dict_pairs = [
+        "/Type /XObject",
+        "/Subtype /Image",
+        f"/Width {data.width}",
+        f"/Height {data.height}",
+        "/ColorSpace /DeviceGray",
+        "/BitsPerComponent 8",
+        "/Filter /FlateDecode",
+        f"/Length {len(payload)}",
+    ]
+    header = "<< " + " ".join(dict_pairs) + " >>"
+    return header.encode("ascii") + b"\nstream\n" + payload + b"\nendstream"
+
+
+@dataclass(frozen=True)
+class _PNGPieces:
+    """Parsed PNG pieces needed to emit an Image XObject (+ optional SMask).
+
+    ``idat`` is the verbatim row-filtered deflate stream (emitted with
+    /Predictor 15). ``colorspace`` is the PDF colour-space token.
+    ``components`` is the colour component count for the predictor (1 for
+    gray/indexed, 3 for RGB). ``alpha``, when not None, is the raw 8-bit
+    DeviceGray soft-mask pixel grid (width*height bytes) built from a
+    palette tRNS chunk.
+    """
+    idat: bytes
+    colorspace: str
+    bit_depth: int
+    components: int
+    alpha: bytes | None
+
+
+def _png_xobject_pieces(data) -> _PNGPieces:
+    """Parse a PNG into the pieces needed to embed it as a PDF image.
+
+    Supports greyscale (type 0), truecolour RGB (type 2), and indexed
+    (type 3) PNGs. Indexed PNGs with a tRNS chunk additionally yield a
+    soft-mask alpha grid. Interlaced, RGBA (type 6) and grey+alpha
+    (type 4) PNGs are not yet supported.
+    """
     import struct
+    raw = data.data
+    # IHDR data is the 13 bytes after signature(8)+len(4)+"IHDR"(4):
+    #   0..3 width, 4..7 height, 8 bit depth, 9 colour type,
+    #   10 compression, 11 filter, 12 interlace.
     ihdr = raw[16:29]
     bit_depth = ihdr[8]
     colour_type = ihdr[9]
     interlace = ihdr[12]
     if interlace != 0:
         raise ValueError("interlaced PNG not supported in v0.2")
-    if colour_type == 0:
-        colorspace = "/DeviceGray"
-        components = 1
-    elif colour_type == 2:
-        colorspace = "/DeviceRGB"
-        components = 3
-    elif colour_type == 6:
-        # RGBA. PDF /SMask handling is complex; for v0.2 we flatten alpha
-        # onto a white background at decode time. Not ideal but enables
-        # the typical "logo on a transparent background" case to render
-        # without a runtime decode dependency.
-        raise ValueError("RGBA PNG embedding pending v0.3")
-    elif colour_type == 3:
-        # Indexed colour: PDF needs the palette. Defer to v0.3.
-        raise ValueError("indexed PNG pending v0.3")
-    elif colour_type == 4:
-        # Grayscale + alpha
-        raise ValueError("grayscale+alpha PNG pending v0.3")
-    else:
-        raise ValueError(f"unknown PNG colour type {colour_type}")
 
-    # Concatenate every IDAT chunk's data. PNG layout: signature(8) +
-    # chunks(length(4) + type(4) + data(length) + crc(4)).
+    # Walk all chunks once, collecting IDAT + the palette / transparency
+    # chunks indexed PNGs need. PNG layout: signature(8) + chunks
+    # (length(4) + type(4) + data(length) + crc(4)).
     offset = 8
     idat_parts: list[bytes] = []
+    palette: bytes | None = None
+    trns: bytes | None = None
     while offset < len(raw):
         chunk_len = struct.unpack(">I", raw[offset:offset + 4])[0]
         chunk_type = raw[offset + 4:offset + 8]
         chunk_data = raw[offset + 8:offset + 8 + chunk_len]
         if chunk_type == b"IDAT":
             idat_parts.append(chunk_data)
+        elif chunk_type == b"PLTE":
+            palette = chunk_data
+        elif chunk_type == b"tRNS":
+            trns = chunk_data
         elif chunk_type == b"IEND":
             break
         offset += 8 + chunk_len + 4
     if not idat_parts:
         raise ValueError("PNG has no IDAT chunks")
+    idat = b"".join(idat_parts)
 
-    return b"".join(idat_parts), colorspace, bit_depth, data.width, components
+    if colour_type == 0:
+        return _PNGPieces(idat, "/DeviceGray", bit_depth, 1, None)
+    if colour_type == 2:
+        return _PNGPieces(idat, "/DeviceRGB", bit_depth, 3, None)
+    if colour_type == 3:
+        if palette is None:
+            raise ValueError("indexed PNG missing PLTE palette")
+        hival = len(palette) // 3 - 1
+        palette_literal = "".join(f"{b:02X}" for b in palette)
+        colorspace = f"[/Indexed /DeviceRGB {hival} <{palette_literal}>]"
+        alpha = None
+        if trns is not None:
+            # tRNS for an indexed image is a list of per-palette-entry
+            # alpha bytes (entries beyond its length are fully opaque).
+            # Decode the indexed pixels and map each to its alpha to build
+            # the soft mask.
+            alpha = _indexed_alpha_grid(
+                idat, data.width, data.height, bit_depth, trns
+            )
+        return _PNGPieces(idat, colorspace, bit_depth, 1, alpha)
+    if colour_type == 6:
+        raise ValueError("RGBA PNG embedding pending v0.3")
+    if colour_type == 4:
+        raise ValueError("grayscale+alpha PNG pending v0.3")
+    raise ValueError(f"unknown PNG colour type {colour_type}")
+
+
+def _indexed_alpha_grid(
+    idat: bytes, width: int, height: int, bit_depth: int, trns: bytes
+) -> bytes:
+    """Decode an indexed PNG's pixels and map them to an 8-bit alpha grid.
+
+    Returns ``width * height`` bytes, one alpha value per pixel in row
+    order (255 where the palette entry is opaque or beyond the tRNS
+    table). Inflates and PNG-unfilters the IDAT stream, then looks up each
+    palette index in ``trns``.
+    """
+    raw = zlib.decompress(idat)
+    # Indexed pixels are bit_depth bits each, packed MSB-first per row,
+    # each row prefixed by one filter-type byte. Indexed colour uses only
+    # filter 0 (None) and 1 (Sub) in practice; bpp for index data is 1.
+    bytes_per_row = (width * bit_depth + 7) // 8
+    stride = bytes_per_row + 1
+    alpha = bytearray(width * height)
+    prev_row = bytearray(bytes_per_row)
+    pos = 0
+    for y in range(height):
+        ftype = raw[pos]
+        row = bytearray(raw[pos + 1:pos + 1 + bytes_per_row])
+        if ftype == 1:  # Sub: each byte += byte one pixel (1 byte) to the left
+            for i in range(1, len(row)):
+                row[i] = (row[i] + row[i - 1]) & 0xFF
+        elif ftype == 2:  # Up: += byte above
+            for i in range(len(row)):
+                row[i] = (row[i] + prev_row[i]) & 0xFF
+        elif ftype == 3:  # Average
+            for i in range(len(row)):
+                left = row[i - 1] if i >= 1 else 0
+                row[i] = (row[i] + ((left + prev_row[i]) >> 1)) & 0xFF
+        elif ftype == 4:  # Paeth
+            for i in range(len(row)):
+                a = row[i - 1] if i >= 1 else 0
+                b = prev_row[i]
+                c = prev_row[i - 1] if i >= 1 else 0
+                row[i] = (row[i] + _paeth(a, b, c)) & 0xFF
+        # ftype 0 (None): row unchanged.
+        # Unpack indices from the row and map to alpha.
+        for x in range(width):
+            idx = _unpack_index(row, x, bit_depth)
+            alpha[y * width + x] = trns[idx] if idx < len(trns) else 255
+        prev_row = row
+        pos += stride
+    return bytes(alpha)
+
+
+def _paeth(a: int, b: int, c: int) -> int:
+    """PNG Paeth predictor: pick a, b or c by closest to a+b-c."""
+    p = a + b - c
+    pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+    if pa <= pb and pa <= pc:
+        return a
+    if pb <= pc:
+        return b
+    return c
+
+
+def _unpack_index(row: bytearray, x: int, bit_depth: int) -> int:
+    """Read the palette index of pixel ``x`` from a packed indexed row."""
+    if bit_depth == 8:
+        return row[x]
+    # Sub-byte depths: MSB-first packing within each byte.
+    per_byte = 8 // bit_depth
+    byte = row[x // per_byte]
+    shift = 8 - bit_depth * (x % per_byte + 1)
+    return (byte >> shift) & ((1 << bit_depth) - 1)
 
 
 def _link_annotation_object(ann) -> bytes:

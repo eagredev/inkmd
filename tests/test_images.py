@@ -341,3 +341,160 @@ def test_table_after_tall_image_moves_to_fresh_page(tmp_path):
     pages = _pages_for(md, tmp_path)
     assert len(pages) == 2
     assert _lowest_y(pages) >= 72 - 1e-6
+
+
+# --- Indexed colour + tRNS transparency (Phase 1, emoji prerequisite) -----
+
+
+def _indexed_png(
+    tmp_path: Path,
+    name: str = "idx.png",
+    w: int = 4,
+    h: int = 4,
+    *,
+    trns: bool = True,
+) -> Path:
+    """Build a tiny indexed (palette) PNG, optionally with a tRNS chunk.
+
+    Palette: index 0 = red, 1 = green, 2 = blue. With tRNS, index 0 is
+    fully transparent, 1 half, 2 opaque. Pixels cycle through the indices
+    so every palette entry is exercised.
+    """
+    def chunk(tag: bytes, body: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(body))
+            + tag
+            + body
+            + struct.pack(">I", zlib.crc32(tag + body))
+        )
+    sig = b"\x89PNG\r\n\x1a\n"
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 3, 0, 0, 0)  # colour type 3 = indexed
+    plte = bytes([255, 0, 0, 0, 255, 0, 0, 0, 255])  # red, green, blue
+    rows = b""
+    for y in range(h):
+        rows += b"\x00"  # filter: None
+        for x in range(w):
+            rows += bytes([(x + y) % 3])
+    idat = zlib.compress(rows)
+    parts = [sig, chunk(b"IHDR", ihdr), chunk(b"PLTE", plte)]
+    if trns:
+        parts.append(chunk(b"tRNS", bytes([0, 128, 255])))
+    parts += [chunk(b"IDAT", idat), chunk(b"IEND", b"")]
+    p = tmp_path / name
+    p.write_bytes(b"".join(parts))
+    return p
+
+
+def test_png_pieces_indexed_colorspace(tmp_path):
+    from inkmd.image_loader import load as _load
+    from inkmd.pdf import _png_xobject_pieces
+
+    data = _load(str(_indexed_png(tmp_path, trns=False)))
+    pieces = _png_xobject_pieces(data)
+    assert pieces.colorspace.startswith("[/Indexed /DeviceRGB 2 <")
+    assert pieces.components == 1
+    assert pieces.alpha is None  # no tRNS -> opaque
+
+
+def test_png_pieces_trns_builds_alpha_grid(tmp_path):
+    from inkmd.image_loader import load as _load
+    from inkmd.pdf import _png_xobject_pieces, _image_needs_smask
+
+    data = _load(str(_indexed_png(tmp_path, w=3, h=3, trns=True)))
+    assert _image_needs_smask(data)
+    pieces = _png_xobject_pieces(data)
+    assert pieces.alpha is not None
+    assert len(pieces.alpha) == 3 * 3
+    # The alpha grid must contain the three tRNS values (0,128,255 appear
+    # because pixel indices cycle 0,1,2).
+    assert set(pieces.alpha) == {0, 128, 255}
+
+
+def test_indexed_png_without_trns_needs_no_smask(tmp_path):
+    from inkmd.image_loader import load as _load
+    from inkmd.pdf import _image_needs_smask
+
+    data = _load(str(_indexed_png(tmp_path, trns=False)))
+    assert not _image_needs_smask(data)
+
+
+def test_compile_embeds_indexed_png_with_smask(tmp_path):
+    """End-to-end: a transparent indexed PNG embeds as an /Indexed image
+    plus a separate /SMask soft-mask object."""
+    _indexed_png(tmp_path, "logo.png", w=8, h=8, trns=True)
+    md = "![logo](logo.png)"
+    pdf = inkmd.compile(md, base_dir=tmp_path)
+    assert pdf[:4] == b"%PDF"
+    assert b"/Indexed /DeviceRGB" in pdf
+    assert b"/SMask" in pdf
+    # The soft mask declares DeviceGray.
+    assert b"/ColorSpace /DeviceGray" in pdf
+
+
+def test_compile_indexed_png_deterministic(tmp_path):
+    _indexed_png(tmp_path, "d.png", w=8, h=8, trns=True)
+    md = "![d](d.png)"
+    a = inkmd.compile(md, base_dir=tmp_path)
+    b = inkmd.compile(md, base_dir=tmp_path)
+    assert a == b
+
+
+def test_unfilter_paeth_roundtrip():
+    """The Paeth/Sub/Up/Average unfilter must reproduce known pixels.
+
+    Build an indexed PNG whose rows use filter types and confirm the
+    decoded alpha grid matches the source index pattern via tRNS lookup.
+    """
+    import struct as _s
+    import zlib as _z
+    from inkmd.image_loader import load as _load
+    from inkmd.pdf import _png_xobject_pieces
+
+    w = h = 4
+
+    def chunk(tag, body):
+        return _s.pack(">I", len(body)) + tag + body + _s.pack(">I", _z.crc32(tag + body))
+
+    sig = b"\x89PNG\r\n\x1a\n"
+    ihdr = _s.pack(">IIBBBBB", w, h, 8, 3, 0, 0, 0)
+    plte = bytes([0, 0, 0, 255, 255, 255])  # 2 entries
+    trns = bytes([0, 255])                   # idx0 transparent, idx1 opaque
+    # Row pattern of indices, then apply Sub filter (type 1) to row 1,
+    # Up (2) to row 2, Paeth (4) to row 3, None (0) to row 0.
+    src = [[0, 1, 0, 1], [1, 1, 0, 0], [0, 0, 1, 1], [1, 0, 1, 0]]
+    raw = b""
+    prev = [0, 0, 0, 0]
+    for y, row in enumerate(src):
+        if y == 0:
+            raw += b"\x00" + bytes(row)
+        elif y == 1:  # Sub
+            filt = [row[0]] + [(row[i] - row[i - 1]) & 0xFF for i in range(1, w)]
+            raw += b"\x01" + bytes(filt)
+        elif y == 2:  # Up
+            filt = [(row[i] - prev[i]) & 0xFF for i in range(w)]
+            raw += b"\x02" + bytes(filt)
+        else:  # Paeth
+            filt = []
+            for i in range(w):
+                a = row[i - 1] if i else 0
+                b = prev[i]
+                c = prev[i - 1] if i else 0
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                pred = a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
+                filt.append((row[i] - pred) & 0xFF)
+            raw += b"\x04" + bytes(filt)
+        prev = row
+    idat = _z.compress(raw)
+    png = sig + chunk(b"IHDR", ihdr) + chunk(b"PLTE", plte) + chunk(b"tRNS", trns) \
+        + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
+    p = (Path(__file__).parent / "_paeth_tmp.png")
+    p.write_bytes(png)
+    try:
+        data = _load(str(p))
+        alpha = _png_xobject_pieces(data).alpha
+        # Expected alpha = trns[index] for each source pixel.
+        expected = bytes(trns[src[y][x]] for y in range(h) for x in range(w))
+        assert alpha == expected
+    finally:
+        p.unlink()
