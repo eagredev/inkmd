@@ -34,4 +34,5 @@ htmlcov/
 *.pdf
 !tests/fixtures/expected/*.pdf
 !docs/gallery/*.pdf
+!docs/gallery/real-world/*/output.pdf
 bench-venvs/
