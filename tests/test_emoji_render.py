@@ -84,15 +84,19 @@ def test_non_emoji_text_is_single_run(synthetic_emoji_font):
     assert runs[0].emoji is None
 
 
-def test_unknown_emoji_stays_text(synthetic_emoji_font):
+def test_unknown_emoji_uses_fallback(synthetic_emoji_font):
     from inkmd.emoji import split_text_into_runs
-    # U+1F600 grinning is in the emoji range but NOT in the synthetic font.
+    # U+1F600 grinning is in the emoji range but NOT in the synthetic font,
+    # so it can't render as a glyph -> the name fallback applies (it does
+    # NOT linger as the raw emoji char, which would become '?').
     runs = split_text_into_runs(
         "x \U0001F600 y", font="Helvetica", size=12.0,
         link_url=None, color=None, strike=False,
     )
     assert all(r.emoji is None for r in runs)
-    assert "".join(r.text for r in runs) == "x \U0001F600 y"
+    joined = "".join(r.text for r in runs)
+    assert "\U0001F600" not in joined
+    assert joined == "x [grinning] y"
 
 
 def test_variation_selector_consumed(synthetic_emoji_font):
@@ -187,7 +191,7 @@ def test_heading_emoji_larger_than_body_emoji(synthetic_emoji_font):
 # --- graceful absence (no font) -------------------------------------------
 
 
-def test_no_font_leaves_emoji_as_text(monkeypatch):
+def test_no_font_falls_back_to_name(monkeypatch):
     emoji_mod._load_font.cache_clear()
     monkeypatch.setattr(emoji_mod, "_load_font", lambda: None)
     from inkmd.emoji import split_text_into_runs
@@ -196,8 +200,9 @@ def test_no_font_leaves_emoji_as_text(monkeypatch):
         link_url=None, color=None, strike=False,
     )
     assert all(r.emoji is None for r in runs)
-    assert "".join(r.text for r in runs) == "hi 🚀"
-    # monkeypatch restores _load_font; clear so other tests reload cleanly.
+    # No font -> name fallback, not the raw emoji (which would become '?').
+    assert "".join(r.text for r in runs) == "hi [rocket]"
+    # monkeypatch restores _load_font; cache reloads cleanly on next use.
 
 
 # --- Emoji sequences via GSUB ligatures (Phase 4) -------------------------
@@ -392,3 +397,116 @@ def test_bundled_emoji_output_deterministic():
         assert inkmd.compile(md) == inkmd.compile(md)
     finally:
         emoji_mod._load_font.cache_clear()
+
+
+# --- Fallback policy: name / drop (Phase 6) -------------------------------
+
+
+def _split_no_font(text, mode):
+    """Split with the font forced absent (the zipapp / INKMD_NO_EMOJI case)."""
+    from inkmd.emoji import split_text_into_runs
+    return split_text_into_runs(
+        text, font="Helvetica", size=12.0,
+        link_url=None, color=None, strike=False, emoji_fallback=mode,
+    )
+
+
+@pytest.fixture
+def no_emoji_font(monkeypatch):
+    emoji_mod._load_font.cache_clear()
+    monkeypatch.setattr(emoji_mod, "_load_font", lambda: None)
+    yield
+    # monkeypatch restores the real (lru_cached) _load_font; its cache was
+    # cleared above, so it reloads cleanly on next real use.
+
+
+def test_fallback_name_substitutes_label(no_emoji_font):
+    runs = _split_no_font("go \U0001F680 now", "name")
+    text = "".join(r.text for r in runs)
+    assert text == "go [rocket] now"
+    assert all(r.emoji is None for r in runs)
+
+
+def test_fallback_drop_omits_emoji(no_emoji_font):
+    runs = _split_no_font("go \U0001F680 now", "drop")
+    assert "".join(r.text for r in runs) == "go  now"
+
+
+def test_fallback_name_for_status_emoji(no_emoji_font):
+    runs = _split_no_font("\U00002705 \U0000274C \U000026A0", "name")
+    assert "".join(r.text for r in runs) == "[check] [x] [warning]"
+
+
+def test_fallback_flag_decodes_country(no_emoji_font):
+    runs = _split_no_font("\U0001F1EF\U0001F1F5", "name")
+    assert "".join(r.text for r in runs) == "[flag:JP]"
+
+
+def test_fallback_zwj_sequence_marked(no_emoji_font):
+    runs = _split_no_font("\U0001F468‍\U0001F469‍\U0001F467", "name")
+    assert "".join(r.text for r in runs).endswith("_seq]")
+
+
+def test_fallback_unknown_emoji_uses_unicode_name(no_emoji_font):
+    # An emoji with no curated override falls back to its slugified
+    # Unicode name (goose -> [goose]).
+    runs = _split_no_font("a \U0001FABF b", "name")  # U+1FABF GOOSE
+    joined = "".join(r.text for r in runs)
+    assert joined.startswith("a [") and joined.endswith("] b")
+
+
+def test_fallback_no_question_marks(no_emoji_font):
+    # The whole point: emoji never become '?' anymore.
+    runs = _split_no_font("ship \U0001F680 it", "name")
+    assert "?" not in "".join(r.text for r in runs)
+
+
+def test_compile_emoji_fallback_name_default():
+    # Default install renders glyphs, so force no-font to see the default
+    # fallback mode ('name') via the public API.
+    import os
+    os.environ["INKMD_NO_EMOJI"] = "1"
+    emoji_mod._load_font.cache_clear()
+    try:
+        pdf = inkmd.compile("ship \U0001F680")  # default emoji_fallback
+        assert b"/Subtype /Image" not in pdf
+        assert pdf[:4] == b"%PDF"
+    finally:
+        del os.environ["INKMD_NO_EMOJI"]
+        emoji_mod._load_font.cache_clear()
+
+
+def test_compile_rejects_bad_fallback_mode():
+    with pytest.raises(ValueError):
+        inkmd.compile("hi", emoji_fallback="bogus")
+
+
+def test_fallback_mode_is_scoped_to_compile():
+    # After a compile with a non-default mode, the contextvar resets so a
+    # later split uses the default again.
+    import os
+    os.environ["INKMD_NO_EMOJI"] = "1"
+    emoji_mod._load_font.cache_clear()
+    try:
+        inkmd.compile("x \U0001F680", emoji_fallback="drop")
+        # Outside any compile, the default ('name') applies.
+        from inkmd.emoji import split_text_into_runs
+        runs = split_text_into_runs(
+            "y \U0001F680", font="Helvetica", size=12.0,
+            link_url=None, color=None, strike=False,
+        )
+        assert "[rocket]" in "".join(r.text for r in runs)
+    finally:
+        del os.environ["INKMD_NO_EMOJI"]
+        emoji_mod._load_font.cache_clear()
+
+
+def test_font_absent_is_fully_supported(no_emoji_font):
+    """Guard for the future no-font build: a complete compile with the font
+    absent must succeed and produce a valid PDF, never crash or emit '?'.
+    If this breaks, someone made the font mandatory — the split would no
+    longer be a clean packaging task."""
+    md = "# Title \U0001F680\n\nStatus \U00002705, flag \U0001F1EF\U0001F1F5.\n"
+    pdf = inkmd.compile(md)
+    assert pdf[:4] == b"%PDF"
+    assert b"/Subtype /Image" not in pdf

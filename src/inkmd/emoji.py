@@ -1,25 +1,68 @@
-"""Emoji detection and inline-run construction.
+"""Emoji detection, inline-run construction, and text fallback.
 
 Bridges the OpenType reader (:mod:`inkmd.emoji_font`) and the renderer.
-Owns three things:
+Owns:
 
 * deciding which Unicode codepoints are emoji that should render as glyphs,
-* loading the emoji font once and resolving a codepoint to a glyph image,
-* splitting a text string into a mix of ordinary text runs and emoji runs.
-
-Sequence handling (ZWJ, flags, skin tones) arrives in a later phase; this
-module currently resolves single emoji codepoints (plus an optional
-trailing U+FE0F presentation selector).
+* loading the bundled emoji font and resolving a codepoint *sequence*
+  (single emoji, presentation selectors, ZWJ/flag/keycap/skin-tone
+  ligatures) to a glyph image,
+* splitting a text string into a mix of ordinary text runs and emoji runs,
+* the **fallback** for emoji that can't render as a glyph (no font in the
+  install, or — in principle — a glyph the font lacks): either a short
+  textual name (``[rocket]``, the default) or dropping it entirely.
 """
 
 from __future__ import annotations
 
+import contextvars
 import os
+import unicodedata
 from functools import lru_cache
 
 from inkmd.emoji_font import EmojiFont, EmojiFontError
 from inkmd.image_loader import ImageData
 from inkmd.layout import EmojiImage, Run
+
+
+#: Valid values for the ``emoji_fallback`` setting.
+EMOJI_FALLBACK_MODES = ("name", "drop")
+DEFAULT_EMOJI_FALLBACK = "name"
+
+#: Per-compile fallback policy. A ContextVar (not a parameter threaded
+#: through every recursive _render_inline call, nor module-global mutable
+#: state) so the setting is scoped to one compile and safe under threads /
+#: async without touching the inline-render signatures.
+_fallback_mode: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "inkmd_emoji_fallback", default=DEFAULT_EMOJI_FALLBACK
+)
+
+
+def set_fallback_mode(mode: str):
+    """Set the emoji fallback policy for the current context, returning the
+    token to reset it. ``compile`` brackets a render with this so the
+    setting is scoped to that single compile."""
+    if mode not in EMOJI_FALLBACK_MODES:
+        raise ValueError(
+            f"emoji_fallback must be one of {EMOJI_FALLBACK_MODES}, got {mode!r}"
+        )
+    return _fallback_mode.set(mode)
+
+
+def reset_fallback_mode(token) -> None:
+    """Reset the fallback policy using a token from :func:`set_fallback_mode`."""
+    _fallback_mode.reset(token)
+
+#: Short, friendly names for emoji whose official Unicode name is long or
+#: awkward. Anything not here falls back to a slugified ``unicodedata.name``.
+_FALLBACK_NAME_OVERRIDES = {
+    0x1F600: "grinning", 0x1F602: "joy", 0x1F642: "slight_smile",
+    0x1F44D: "+1", 0x1F44E: "-1", 0x2764: "heart", 0x1F525: "fire",
+    0x2705: "check", 0x274C: "x", 0x26A0: "warning", 0x2B50: "star",
+    0x1F680: "rocket", 0x1F389: "tada", 0x1F4A1: "bulb", 0x1F4E6: "package",
+    0x1F44F: "clap", 0x1F64F: "pray", 0x1F4DD: "memo", 0x2728: "sparkles",
+    0x1F4AF: "100", 0x1F914: "thinking", 0x1F389: "tada",
+}
 
 
 # U+FE0F / U+FE0E: emoji / text presentation variation selectors. A FE0F
@@ -68,8 +111,8 @@ def is_emoji_codepoint(cp: int) -> bool:
     )
 
 
-#: Bundled color-emoji font, shipped in the default wheel. Absent in the
-#: ``inkmd[lite]`` install, where emoji fall back to text.
+#: Bundled color-emoji font, shipped in the pip wheel. Absent in the
+#: font-less single-file zipapp build, where emoji fall back to text.
 _BUNDLED_FONT = os.path.join(
     os.path.dirname(__file__), "assets", "emoji", "NotoColorEmoji.ttf"
 )
@@ -78,11 +121,13 @@ _BUNDLED_FONT = os.path.join(
 def _emoji_font_path() -> str | None:
     """Path to the bundled emoji font, or None if it isn't present.
 
-    The font ships with the default install. The ``inkmd[lite]`` install
-    omits it (and ``INKMD_NO_EMOJI`` forces it off); in either case this
+    The font ships with the pip install. It is absent in the single-file
+    zipapp build, and ``INKMD_NO_EMOJI`` forces it off; in either case this
     returns None and the caller falls back to a textual representation.
     Output is reproducible: there is no system-font lookup, so a document
-    renders identically wherever inkmd is installed.
+    renders identically wherever inkmd is installed. (A no-font pip build
+    is a clean future packaging task — the font-absent path is fully
+    supported and tested — but is not shipped today.)
     """
     if os.environ.get("INKMD_NO_EMOJI"):
         return None
@@ -215,28 +260,35 @@ def split_text_into_runs(
     link_url: str | None,
     color,
     strike: bool,
+    emoji_fallback: str | None = None,
 ) -> list[Run]:
     """Split ``text`` into ordinary text runs interleaved with emoji runs.
 
-    Each emoji codepoint that the font can render becomes its own emoji
-    Run (an inline image); the text between emoji becomes normal text
-    runs. If no emoji font is available, or a codepoint isn't an emoji /
-    isn't in the font, the character stays in the text run (the caller's
-    fallback policy in a later phase decides what to do with unrenderable
-    emoji). This keeps behaviour identical to today when emoji are absent.
+    Each emoji cluster the bundled font can render becomes its own emoji
+    Run (an inline image); the text between emoji becomes normal text runs.
+
+    When an emoji can't render as a glyph — there is no font (the zipapp
+    build or ``INKMD_NO_EMOJI``), or the font lacks the glyph — the
+    ``emoji_fallback`` policy applies:
+
+    * ``"name"`` (default): replace it with a short ``[rocket]``-style
+      label so its meaning survives;
+    * ``"drop"``: omit it entirely (zero width).
+
+    Either way the raw emoji codepoints never reach the PDF layer to be
+    mangled into ``?`` by WinAnsi encoding.
     """
     if not text:
         return []
-    # Cheap fast path: if the text has no emoji-range codepoint AND no
-    # keycap combiner (the one emoji whose base is ASCII), return a single
-    # text run WITHOUT touching the font (no glob, no 10MB parse). This
-    # keeps non-emoji documents exactly as fast as before. Only when a
-    # trigger is present do we load the font.
+    if emoji_fallback is None:
+        emoji_fallback = _fallback_mode.get()
+    # Cheap fast path: text with no emoji-range codepoint AND no keycap
+    # combiner has nothing to do — return one plain run without touching
+    # the font (no 10MB parse). Keeps non-emoji documents as fast as before.
     if not any(is_emoji_codepoint(ord(ch)) or ord(ch) == _KEYCAP for ch in text):
         return [_text_run(text, font, size, link_url, color, strike)]
-    if not emoji_available():
-        return [_text_run(text, font, size, link_url, color, strike)]
 
+    have_font = emoji_available()
     runs: list[Run] = []
     buf: list[str] = []
 
@@ -245,18 +297,22 @@ def split_text_into_runs(
             runs.append(_text_run("".join(buf), font, size, link_url, color, strike))
             buf.clear()
 
+    def emit_fallback(cluster: tuple[int, ...]) -> None:
+        if emoji_fallback == "drop":
+            return
+        # "name" (and any unknown mode) → a [label]. Append to the text
+        # buffer so it joins surrounding prose as ordinary text.
+        buf.append(_fallback_name(cluster))
+
     i = 0
     n = len(text)
     while i < n:
         cp = ord(text[i])
         if is_emoji_codepoint(cp) or _starts_keycap(text, i, n):
-            # Gather the maximal emoji cluster starting here: the base
-            # codepoint plus any following glue (selectors, skin tones,
-            # keycap) and ZWJ-joined emoji. _resolve_sequence decides how
-            # much of it actually forms a renderable glyph (longest-match),
-            # so over-gathering is safe — unused codepoints are reconsidered.
+            # Gather the maximal emoji cluster starting here, then either
+            # render it as a glyph or apply the fallback policy.
             cluster = _gather_cluster(text, i, n)
-            img, used = _resolve_sequence(cluster)
+            img, used = (_resolve_sequence(cluster) if have_font else (None, 0))
             if img is not None and used > 0:
                 flush_text()
                 runs.append(Run(
@@ -266,10 +322,54 @@ def split_text_into_runs(
                 ))
                 i += used
                 continue
+            # Couldn't render: consume the whole cluster and fall back.
+            # (Consuming the full cluster — not just the base — keeps a
+            # ZWJ family from leaving stray component emoji behind.)
+            flush_text()
+            emit_fallback(cluster)
+            i += len(cluster)
+            continue
         buf.append(text[i])
         i += 1
     flush_text()
     return runs
+
+
+def _fallback_name(codepoints: tuple[int, ...]) -> str:
+    """A short ``[name]`` label for an emoji that can't render as a glyph.
+
+    Used by the ``"name"`` fallback. Recognises a few sequence shapes that
+    would otherwise produce a misleading name:
+
+    * a regional-indicator flag pair → ``[flag:JP]`` (decoded country code);
+    * a ZWJ sequence (family/role) → ``[<base>_…]`` marked as a sequence;
+
+    otherwise names the base codepoint: a curated short name, else a slug
+    of the official Unicode name, else the hex codepoint.
+    """
+    # Regional-indicator flag pair: the two indicators encode ISO letters.
+    ri = [c for c in codepoints if c in _REGIONAL]
+    if len(ri) == 2:
+        code = "".join(chr(ord("A") + (c - 0x1F1E6)) for c in ri)
+        return f"[flag:{code}]"
+
+    base = next(
+        (c for c in codepoints if not _is_cluster_glue(c) and c not in _REGIONAL),
+        codepoints[0],
+    )
+    base_label = _FALLBACK_NAME_OVERRIDES.get(base)
+    if base_label is None:
+        try:
+            name = unicodedata.name(chr(base))
+            base_label = "_".join(name.lower().replace("-", " ").split())
+        except (ValueError, TypeError):
+            base_label = f"U+{base:04X}"
+
+    # A ZWJ sequence is more than its base (family, couple, role…). Mark it
+    # so the label doesn't masquerade as the single base emoji.
+    if _ZWJ in codepoints:
+        return f"[{base_label}_seq]"
+    return f"[{base_label}]"
 
 
 def _starts_keycap(text: str, i: int, n: int) -> bool:

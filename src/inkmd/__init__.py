@@ -50,6 +50,7 @@ def compile(
     html: bool = True,
     base_dir: Path | None = None,
     allow_remote_images: bool = False,
+    emoji_fallback: str = "name",
 ) -> bytes:
     """Compile markdown text into PDF bytes.
 
@@ -93,6 +94,14 @@ def compile(
             alt-text fallback. Set True to fetch HTTP and HTTPS image
             URLs at compile time. Off by default to preserve inkmd's
             zero-network posture.
+        emoji_fallback: What to do with an emoji the bundled color font
+            can't render. The pip install bundles the font, so every emoji
+            renders as a colour glyph and this setting has no visible
+            effect there. It applies when emoji rendering is unavailable:
+            under the ``INKMD_NO_EMOJI`` environment variable, or in the
+            font-less single-file zipapp build. ``"name"`` (default)
+            substitutes a short ``[rocket]``-style label so the meaning
+            survives; ``"drop"`` omits the emoji entirely.
 
     Returns:
         The compiled PDF as a ``bytes`` object. Byte-identical for the
@@ -101,7 +110,8 @@ def compile(
         dependent iteration order.
 
     Raises:
-        ValueError: If ``family`` is not one of the supported families.
+        ValueError: If ``family`` is not one of the supported families,
+            or ``emoji_fallback`` is not ``"name"`` or ``"drop"``.
         KeyError: If ``page_size`` is not one of the supported sizes.
 
     Example:
@@ -123,7 +133,17 @@ def compile(
     from inkmd.layout import DEFAULT_MARGIN
     page_w = PAGE_SIZES[page_size][0]
     content_width = page_w - 2 * DEFAULT_MARGIN
-    paragraphs = render_document(doc, family=FAMILIES[family], content_width=content_width)
+    # Scope the emoji text-fallback policy to this compile (ContextVar, so
+    # the render functions need no extra threading and concurrent compiles
+    # don't interfere).
+    from inkmd.emoji import set_fallback_mode, reset_fallback_mode
+    token = set_fallback_mode(emoji_fallback)
+    try:
+        paragraphs = render_document(
+            doc, family=FAMILIES[family], content_width=content_width
+        )
+    finally:
+        reset_fallback_mode(token)
     return styled_pdf(paragraphs, page_size=page_size)
 
 
@@ -137,6 +157,7 @@ def render_file(
     safe: bool = True,
     html: bool = True,
     allow_remote_images: bool = False,
+    emoji_fallback: str = "name",
 ) -> None:
     """Read markdown from a file and write the compiled PDF to another file.
 
@@ -158,6 +179,8 @@ def render_file(
         html: Inline HTML allow-list. See :func:`compile`.
         allow_remote_images: Allow fetching ``http(s)://`` image URLs
             at compile time. See :func:`compile`.
+        emoji_fallback: ``"name"`` or ``"drop"`` for emoji the font can't
+            render (zipapp / INKMD_NO_EMOJI only). See :func:`compile`.
 
     Returns:
         None. The PDF is written to ``out_path`` as a side effect.
@@ -184,5 +207,6 @@ def render_file(
             html=html,
             base_dir=src.parent,
             allow_remote_images=allow_remote_images,
+            emoji_fallback=emoji_fallback,
         )
     )
