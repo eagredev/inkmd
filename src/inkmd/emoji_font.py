@@ -73,6 +73,9 @@ class EmojiFont:
         self._strikes: list[_Strike] | None = None
         # gid -> GlyphBitmap cache.
         self._bitmap_cache: dict[int, GlyphBitmap | None] = {}
+        # GSUB ligature map: tuple(component gids) -> ligature gid, lazy.
+        self._ligatures: dict[tuple[int, ...], int] | None = None
+        self._max_ligature_len = 0
 
     # --- Table directory --------------------------------------------------
 
@@ -312,6 +315,116 @@ class EmojiFont:
                     bearing_x=bx, bearing_y=by, advance=adv, ppem=ppem,
                 )
         return None
+
+    # --- GSUB ligatures (emoji sequences) ---------------------------------
+
+    @property
+    def max_ligature_length(self) -> int:
+        """Longest component-gid sequence in the ligature map (0 if none)."""
+        self._ensure_ligatures()
+        return self._max_ligature_len
+
+    def lookup_ligature(self, component_gids: tuple[int, ...]) -> int | None:
+        """Return the ligature glyph id for an exact component-gid sequence,
+        or None if the font has no such ligature. The caller is responsible
+        for trying progressively shorter prefixes (longest-match)."""
+        self._ensure_ligatures()
+        assert self._ligatures is not None
+        return self._ligatures.get(component_gids)
+
+    def _ensure_ligatures(self) -> None:
+        if self._ligatures is not None:
+            return
+        ligatures: dict[tuple[int, ...], int] = {}
+        # GSUB is optional; a font without it simply has no sequences.
+        if "GSUB" not in self.tables:
+            self._ligatures = ligatures
+            return
+        try:
+            self._parse_gsub_ligatures(ligatures)
+        except (struct.error, IndexError):
+            # A malformed GSUB shouldn't kill emoji rendering — single
+            # glyphs still work; we just lose sequence composition.
+            ligatures = {}
+        self._ligatures = ligatures
+        self._max_ligature_len = max((len(k) for k in ligatures), default=0)
+
+    def _parse_gsub_ligatures(self, out: dict[tuple[int, ...], int]) -> None:
+        """Walk GSUB's lookup list and collect every type-4 (ligature)
+        substitution as a component-gid-tuple -> ligature-gid mapping.
+
+        We ignore script/feature selection and harvest *all* ligature
+        lookups: for emoji fonts these are exactly the ZWJ/flag/keycap/
+        skin-tone sequences, and applying them unconditionally is what a
+        shaper would do for these scripts anyway.
+        """
+        data = self._data
+        gsub_off, _ = self._table("GSUB")
+        # Header 1.0: major(2) minor(2) scriptList(2) featureList(2)
+        # lookupList(2). (1.1 adds a featureVariations offset we don't need.)
+        lookup_list_off = gsub_off + struct.unpack(
+            ">H", data[gsub_off + 8:gsub_off + 10]
+        )[0]
+        n_lookups = struct.unpack(">H", data[lookup_list_off:lookup_list_off + 2])[0]
+        for i in range(n_lookups):
+            lk_off = lookup_list_off + struct.unpack(
+                ">H", data[lookup_list_off + 2 + i * 2:lookup_list_off + 4 + i * 2]
+            )[0]
+            lk_type, _flag, sub_count = struct.unpack(">HHH", data[lk_off:lk_off + 6])
+            if lk_type != 4:
+                continue
+            for s in range(sub_count):
+                sub_off = lk_off + struct.unpack(
+                    ">H", data[lk_off + 6 + s * 2:lk_off + 8 + s * 2]
+                )[0]
+                self._parse_ligature_subtable(sub_off, out)
+
+    def _parse_ligature_subtable(
+        self, sub_off: int, out: dict[tuple[int, ...], int]
+    ) -> None:
+        data = self._data
+        # LigatureSubst format 1: substFormat(2) coverage(2) ligSetCount(2)
+        # then ligSetOffsets[]. Coverage gives the FIRST component glyph of
+        # each ligature set, in order.
+        _fmt, cov_rel, ligset_count = struct.unpack(">HHH", data[sub_off:sub_off + 6])
+        first_gids = self._parse_coverage(sub_off + cov_rel)
+        for li in range(ligset_count):
+            if li >= len(first_gids):
+                break
+            ls_off = sub_off + struct.unpack(
+                ">H", data[sub_off + 6 + li * 2:sub_off + 8 + li * 2]
+            )[0]
+            n_lig = struct.unpack(">H", data[ls_off:ls_off + 2])[0]
+            first = first_gids[li]
+            for g in range(n_lig):
+                lig_off = ls_off + struct.unpack(
+                    ">H", data[ls_off + 2 + g * 2:ls_off + 4 + g * 2]
+                )[0]
+                lig_gid, comp_count = struct.unpack(">HH", data[lig_off:lig_off + 4])
+                # Components after the first are listed (comp_count - 1 gids).
+                rest = tuple(
+                    struct.unpack(">H", data[lig_off + 4 + c * 2:lig_off + 6 + c * 2])[0]
+                    for c in range(comp_count - 1)
+                )
+                out[(first,) + rest] = lig_gid
+
+    def _parse_coverage(self, cov_off: int) -> list[int]:
+        """Parse a Coverage table (format 1 or 2) into an ordered gid list."""
+        data = self._data
+        fmt = struct.unpack(">H", data[cov_off:cov_off + 2])[0]
+        gids: list[int] = []
+        if fmt == 1:
+            count = struct.unpack(">H", data[cov_off + 2:cov_off + 4])[0]
+            for k in range(count):
+                gids.append(struct.unpack(">H", data[cov_off + 4 + k * 2:cov_off + 6 + k * 2])[0])
+        elif fmt == 2:
+            count = struct.unpack(">H", data[cov_off + 2:cov_off + 4])[0]
+            for k in range(count):
+                start, end, _idx = struct.unpack(
+                    ">HHH", data[cov_off + 4 + k * 6:cov_off + 10 + k * 6]
+                )
+                gids.extend(range(start, end + 1))
+        return gids
 
 
 @dataclass(frozen=True)

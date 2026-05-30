@@ -26,6 +26,22 @@ from inkmd.layout import EmojiImage, Run
 # after a base codepoint requests the colour-emoji glyph.
 _VS16 = 0xFE0F
 _VS15 = 0xFE0E
+_ZWJ = 0x200D            # zero-width joiner (family/role ZWJ sequences)
+_KEYCAP = 0x20E3         # combining enclosing keycap (#️⃣, 1️⃣ …)
+_SKIN_TONES = range(0x1F3FB, 0x1F3FF + 1)  # Fitzpatrick modifiers
+_TAG_RANGE = range(0xE0020, 0xE007F + 1)   # tag chars (subdivision flags)
+_REGIONAL = range(0x1F1E6, 0x1F1FF + 1)    # regional indicators (flag halves)
+
+
+def _is_cluster_glue(cp: int) -> bool:
+    """Codepoints that bind to a preceding emoji to form one cluster but
+    are never standalone glyphs: ZWJ, variation selectors, the keycap
+    combiner, skin-tone modifiers, and flag tag characters."""
+    return (
+        cp in (_ZWJ, _VS16, _VS15, _KEYCAP)
+        or cp in _SKIN_TONES
+        or cp in _TAG_RANGE
+    )
 
 
 def is_emoji_codepoint(cp: int) -> bool:
@@ -89,44 +105,99 @@ def emoji_available() -> bool:
     return _load_font() is not None
 
 
-def _resolve_glyph(codepoints: tuple[int, ...]) -> EmojiImage | None:
-    """Resolve a codepoint sequence to an EmojiImage, or None if the font
-    is absent or lacks the glyph. Currently handles a single base codepoint
-    with an optional trailing FE0F/FE0E selector; multi-codepoint sequences
-    (ZWJ, flags) are deferred to the ligature phase and return None here.
-    """
+def _glyph_image(gid: int, codepoints: tuple[int, ...]):
+    """Build an EmojiImage for a resolved glyph id, or None if its bitmap
+    can't be extracted."""
     font = _load_font()
     if font is None:
         return None
-    # Strip a trailing presentation selector; resolve via the variation
-    # table when present, otherwise the plain cmap.
-    base = codepoints[0]
-    selector = codepoints[1] if len(codepoints) == 2 and codepoints[1] in (_VS16, _VS15) else None
-    if len(codepoints) > (2 if selector else 1):
-        return None  # genuine multi-codepoint sequence — handled later
     try:
-        gid = 0
-        if selector is not None:
-            vgid = font.variation_glyph_id(base, selector)
-            gid = vgid if vgid is not None else font.glyph_id(base)
-        else:
-            gid = font.glyph_id(base)
-        if gid == 0:
-            return None
         bmp = font.glyph_bitmap(gid)
     except EmojiFontError:
         return None
     if bmp is None:
         return None
-    image = ImageData(
-        format="png", width=bmp.width, height=bmp.height, data=bmp.png
-    )
+    image = ImageData(format="png", width=bmp.width, height=bmp.height, data=bmp.png)
     aspect = bmp.width / bmp.height if bmp.height else 1.0
     return EmojiImage(
         image_id=f"emoji:{'-'.join(f'{c:04X}' for c in codepoints)}",
         image_data=image,
         aspect=aspect,
     )
+
+
+def _resolve_sequence(cluster: tuple[int, ...]) -> tuple[EmojiImage | None, int]:
+    """Resolve the longest emoji at the start of ``cluster``.
+
+    Returns ``(image, consumed)`` where ``consumed`` is the number of
+    leading codepoints the emoji used, or ``(None, 0)`` if the first
+    codepoint can't be rendered. Tries, in order:
+
+    1. the longest GSUB ligature whose component glyphs match a prefix of
+       the cluster (with presentation selectors FE0F/FE0E dropped, as the
+       font's ligatures are keyed on the non-selector glyph sequence);
+    2. the base codepoint + a trailing FE0F via the cmap variation table;
+    3. the bare base codepoint.
+    """
+    font = _load_font()
+    if font is None:
+        return None, 0
+
+    # Map the cluster's codepoints to component glyphs for ligature
+    # matching. Presentation selectors (FE0F/FE0E) are dropped from the key
+    # — the font's ligatures are keyed on the non-selector glyph sequence —
+    # but they still consume a source codepoint. ``spans[k]`` is the number
+    # of source codepoints backing the first k+1 component glyphs.
+    gids: list[int] = []
+    spans: list[int] = []
+    try:
+        for i, cp in enumerate(cluster):
+            if cp in (_VS16, _VS15):
+                # Fold the selector into the most recent glyph's span.
+                if spans:
+                    spans[-1] = i + 1
+                continue
+            gids.append(font.glyph_id(cp))
+            spans.append(i + 1)
+    except EmojiFontError:
+        return None, 0
+
+    if not gids or gids[0] == 0:
+        return None, 0
+
+    # 1. Longest-match ligature over the leading gids.
+    try:
+        max_len = min(len(gids), font.max_ligature_length)
+        for take in range(max_len, 1, -1):
+            lig = font.lookup_ligature(tuple(gids[:take]))
+            if lig is not None:
+                used_cps = spans[take - 1]
+                img = _glyph_image(lig, cluster[:used_cps])
+                if img is not None:
+                    return img, used_cps
+    except EmojiFontError:
+        pass
+
+    # 2. base + trailing presentation selector via the variation table.
+    base = cluster[0]
+    if len(cluster) >= 2 and cluster[1] in (_VS16, _VS15):
+        try:
+            vgid = font.variation_glyph_id(base, cluster[1])
+        except EmojiFontError:
+            vgid = None
+        if vgid:
+            img = _glyph_image(vgid, cluster[:2])
+            if img is not None:
+                return img, 2
+
+    # 3. the bare base codepoint.
+    img = _glyph_image(gids[0], (base,))
+    if img is not None:
+        # If a presentation selector immediately follows, swallow it so it
+        # doesn't linger as stray text.
+        used = 2 if (len(cluster) >= 2 and cluster[1] in (_VS16, _VS15)) else 1
+        return img, used
+    return None, 0
 
 
 def split_text_into_runs(
@@ -171,24 +242,59 @@ def split_text_into_runs(
     while i < n:
         cp = ord(text[i])
         if is_emoji_codepoint(cp):
-            # Consume an optional trailing presentation selector.
-            seq = [cp]
-            if i + 1 < n and ord(text[i + 1]) in (_VS16, _VS15):
-                seq.append(ord(text[i + 1]))
-            glyph = _resolve_glyph(tuple(seq))
-            if glyph is not None:
+            # Gather the maximal emoji cluster starting here: the base
+            # codepoint plus any following glue (selectors, skin tones,
+            # keycap) and ZWJ-joined emoji. _resolve_sequence decides how
+            # much of it actually forms a renderable glyph (longest-match),
+            # so over-gathering is safe — unused codepoints are reconsidered.
+            cluster = _gather_cluster(text, i, n)
+            img, used = _resolve_sequence(cluster)
+            if img is not None and used > 0:
                 flush_text()
                 runs.append(Run(
-                    text="".join(chr(c) for c in seq),
+                    text=text[i:i + used],
                     font=font, size=size, link_url=link_url,
-                    color=color, strike=strike, emoji=glyph,
+                    color=color, strike=strike, emoji=img,
                 ))
-                i += len(seq)
+                i += used
                 continue
         buf.append(text[i])
         i += 1
     flush_text()
     return runs
+
+
+def _gather_cluster(text: str, start: int, n: int) -> tuple[int, ...]:
+    """Collect the codepoints of a maximal emoji cluster from ``start``.
+
+    A cluster is the base emoji plus any directly following glue codepoints
+    (variation selectors, skin-tone modifiers, keycap combiner, tag chars)
+    and ZWJ-joined continuation emoji. Resolution decides how much of the
+    gathered run is actually a single glyph.
+    """
+    base = ord(text[start])
+    cps = [base]
+    # Regional-indicator flags are exactly two consecutive indicators
+    # (e.g. 🇯 + 🇵 = 🇯🇵). Pull in the partner so the pair ligates.
+    if base in _REGIONAL and start + 1 < n and ord(text[start + 1]) in _REGIONAL:
+        cps.append(ord(text[start + 1]))
+        return tuple(cps)
+    j = start + 1
+    while j < n:
+        cp = ord(text[j])
+        if _is_cluster_glue(cp):
+            cps.append(cp)
+            j += 1
+        elif cp == _ZWJ:
+            # A joiner pulls in the next emoji too (family/role sequences).
+            cps.append(cp)
+            j += 1
+        elif cps and cps[-1] == _ZWJ and is_emoji_codepoint(cp):
+            cps.append(cp)
+            j += 1
+        else:
+            break
+    return tuple(cps)
 
 
 def _text_run(text, font, size, link_url, color, strike) -> Run:

@@ -198,3 +198,100 @@ def test_no_font_leaves_emoji_as_text(monkeypatch):
     assert all(r.emoji is None for r in runs)
     assert "".join(r.text for r in runs) == "hi 🚀"
     # monkeypatch restores _load_font; clear so other tests reload cleanly.
+
+
+# --- Emoji sequences via GSUB ligatures (Phase 4) -------------------------
+
+# Codepoints + gids for sequence fixtures.
+_MAN, _WOMAN, _GIRL = 0x1F468, 0x1F469, 0x1F467
+_ZWJ = 0x200D
+_THUMB, _SKIN = 0x1F44D, 0x1F3FD
+_RI_J, _RI_P = 0x1F1EF, 0x1F1F5  # regional indicators J, P (Japan)
+
+
+@pytest.fixture
+def sequence_emoji_font(monkeypatch):
+    """Synthetic font with ligatures for a family ZWJ sequence, a
+    skin-tone sequence, and a regional-indicator flag pair."""
+    cmap = {
+        _ROCKET: 1, _MAN: 2, _WOMAN: 3, _GIRL: 4, _ZWJ: 5,
+        _THUMB: 6, _SKIN: 7, _RI_J: 8, _RI_P: 9,
+    }
+    # Ligature glyphs live at gids 20+.
+    ligs = {
+        (2, 5, 3, 5, 4): 20,   # man ZWJ woman ZWJ girl -> family
+        (6, 7): 21,            # thumb + skin tone
+        (8, 9): 22,            # J + P -> Japan flag
+    }
+    pngs = {g: _tiny_png() for g in list(cmap.values()) + list(ligs.values())}
+    font = EmojiFont(_build_cbdt_font(cmap, pngs, ligatures=ligs))
+    emoji_mod._load_font.cache_clear()
+    monkeypatch.setattr(emoji_mod, "_load_font", lambda: font)
+    yield font
+
+
+def _split(text):
+    from inkmd.emoji import split_text_into_runs
+    return split_text_into_runs(
+        text, font="Helvetica", size=12.0,
+        link_url=None, color=None, strike=False,
+    )
+
+
+def test_zwj_family_composes_to_one_emoji(sequence_emoji_font):
+    runs = _split("fam \U0001F468‍\U0001F469‍\U0001F467 unit")
+    emoji = [r for r in runs if r.emoji]
+    assert len(emoji) == 1
+    assert emoji[0].emoji.image_id == "emoji:1F468-200D-1F469-200D-1F467"
+    assert "".join(r.text for r in runs if not r.emoji) == "fam  unit"
+
+
+def test_skin_tone_composes_to_one_emoji(sequence_emoji_font):
+    runs = _split("ok \U0001F44D\U0001F3FD done")
+    emoji = [r for r in runs if r.emoji]
+    assert len(emoji) == 1
+    assert emoji[0].emoji.image_id == "emoji:1F44D-1F3FD"
+
+
+def test_regional_indicator_pair_composes_to_flag(sequence_emoji_font):
+    runs = _split("flag \U0001F1EF\U0001F1F5 here")
+    emoji = [r for r in runs if r.emoji]
+    assert len(emoji) == 1
+    assert emoji[0].emoji.image_id == "emoji:1F1EF-1F1F5"
+
+
+def test_two_adjacent_flags_stay_separate(sequence_emoji_font):
+    # Two JP flags in a row must be two emoji, not a 4-indicator blob.
+    runs = _split("\U0001F1EF\U0001F1F5\U0001F1EF\U0001F1F5")
+    emoji = [r for r in runs if r.emoji]
+    assert len(emoji) == 2
+    assert all(r.emoji.image_id == "emoji:1F1EF-1F1F5" for r in emoji)
+
+
+def test_partial_sequence_falls_back_to_base(sequence_emoji_font):
+    # A man followed by a non-joining emoji: no ligature -> man renders
+    # alone, rocket renders alone (two emoji, not one bad ligature).
+    runs = _split("\U0001F468\U0001F680")
+    emoji = [r for r in runs if r.emoji]
+    assert len(emoji) == 2
+    assert [e.emoji.image_id for e in emoji] == ["emoji:1F468", "emoji:1F680"]
+
+
+def test_longest_match_prefers_full_family(sequence_emoji_font):
+    # The full 5-glyph family ligature must win even though shorter
+    # prefixes exist as glyphs.
+    runs = _split("\U0001F468‍\U0001F469‍\U0001F467")
+    emoji = [r for r in runs if r.emoji]
+    assert len(emoji) == 1
+    assert emoji[0].emoji.image_id == "emoji:1F468-200D-1F469-200D-1F467"
+
+
+def test_sequence_emits_single_image_placement(sequence_emoji_font):
+    from inkmd.layout import ImagePlacement
+    blocks = render_document(
+        parse("\U0001F1EF\U0001F1F5"), FAMILIES["helvetica"], content_width=468.0
+    )
+    pages = paginate_runs(blocks, page_width=612, page_height=792)
+    placements = [s for pg in pages for s in pg.shapes if isinstance(s, ImagePlacement)]
+    assert len(placements) == 1
+    assert placements[0].image_id == "emoji:1F1EF-1F1F5"

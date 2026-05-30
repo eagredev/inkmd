@@ -31,12 +31,87 @@ def _tiny_png(w: int = 4, h: int = 4) -> bytes:
     return sig + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
 
 
+def _build_gsub_ligatures(ligatures: dict[tuple[int, ...], int]) -> bytes:
+    """Build a minimal GSUB table with one type-4 (ligature) lookup holding
+    the given component-gid-tuple -> ligature-gid mappings.
+
+    Layout: header -> (empty) script/feature lists -> lookup list -> one
+    lookup -> one ligature subtable (format 1) with a format-1 coverage of
+    first-component gids and one LigatureSet per first component.
+    """
+    # Group ligatures by their first component glyph.
+    by_first: dict[int, list[tuple[tuple[int, ...], int]]] = {}
+    for comps, lig_gid in ligatures.items():
+        by_first.setdefault(comps[0], []).append((comps, lig_gid))
+    first_gids = sorted(by_first)
+
+    # --- Ligature subtable (format 1) ---
+    # Build each LigatureSet, then the subtable referencing them.
+    ligset_blobs: list[bytes] = []
+    for fg in first_gids:
+        entries = by_first[fg]
+        # Ligature records: ligGlyph(2) compCount(2) componentGlyphs[compCount-1](2 each)
+        lig_blobs = []
+        for comps, lig_gid in entries:
+            rest = comps[1:]
+            lig_blobs.append(struct.pack(">HH", lig_gid, len(comps)) + b"".join(struct.pack(">H", g) for g in rest))
+        # LigatureSet: ligatureCount(2) ligatureOffsets[](2 each) then ligatures
+        n = len(lig_blobs)
+        offs_start = 2 + n * 2
+        offsets = []
+        running = offs_start
+        for lb in lig_blobs:
+            offsets.append(running)
+            running += len(lb)
+        ligset = struct.pack(">H", n) + b"".join(struct.pack(">H", o) for o in offsets) + b"".join(lig_blobs)
+        ligset_blobs.append(ligset)
+
+    # Coverage format 1: format(2) glyphCount(2) glyphArray[](2 each)
+    coverage = struct.pack(">HH", 1, len(first_gids)) + b"".join(struct.pack(">H", g) for g in first_gids)
+
+    # LigatureSubst format 1: substFormat(2) coverageOffset(2) ligSetCount(2)
+    # ligatureSetOffsets[](2 each), then coverage, then ligature sets.
+    n_sets = len(ligset_blobs)
+    subhdr_len = 6 + n_sets * 2
+    cov_off = subhdr_len
+    sets_off = cov_off + len(coverage)
+    set_offsets = []
+    running = sets_off
+    for sb in ligset_blobs:
+        set_offsets.append(running)
+        running += len(sb)
+    subtable = (
+        struct.pack(">HHH", 1, cov_off, n_sets)
+        + b"".join(struct.pack(">H", o) for o in set_offsets)
+        + coverage
+        + b"".join(ligset_blobs)
+    )
+
+    # Lookup: lookupType(2) lookupFlag(2) subTableCount(2) subtableOffsets[](2)
+    lookup = struct.pack(">HHH", 4, 0, 1) + struct.pack(">H", 8) + subtable  # offset 8 = past header
+    # LookupList: lookupCount(2) lookupOffsets[](2)
+    lookup_list = struct.pack(">H", 1) + struct.pack(">H", 4) + lookup  # one lookup at offset 4
+    # ScriptList + FeatureList: empty (count 0).
+    script_list = struct.pack(">H", 0)
+    feature_list = struct.pack(">H", 0)
+    # GSUB header 1.0: major(2) minor(2) scriptListOff(2) featureListOff(2) lookupListOff(2)
+    header_len = 10
+    script_off = header_len
+    feature_off = script_off + len(script_list)
+    lookup_off = feature_off + len(feature_list)
+    return (
+        struct.pack(">HHHHH", 1, 0, script_off, feature_off, lookup_off)
+        + script_list + feature_list + lookup_list
+    )
+
+
 def _build_cbdt_font(
     codepoint_to_gid: dict[int, int],
     glyph_png: dict[int, bytes],
     *,
     ppem: int = 109,
     variation: tuple[int, int, int] | None = None,
+    ligatures: dict[tuple[int, ...], int] | None = None,
 ) -> bytes:
     """Assemble a minimal OpenType CBDT font with the given cmap + glyphs.
 
@@ -118,6 +193,8 @@ def _build_cbdt_font(
 
     # --- assemble sfnt ---
     tables = {"cmap": cmap, "CBLC": cblc, "CBDT": cbdt}
+    if ligatures:
+        tables["GSUB"] = _build_gsub_ligatures(ligatures)
     tags = sorted(tables)
     num = len(tags)
     header = struct.pack(">4sHHHH", b"\x00\x01\x00\x00", num, 0, 0, 0)
@@ -275,3 +352,38 @@ def test_real_noto_color_emoji_smoke():
         gid = font.glyph_id(cp)
         assert gid != 0
         assert font.glyph_bitmap(gid) is not None
+
+
+# --- GSUB ligature parsing (Phase 4) --------------------------------------
+
+
+def test_gsub_ligatures_parsed():
+    ligs = {(1, 2): 100, (1, 2, 3): 101, (4, 5): 102}
+    font = _font(
+        {0x1F468: 1, 0x200D: 2, 0x1F469: 3, 0x1F1EF: 4, 0x1F1F5: 5},
+        {g: _tiny_png() for g in range(1, 103)},
+        ligatures=ligs,
+    )
+    assert font.lookup_ligature((1, 2)) == 100
+    assert font.lookup_ligature((1, 2, 3)) == 101
+    assert font.lookup_ligature((4, 5)) == 102
+
+
+def test_gsub_max_ligature_length():
+    font = _font(
+        {0x1F468: 1, 0x1F469: 2, 0x1F467: 3},
+        {1: _tiny_png(), 2: _tiny_png(), 3: _tiny_png(), 9: _tiny_png()},
+        ligatures={(1, 2, 3): 9},
+    )
+    assert font.max_ligature_length == 3
+
+
+def test_gsub_absent_ligature_returns_none():
+    font = _font({0x1F680: 1}, {1: _tiny_png(), 9: _tiny_png()}, ligatures={(1, 1): 9})
+    assert font.lookup_ligature((1, 2, 3)) is None
+
+
+def test_no_gsub_table_means_no_ligatures():
+    font = _font({0x1F680: 1}, {1: _tiny_png()})  # no ligatures arg -> no GSUB
+    assert font.max_ligature_length == 0
+    assert font.lookup_ligature((1, 2)) is None
