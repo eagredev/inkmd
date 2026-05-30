@@ -225,13 +225,16 @@ TIMES_BOLDITALIC_WIDTHS: dict[int, int] = {
 }
 
 
-# Helvetica-Oblique shares Helvetica's advance widths. Times-Italic has
-# its own metrics because the italic face is a redrawn typeface, not a
-# slant — different glyph shapes, different advance widths.
+# Helvetica-Oblique shares Helvetica's advance widths, and
+# Helvetica-BoldOblique shares Helvetica-Bold's: the oblique faces are
+# mechanically slanted, not redrawn, so the advance widths are identical.
+# Times-Italic has its own metrics because the italic face is a redrawn
+# typeface, not a slant — different glyph shapes, different advance widths.
 _WIDTH_TABLES: dict[str, dict[int, int]] = {
     "Helvetica": HELVETICA_WIDTHS,
     "Helvetica-Bold": HELVETICA_BOLD_WIDTHS,
     "Helvetica-Oblique": HELVETICA_WIDTHS,
+    "Helvetica-BoldOblique": HELVETICA_BOLD_WIDTHS,
     "Courier": COURIER_WIDTHS,
     "Times-Roman": TIMES_ROMAN_WIDTHS,
     "Times-Bold": TIMES_BOLD_WIDTHS,
@@ -433,8 +436,10 @@ from inkmd._kerning_data import (
 _KERNING_TABLES: dict[str, dict[tuple[str, str], int]] = {
     "Helvetica": HELVETICA_KERNING,
     "Helvetica-Bold": HELVETICA_BOLD_KERNING,
-    # Helvetica-Oblique uses the same outlines as Helvetica → same kerning.
+    # The oblique faces use the same outlines as their upright counterparts
+    # → same kerning. Oblique = Helvetica, BoldOblique = Helvetica-Bold.
     "Helvetica-Oblique": HELVETICA_KERNING,
+    "Helvetica-BoldOblique": HELVETICA_BOLD_KERNING,
     # Courier has no kerning (monospace).
     "Courier": {},
     "Times-Roman": TIMES_ROMAN_KERNING,

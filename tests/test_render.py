@@ -121,6 +121,21 @@ def test_emphasis_within_strong_uses_bold_italic():
     assert runs[1].font == HELVETICA_FAMILY.bold_italic
 
 
+def test_helvetica_bold_italic_is_distinct_from_bold():
+    """Regression: ***bold italic*** in the default helvetica family must
+    use a real bold-oblique face, not silently collapse to plain bold
+    (which dropped the italic slant). Helvetica-BoldOblique is a standard
+    base-14 font, so no embedding is needed."""
+    bold_italic = render_document(_para(Strong(inlines=(
+        Emphasis(inlines=(Text("x"),)),
+    ))))[0].runs[0].font
+    bold = render_document(_para(Strong(inlines=(Text("x"),))))[0].runs[0].font
+    italic = render_document(_para(Emphasis(inlines=(Text("x"),))))[0].runs[0].font
+    assert bold_italic == "Helvetica-BoldOblique"
+    assert bold_italic != bold
+    assert bold_italic != italic
+
+
 def test_times_family_routes_to_times_fonts():
     """When the family is Times, Strong → Times-Bold etc."""
     doc = _para(Strong(inlines=(Text("bold"),)))

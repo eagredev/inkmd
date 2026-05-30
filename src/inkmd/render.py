@@ -12,7 +12,7 @@ library default stays Helvetica.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from inkmd.ast import (
     AutoLink,
@@ -67,7 +67,7 @@ HELVETICA_FAMILY = FontFamily(
     regular="Helvetica",
     bold="Helvetica-Bold",
     italic="Helvetica-Oblique",
-    bold_italic="Helvetica-Bold",  # no Helvetica-BoldOblique in v0.1; bold standin
+    bold_italic="Helvetica-BoldOblique",
     monospace="Courier",
 )
 
@@ -158,6 +158,10 @@ class RenderedBlock:
 # the left of the body. The bullet marker is "•" (U+2022); WinAnsi maps it
 # at byte 0x95.
 LIST_INDENT_PT = 18.0
+# Minimum gap between an ordered-list marker and the body text when the
+# marker is wide enough (multi-digit) to need a slot wider than one
+# indent step.
+MARKER_BODY_GAP = 4.0
 TIGHT_ITEM_SPACING = 0.0
 LOOSE_ITEM_SPACING = 4.0
 LIST_BLOCK_SPACE_ABOVE = 3.0
@@ -732,7 +736,21 @@ def _render_list(lst: List, family: FontFamily, depth: int) -> list[RenderedBloc
     indent.
     """
     out: list[RenderedBlock] = []
-    indent_for_items = LIST_INDENT_PT * (depth + 1)
+    marker_x = LIST_INDENT_PT * depth
+    # The body sits one indent step past the marker by default, but an
+    # ordered list whose markers reach two-plus digits ("10. ", "100. ")
+    # needs a wider slot or the marker overruns and overlaps the body
+    # text. Size the slot to the WIDEST marker in this list (the largest
+    # number is the last item) plus a small gap, falling back to the
+    # standard step for short markers. This is per-list, so a 1..9 list
+    # keeps the tight default and a 1..120 list widens uniformly.
+    default_indent = LIST_INDENT_PT * (depth + 1)
+    if lst.ordered and lst.items:
+        widest_marker = f"{lst.start + len(lst.items) - 1}. "
+        marker_w = text_width(widest_marker, family.regular, BODY_SIZE)
+        indent_for_items = max(default_indent, marker_x + marker_w + MARKER_BODY_GAP)
+    else:
+        indent_for_items = default_indent
 
     item_spacing = LOOSE_ITEM_SPACING if not lst.tight else TIGHT_ITEM_SPACING
 
@@ -747,7 +765,6 @@ def _render_list(lst: List, family: FontFamily, depth: int) -> list[RenderedBloc
         else:
             marker_text = "[ ] "
         marker_runs = (Run(text=marker_text, font=family.regular, size=BODY_SIZE),)
-        marker_x = LIST_INDENT_PT * depth
 
         if not item.blocks:
             # An empty item still gets a marker-only line so it doesn't
@@ -770,31 +787,35 @@ def _render_list(lst: List, family: FontFamily, depth: int) -> list[RenderedBloc
         first_of_item = True
         for sub_idx, child in enumerate(item.blocks):
             child_blocks = _render_block(child, family, depth + 1)
+            # A nested list computes its own absolute indent from its
+            # deeper depth, so it must NOT have this item's indent added
+            # on top. Every other child block (paragraph, code, image,
+            # thematic break) carries only intrinsic padding relative to
+            # its container, so it needs the item's indent added to sit
+            # under the item body.
+            child_is_list = isinstance(child, List)
             for cb_idx, cb in enumerate(child_blocks):
+                # Preserve ALL of the child block's fields (preserve_lines,
+                # background_fill, bg_padding, left_rules, and the whole
+                # prepositioned* family for images/tables) and override only
+                # the list-specific positioning. Reconstructing a fresh
+                # RenderedBlock with a hand-picked subset of fields silently
+                # dropped code-block backgrounds, code line-preservation,
+                # and nested block images.
+                item_indent = cb.body_indent if child_is_list else cb.body_indent + indent_for_items
                 if first_of_item:
                     # Sibling items in a tight list pack flush together.
-                    compact = lst.tight and item_idx > 0
-                    rendered = RenderedBlock(
-                        runs=cb.runs,
-                        space_above=cb.space_above,
-                        space_below=cb.space_below,
-                        body_indent=indent_for_items,
+                    rendered = replace(
+                        cb,
+                        body_indent=indent_for_items if not child_is_list else cb.body_indent,
                         marker_runs=marker_runs,
                         marker_x=marker_x,
-                        compact=compact,
+                        compact=lst.tight and item_idx > 0,
                     )
                     first_of_item = False
                 else:
-                    # Continuation block within the same item.
-                    rendered = RenderedBlock(
-                        runs=cb.runs,
-                        space_above=cb.space_above,
-                        space_below=cb.space_below,
-                        body_indent=cb.body_indent or indent_for_items,
-                        marker_runs=cb.marker_runs,
-                        marker_x=cb.marker_x,
-                        compact=cb.compact,
-                    )
+                    # Continuation block within the same item: no marker.
+                    rendered = replace(cb, body_indent=item_indent)
                 out.append(rendered)
 
     return out

@@ -274,3 +274,70 @@ def test_html_serialiser_emits_img_tag():
     assert '<img src="img.png"' in html
     assert 'alt="hello"' in html
     assert 'title="the title"' in html
+
+
+# --- Pagination after block-level images (red-team findings 0, 19, 43) -----
+
+
+def _pages_for(md: str, base_dir: Path):
+    """Compile md through the full pipeline and return layout Pages."""
+    from inkmd.render import render_document, FAMILIES
+    from inkmd.html_filter import filter_document as fh
+    from inkmd.url_filter import filter_document as fu
+    from inkmd.image_loader import resolve_images as ri
+    from inkmd.layout import paginate_runs
+
+    doc = parse(md)
+    doc = fh(doc, html=True)
+    doc = fu(doc, safe=True)
+    doc = ri(doc, base_dir=base_dir, allow_remote=False)
+    paras = render_document(doc, family=FAMILIES["helvetica"])
+    return paginate_runs(paras, page_width=612, page_height=792)
+
+
+def _lowest_y(pages) -> float:
+    ys = [r.y for pg in pages for ln in pg.lines for r in ln.runs]
+    ys += [getattr(s, "y", 999) for pg in pages for s in pg.shapes]
+    return min(ys) if ys else 999.0
+
+
+def test_second_tall_image_moves_to_fresh_page(tmp_path):
+    """Regression: a block image that doesn't fit below a preceding image
+    must move to a fresh page, not overflow the bottom margin / off-page."""
+    _tiny_png(tmp_path, "a.png", w=80, h=400)
+    _tiny_png(tmp_path, "b.png", w=80, h=350)
+    pages = _pages_for("![a](a.png)\n\n![b](b.png)", tmp_path)
+    assert len(pages) == 2
+    # Nothing placed below the bottom margin (y=72) or off-page (y<0).
+    assert _lowest_y(pages) >= 72 - 1e-6
+
+
+def test_third_image_not_silently_lost_off_page(tmp_path):
+    """Regression: three tall images must paginate to 3 pages; the third
+    must not be pushed entirely off-page (silent content loss)."""
+    _tiny_png(tmp_path, "a.png", w=80, h=400)
+    _tiny_png(tmp_path, "b.png", w=80, h=350)
+    _tiny_png(tmp_path, "c.png", w=80, h=350)
+    pages = _pages_for("![a](a.png)\n\n![b](b.png)\n\n![c](c.png)", tmp_path)
+    assert len(pages) == 3
+    assert _lowest_y(pages) >= 72 - 1e-6
+
+
+def test_thematic_break_after_tall_image_moves_to_fresh_page(tmp_path):
+    """Regression: an HR that doesn't fit after a tall image moves to a
+    fresh page instead of being drawn below the bottom margin."""
+    _tiny_png(tmp_path, "a.png", w=80, h=640)
+    pages = _pages_for("![a](a.png)\n\n---", tmp_path)
+    assert len(pages) == 2
+    assert _lowest_y(pages) >= 72 - 1e-6
+
+
+def test_table_after_tall_image_moves_to_fresh_page(tmp_path):
+    """Regression: a table that fits on its own page but not below a tall
+    image must move to a fresh page, not overflow the bottom edge."""
+    _tiny_png(tmp_path, "a.png", w=80, h=400)
+    rows = "\n".join(f"| a{i} | b{i} |" for i in range(12))
+    md = f"![a](a.png)\n\n| HA | HB |\n|---|---|\n{rows}"
+    pages = _pages_for(md, tmp_path)
+    assert len(pages) == 2
+    assert _lowest_y(pages) >= 72 - 1e-6

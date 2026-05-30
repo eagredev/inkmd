@@ -332,3 +332,62 @@ def test_compile_includes_item_text_in_stream():
     assert b"zz" in out  # robust to kerning splits
     # Bullet character (WinAnsi byte 0x95) should appear in the stream.
     assert b"\x95" in out
+
+
+# --- Block content nested under list items (red-team findings 1,2,8,28,44) -
+
+
+def test_code_block_in_list_item_preserves_lines_and_background():
+    """Regression: a fenced code block inside a list item must keep its
+    line breaks, monospace, and grey background (not collapse to one
+    proportional line). README advertises code-in-list as supported."""
+    from inkmd.render import render_document, FAMILIES
+    md = "- item\n\n  ```\n  line1\n  line2\n  line3\n  ```\n"
+    blocks = render_document(parse(md), FAMILIES["helvetica"])
+    code = [b for b in blocks if any("line" in r.text for r in getattr(b, "runs", ()))]
+    assert code, "code block not found in rendered list"
+    b = code[0]
+    assert b.preserve_lines is True
+    assert b.background_fill is not None
+    # Indented under the item body (greater than the bare list step).
+    assert b.body_indent > 18.0
+
+
+def test_image_in_list_item_not_dropped():
+    """Regression: a block-level image nested under a list item must
+    survive (was silently dropped)."""
+    import struct, zlib
+    from pathlib import Path
+    import tempfile
+    from inkmd.render import render_document, FAMILIES
+    from inkmd.html_filter import filter_document as fh
+    from inkmd.url_filter import filter_document as fu
+    from inkmd.image_loader import resolve_images as ri
+
+    def chunk(t, d):
+        c = t + d
+        return struct.pack(">I", len(d)) + c + struct.pack(">I", zlib.crc32(c) & 0xFFFFFFFF)
+
+    with tempfile.TemporaryDirectory() as td:
+        png = (b"\x89PNG\r\n\x1a\n"
+               + chunk(b"IHDR", struct.pack(">IIBBBBB", 40, 40, 8, 2, 0, 0, 0))
+               + chunk(b"IDAT", zlib.compress(b"".join(b"\x00" + b"\xc0\x40\x40" * 40 for _ in range(40))))
+               + chunk(b"IEND", b""))
+        (Path(td) / "s.png").write_bytes(png)
+        doc = parse("- item\n\n  ![x](s.png)\n")
+        doc = fh(doc, html=True); doc = fu(doc, safe=True)
+        doc = ri(doc, base_dir=Path(td), allow_remote=False)
+        blocks = render_document(doc, FAMILIES["helvetica"])
+        imgs = [b for b in blocks if getattr(b, "prepositioned", False)
+                and any(s.get("kind") == "image" for s in getattr(b, "prepositioned_shapes", ()))]
+        assert imgs, "block image nested in list item was dropped"
+
+
+def test_thematic_break_in_list_item_not_dropped():
+    """Regression: a thematic break (---) inside a list item must render
+    (the rule rectangle was silently dropped)."""
+    from inkmd.render import render_document, FAMILIES
+    blocks = render_document(parse("- item\n\n  ---\n"), FAMILIES["helvetica"])
+    hrs = [b for b in blocks if getattr(b, "prepositioned", False)
+           and any(s.get("kind") != "image" for s in getattr(b, "prepositioned_shapes", ()))]
+    assert hrs, "thematic break nested in list item was dropped"

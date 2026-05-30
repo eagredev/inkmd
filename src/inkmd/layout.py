@@ -637,8 +637,19 @@ def paginate_runs(
                 _baseline_from_top, _runs = line_record
                 if _baseline_from_top > total_h:
                     total_h = _baseline_from_top
-            # If the table doesn't fit on the current page, flush and start fresh.
-            if y_cursor - total_h < bottom_y and current_lines:
+            # If the block doesn't fit in the remaining space on the
+            # current page, flush and start fresh — but only if the page
+            # already holds content (text lines, shapes, or annotations).
+            # Gating on text lines alone meant a block placed after an
+            # image-only page (no text) was crammed on regardless and
+            # overflowed the bottom margin (or off-page entirely, losing
+            # content). An empty page never flushes, so a block taller
+            # than a whole page still places atomically and overflows by
+            # design rather than looping.
+            page_has_content = bool(
+                current_lines or current_shapes or current_annotations
+            )
+            if y_cursor - total_h < bottom_y and page_has_content:
                 flush_page()
                 current_lines = []
                 current_shapes = []

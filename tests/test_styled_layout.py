@@ -253,3 +253,32 @@ def test_paginate_runs_subsequent_run_x_matches_first_run_width():
         prev = positioned[i - 1]
         expected = prev.x + text_width(prev.text, prev.font, prev.size)
         assert abs(positioned[i].x - expected) < 1e-6
+
+
+def test_ordered_list_marker_does_not_overlap_body_at_two_digits():
+    """Regression: an ordered list reaching item 10+ must not let the
+    multi-digit marker ('10. ') overrun the body text. The body indent
+    widens to the widest marker in the list."""
+    import inkmd
+    from inkmd.parser import parse
+    from inkmd.render import render_document, FAMILIES
+
+    md = "\n".join(f"{i}. item number {i}" for i in range(1, 13))
+    blocks = render_document(parse(md), FAMILIES["helvetica"])
+    pages = paginate_runs(blocks, page_width=612, page_height=792)
+    for page in pages:
+        for line in page.lines:
+            runs = line.runs
+            if len(runs) < 2:
+                continue
+            marker = runs[0]
+            marker_end = marker.x + text_width(marker.text, marker.font, marker.size)
+            body_start = runs[1].x
+            assert marker_end <= body_start + 1e-6, (
+                f"marker {marker.text!r} ends at {marker_end} but body starts "
+                f"at {body_start} (overlap)"
+            )
+    # Sanity: a short 1..4 list keeps the tight default indent (no
+    # over-widening) — body should still be at the standard 18pt step.
+    short = render_document(parse("1. x\n2. x\n3. x\n4. x"), FAMILIES["helvetica"])
+    assert short[0].body_indent == 18.0
