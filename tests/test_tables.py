@@ -403,3 +403,84 @@ def test_table_fits_within_a4_margins():
         for s in pg.shapes:
             right = getattr(s, "x", 0.0) + getattr(s, "width", 0.0)
             assert right <= limit + 0.6  # +grid stroke tolerance
+
+
+# --- Column-width fallback + alignment clamp (red-team batch 3) -------------
+
+
+def _table_cell_runs_sized(md: str, page="letter"):
+    """Like _table_cell_runs but threads the real page content width so
+    column-budget behaviour matches a live ``compile`` call."""
+    from inkmd.render import render_document, FAMILIES
+    from inkmd.html_filter import filter_document as fh
+    from inkmd.url_filter import filter_document as fu
+    from inkmd.image_loader import resolve_images as ri
+    from inkmd.layout import paginate_runs, DEFAULT_MARGIN
+    from inkmd.pdf import PAGE_SIZES
+
+    pw, ph = PAGE_SIZES[page]
+    cw = pw - 2 * DEFAULT_MARGIN
+    doc = parse(md)
+    doc = fh(doc, html=True)
+    doc = fu(doc, safe=True)
+    doc = ri(doc, base_dir=None, allow_remote=False)
+    blocks = render_document(doc, FAMILIES["helvetica"], content_width=cw)
+    pages = paginate_runs(blocks, page_width=pw, page_height=ph)
+    return [r for pg in pages for ln in pg.lines for r in ln.runs], pw, ph
+
+
+def test_right_aligned_narrow_cell_does_not_escape_left():
+    """Regression (findings 17, 46): a right-aligned column crushed near
+    its glyph width must not position content LEFT of the page margin —
+    the old fallback abandoned per-column minima and a negative alignment
+    offset flung glyphs leftward across the grid line into the neighbour."""
+    from inkmd.layout import DEFAULT_MARGIN
+
+    md = (
+        "| a | b |\n|--:|--:|\n"
+        "| " + "Q" * 100 + " | @ |"
+    )
+    runs, pw, _ = _table_cell_runs_sized(md)
+    # Padding inside the table puts the leftmost legitimate content a few
+    # points inside the margin; nothing may sit at or left of the margin.
+    assert runs, "expected positioned runs"
+    assert min(r.x for r in runs) >= DEFAULT_MARGIN - 0.01
+
+
+def test_single_wide_glyph_neighbour_not_crushed_below_glyph():
+    """Regression (finding 50): one column holding a very long unbreakable
+    run must not crush an innocent neighbour below its own glyph width and
+    push that glyph past the cell/table right edge. Char-level minima keep
+    every column at least one glyph wide so the table fits the page."""
+    from inkmd.fonts import text_width
+    from inkmd.layout import DEFAULT_MARGIN
+
+    md = "| a | b |\n|---|---|\n| " + "x" * 300 + " | — |"
+    runs, pw, _ = _table_cell_runs_sized(md)
+    limit = pw - DEFAULT_MARGIN
+    for r in runs:
+        assert r.x + text_width(r.text, r.font, r.size) <= limit + 0.5
+
+
+def test_many_column_table_columns_do_not_overprint():
+    """Regression (findings 7, 11, 14, 21): a table with so many columns
+    that padding alone exceeds the budget used to produce zero/negative
+    column widths, overprinting glyphs onto one another. Each column must
+    now keep a positive width so adjacent header cells stay separated."""
+    cols = 36
+    header = "|" + "|".join(f"C{i}" for i in range(cols)) + "|"
+    sep = "|" + "|".join("---" for _ in range(cols)) + "|"
+    body = "|" + "|".join(str(i % 10) for i in range(cols)) + "|"
+    md = "\n".join([header, sep, body])
+    runs, _, _ = _table_cell_runs_sized(md)
+    # Group the header runs by baseline y and assert strictly increasing x
+    # with a real gap — no two columns share a position (overprint).
+    by_y: dict[float, list[float]] = {}
+    for r in runs:
+        by_y.setdefault(round(r.y, 1), []).append(r.x)
+    # The header is the topmost row.
+    top_y = max(by_y)
+    xs = sorted(by_y[top_y])
+    gaps = [xs[i + 1] - xs[i] for i in range(len(xs) - 1)]
+    assert gaps, "expected multiple header columns"
+    assert min(gaps) > 2.0  # clearly separated, not z-fighting

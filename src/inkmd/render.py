@@ -204,20 +204,30 @@ def _widest_token_width(
     body_runs: list[list[list[Run]]],
     col_idx: int,
 ) -> float:
-    """Width of the widest single non-whitespace token in column ``col_idx``.
+    """Width of the widest single *character* in column ``col_idx``.
 
-    Used as the column's lower-bound content width — anything below
-    this can't wrap the longest word and will overflow visually. Header
-    counts as one of the rows for this purpose. Returns at least 1.0
-    to avoid zero-width columns when a column is fully empty.
+    This is the column's true lower-bound content width: ``wrap_runs``
+    can always break a long token down to one character per line (see
+    ``layout._break_long_token``'s character-level fallback), so any
+    column at least one glyph wide can render its content without a
+    glyph escaping the cell. Using the widest whole token instead would
+    overstate the minimum for cells holding a single very long
+    unbreakable run (a 300-char identifier, a row of W's), forcing the
+    whole table to overflow when char-level wrapping would have fit it.
+
+    Header counts as one of the rows. Returns at least 1.0 to avoid
+    zero-width columns when a column is fully empty.
     """
     widest = 1.0
     def measure(runs: list[Run]) -> float:
-        # Split each run's text on whitespace, measure each token, max.
+        # Measure each non-whitespace character; the widest one is the
+        # narrowest the column can be while still wrapping char-by-char.
         col_widest = 0.0
         for r in runs:
-            for token in r.text.split():
-                w = text_width(token, r.font, r.size)
+            for ch in r.text:
+                if ch.isspace():
+                    continue
+                w = text_width(ch, r.font, r.size)
                 if w > col_widest:
                     col_widest = w
         return col_widest
@@ -238,16 +248,22 @@ def _shrink_to_budget(
       2. Clamp any below its min to the min.
       3. Recompute the remaining budget for unclamped columns and
          redistribute proportionally. Iterate until stable.
-      4. If even the minima alone exceed the budget, fall back to plain
-         proportional — the table will overflow but at least each column
-         gets a fair share.
+      4. If even the minima alone exceed the budget, keep each column at
+         its minimum (so no column is crushed below the width of its
+         widest unbreakable token). The table overflows the budget to the
+         right, but content stays legible rather than collapsing onto the
+         grid lines. The narrowest a minimum can be is one character, so
+         columns never reach zero or negative width.
     """
     n = len(natural)
     if n == 0:
         return []
-    if sum(min_widths) > budget:
-        total = sum(natural) or 1.0
-        return [w * budget / total for w in natural]
+    # Guard the degenerate budget cases. A budget that is zero or negative
+    # (e.g. so many columns that padding alone exceeds the page width)
+    # would otherwise produce zero or negative column widths and fling
+    # every cell onto the grid lines. Honour the minima instead.
+    if budget <= 0 or sum(min_widths) > budget:
+        return [max(m, 1.0) for m in min_widths]
 
     natural_sum = sum(natural) or 1.0
     widths = [w * budget / natural_sum for w in natural]
@@ -478,20 +494,19 @@ def _render_blockquote(
         # QUOTE_INDENT_PT to make room for our rule on their left.
         shifted_inner = tuple(r + QUOTE_INDENT_PT for r in cb.left_rules)
         new_rules = (QUOTE_RULE_OFFSET_PT,) + shifted_inner
+        # Preserve every field of the inner block (notably the
+        # ``prepositioned_*`` payload — a table or image inside a quote
+        # used to be silently dropped because this reconstruction listed
+        # only a subset of fields) while adding our indent and rule. The
+        # layout layer applies ``body_indent`` to prepositioned content,
+        # so the table/image shifts right with the quote body.
         out.append(
-            RenderedBlock(
-                runs=cb.runs,
-                space_above=cb.space_above,
-                space_below=cb.space_below,
+            replace(
+                cb,
                 body_indent=cb.body_indent + QUOTE_INDENT_PT,
-                marker_runs=cb.marker_runs,
                 marker_x=cb.marker_x + QUOTE_INDENT_PT,
-                compact=cb.compact,
                 left_rules=new_rules,
                 left_rule_fill=QUOTE_RULE_FILL,
-                background_fill=cb.background_fill,
-                bg_padding=cb.bg_padding,
-                preserve_lines=cb.preserve_lines,
             )
         )
     return out
@@ -645,6 +660,13 @@ def _render_table(
             elif alignment == "right":
                 x_start = x_left + (cell_content_w - line_w)
             else:
+                x_start = x_left
+            # Clamp to the cell's left edge. A line wider than the cell
+            # content width (an unbreakable token that overflowed) would
+            # otherwise push a right/centre-aligned x_start LEFT of x_left,
+            # flinging glyphs across the column's grid line. Overflow to
+            # the right is acceptable; overflow to the left is corruption.
+            if x_start < x_left:
                 x_start = x_left
             # Emit positioned runs for the line.
             runs_record: list[_PR] = []

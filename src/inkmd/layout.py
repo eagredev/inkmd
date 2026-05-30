@@ -29,6 +29,17 @@ DEFAULT_FONT_SIZE = 12.0
 DEFAULT_LINE_HEIGHT = 14.4  # 1.2x font size — typical reading leading
 DEFAULT_MARGIN = 72.0  # 1 inch on all sides
 
+# Deeply nested lists and blockquotes accumulate body_indent per level
+# (18pt per list level, ~12pt per quote level). Past a few dozen levels
+# the indent would exceed the text column, leaving no room for content:
+# text marches off the right margin and, deeper still, off the page edge
+# entirely. We clamp the effective indent so at least this many points of
+# content column always remain. 90pt holds roughly a dozen characters at
+# body size — enough to stay legible while still showing the nesting got
+# very deep. The clamp only engages at pathological depth; ordinary
+# nesting is far below it.
+MIN_CONTENT_WIDTH = 90.0
+
 
 @dataclass(frozen=True)
 class Line:
@@ -624,6 +635,18 @@ def paginate_runs(
         if p_idx > 0 and parts.space_above and current_lines:
             y_cursor -= parts.space_above
 
+        # Clamp the indent so a minimum content column always survives.
+        # Deep nesting (lists/blockquotes) would otherwise push body_indent
+        # past column_width, collapsing the content column to zero or
+        # negative width and marching text (or a prepositioned table/image)
+        # off the page. The marker shifts left by the same delta so it
+        # stays anchored to its body text. Computed before the
+        # prepositioned branch so both paths share the clamped indent.
+        max_indent = max(0.0, column_width - MIN_CONTENT_WIDTH)
+        body_indent = min(parts.body_indent, max_indent)
+        indent_delta = parts.body_indent - body_indent
+        marker_x = parts.marker_x - indent_delta
+
         # Prepositioned content (tables): atomic placement, translate
         # relative coordinates to absolute.
         if parts.prepositioned:
@@ -660,13 +683,18 @@ def paginate_runs(
             # "fill" shapes become filled Rects; "image" shapes become
             # ImagePlacements that the PDF emitter resolves to /XObject
             # references.
+            # Prepositioned content (tables, block images) carries its own
+            # relative coordinate system. Apply body_indent so a table or
+            # image nested in a blockquote/list shifts right with the body
+            # rather than rendering at the bare page margin.
+            prepos_x0 = margin + body_indent
             for shape_dict in parts.prepositioned_shapes:
                 kind = shape_dict.get("kind", "fill")
                 if kind == "image":
                     placement = ImagePlacement(
                         image_id=shape_dict["image_id"],
                         image_data=shape_dict["image_data"],
-                        x=margin + shape_dict["x_offset"],
+                        x=prepos_x0 + shape_dict["x_offset"],
                         y=table_top_y - shape_dict["rel_y_top"] - shape_dict["height"],
                         width=shape_dict["width"],
                         height=shape_dict["height"],
@@ -674,7 +702,7 @@ def paginate_runs(
                     current_shapes.append(placement)
                 else:
                     rect = Rect(
-                        x=margin + shape_dict["x_offset"],
+                        x=prepos_x0 + shape_dict["x_offset"],
                         y=table_top_y - shape_dict["rel_y_top"] - shape_dict["height"],
                         width=shape_dict["width"],
                         height=shape_dict["height"],
@@ -688,7 +716,7 @@ def paginate_runs(
                     positioned_list.append(
                         PositionedRun(
                             text=pr.text,
-                            x=margin + pr.x_rel,
+                            x=prepos_x0 + pr.x_rel,
                             y=table_top_y - pr.y_from_top,
                             font=pr.font,
                             size=pr.size,
@@ -723,7 +751,7 @@ def paginate_runs(
                     y_cursor -= paragraph_spacing
             continue
 
-        body_column_width = column_width - parts.body_indent
+        body_column_width = column_width - body_indent
 
         if parts.preserve_lines:
             # Code-block wrap column: left is body_indent (already in
@@ -747,8 +775,16 @@ def paginate_runs(
                 and block_top_on_page is not None
                 and block_bottom_on_page is not None
             ):
-                x_start = margin
-                width = column_width
+                # Inset the fill to the block's body indent so a code block
+                # inside a blockquote does not paint over the quote's left
+                # rule bars (the bg used to start at the page margin and
+                # cover the indent entirely). The text sits at
+                # margin + body_indent; the fill starts one bg_padding to
+                # its left and runs to the right margin, preserving the
+                # symmetric padding a top-level code block already has
+                # (where body_indent == bg_padding, so x_start == margin).
+                x_start = margin + body_indent - parts.bg_padding
+                width = (page_width - margin) - x_start
                 top = block_top_on_page + parts.bg_padding
                 bottom = block_bottom_on_page - parts.bg_padding
                 current_shapes.append(
@@ -784,10 +820,10 @@ def paginate_runs(
                 block_top_on_page = y_cursor + line_height  # top of this line
             block_bottom_on_page = y_cursor  # baseline; bottom-padding accounts for descender
 
-            x = margin + parts.body_indent
+            x = margin + body_indent
             positioned: list[PositionedRun] = []
             if first_line and parts.marker_runs:
-                mx = margin + parts.marker_x
+                mx = margin + marker_x
                 for mrun in parts.marker_runs:
                     positioned.append(
                         PositionedRun(
@@ -832,10 +868,16 @@ def paginate_runs(
             for sk_rect in _strike_decorations(positioned):
                 current_shapes.append(sk_rect)
             # Per-line left rules for blockquotes. Multiple rules =
-            # nested quote depth, each at its own x offset.
+            # nested quote depth, each at its own x offset. Shift them by
+            # the same indent_delta the body was clamped by, so the rules
+            # stay anchored to their content; drop any that would still
+            # fall outside the right margin once shifted (extreme depth).
+            right_limit = page_width - margin
             for rule_x_rel in parts.left_rules:
                 rule_w = 2.0
-                rule_x = margin + rule_x_rel
+                rule_x = margin + rule_x_rel - indent_delta
+                if rule_x < margin or rule_x + rule_w > right_limit:
+                    continue
                 current_shapes.append(
                     Rect(
                         x=rule_x,

@@ -282,3 +282,78 @@ def test_ordered_list_marker_does_not_overlap_body_at_two_digits():
     # over-widening) — body should still be at the standard 18pt step.
     short = render_document(parse("1. x\n2. x\n3. x\n4. x"), FAMILIES["helvetica"])
     assert short[0].body_indent == 18.0
+
+
+# --- Deep-nesting indent clamp (red-team batch 3) --------------------------
+
+
+def _deep_nest_runs(md: str, page="letter"):
+    """Compile-equivalent pagination for deep-nesting cases, returning all
+    positioned runs plus the page's right margin limit."""
+    from inkmd.parser import parse
+    from inkmd.render import render_document, FAMILIES
+    from inkmd.html_filter import filter_document as fh
+    from inkmd.url_filter import filter_document as fu
+    from inkmd.image_loader import resolve_images as ri
+    from inkmd.pdf import PAGE_SIZES
+
+    pw, ph = PAGE_SIZES[page]
+    cw = pw - 2 * DEFAULT_MARGIN
+    doc = parse(md)
+    doc = fh(doc, html=True)
+    doc = fu(doc, safe=True)
+    doc = ri(doc, base_dir=None, allow_remote=False)
+    blocks = render_document(doc, FAMILIES["helvetica"], content_width=cw)
+    pages = paginate_runs(blocks, page_width=pw, page_height=ph)
+    runs = [r for pg in pages for ln in pg.lines for r in ln.runs]
+    return runs, pw, ph
+
+
+def test_deep_blockquote_text_stays_within_right_margin():
+    """Regression (findings 3, 12, 34): ~40 levels of blockquote nesting
+    accumulate body_indent past the text column; without a clamp the text
+    marches off the right margin and eventually off the page entirely."""
+    md = ">" * 40 + " deeply nested quote text\n"
+    runs, pw, _ = _deep_nest_runs(md)
+    limit = pw - DEFAULT_MARGIN
+    assert runs, "expected positioned runs"
+    for r in runs:
+        assert r.x + text_width(r.text, r.font, r.size) <= limit + 0.5
+
+
+def test_deep_list_text_stays_within_right_margin():
+    """Regression (findings 5, 29, 39): ~30 levels of list nesting push the
+    marker and body off the right page edge without an indent clamp."""
+    lines = []
+    for depth in range(30):
+        lines.append("  " * depth + "- item at this depth")
+    md = "\n".join(lines)
+    runs, pw, _ = _deep_nest_runs(md)
+    limit = pw - DEFAULT_MARGIN
+    assert runs, "expected positioned runs"
+    for r in runs:
+        assert r.x + text_width(r.text, r.font, r.size) <= limit + 0.5
+
+
+def test_deep_nesting_preserves_minimum_content_column():
+    """The clamp must leave a usable content column, not collapse to zero —
+    the leftmost deeply-indented run must still sit left of the right margin
+    by at least the minimum content width."""
+    from inkmd.layout import MIN_CONTENT_WIDTH
+
+    md = ">" * 60 + " text\n"
+    runs, pw, _ = _deep_nest_runs(md)
+    limit = pw - DEFAULT_MARGIN
+    leftmost = min(r.x for r in runs)
+    assert limit - leftmost >= MIN_CONTENT_WIDTH - 0.5
+
+
+def test_shallow_nesting_indent_is_not_clamped():
+    """Ordinary nesting (well below the clamp threshold) must be untouched:
+    a single blockquote keeps its full QUOTE_INDENT_PT body offset."""
+    from inkmd.render import QUOTE_INDENT_PT
+
+    runs, pw, _ = _deep_nest_runs("> a normal quote\n")
+    leftmost = min(r.x for r in runs)
+    # Body sits at margin + QUOTE_INDENT_PT for a single-level quote.
+    assert abs(leftmost - (DEFAULT_MARGIN + QUOTE_INDENT_PT)) < 1.0

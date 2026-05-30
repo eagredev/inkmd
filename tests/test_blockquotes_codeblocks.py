@@ -336,3 +336,73 @@ def test_compile_blockquote_uses_grey_fill_for_rule():
 
     out = inkmd.compile("> quoted")
     assert b" rg" in out
+
+
+# --- Code/table background + content inside blockquotes (red-team batch 3) --
+
+
+def _quote_shapes_and_runs(md: str):
+    """Paginate a document and return (shapes, runs) across all pages."""
+    from inkmd.render import render_document, FAMILIES
+    from inkmd.html_filter import filter_document as fh
+    from inkmd.url_filter import filter_document as fu
+    from inkmd.image_loader import resolve_images as ri
+    from inkmd.layout import paginate_runs, DEFAULT_MARGIN
+    from inkmd.pdf import PAGE_SIZES
+
+    pw, ph = PAGE_SIZES["letter"]
+    cw = pw - 2 * DEFAULT_MARGIN
+    doc = parse(md)
+    doc = fh(doc, html=True)
+    doc = fu(doc, safe=True)
+    doc = ri(doc, base_dir=None, allow_remote=False)
+    blocks = render_document(doc, FAMILIES["helvetica"], content_width=cw)
+    pages = paginate_runs(blocks, page_width=pw, page_height=ph)
+    shapes = [s for pg in pages for s in pg.shapes]
+    runs = [r for pg in pages for ln in pg.lines for r in ln.runs]
+    return shapes, runs
+
+
+def test_code_block_background_in_blockquote_does_not_cover_rule():
+    """Regression (findings 24, 25): the grey code-block background inside
+    a blockquote must be inset past the quote's left rule, not painted over
+    it from the page margin."""
+    from inkmd.layout import DEFAULT_MARGIN
+
+    md = "> intro\n>\n> ```\n> code\n> ```\n"
+    shapes, _ = _quote_shapes_and_runs(md)
+    # The widest light-grey fill is the code background; the narrow darker
+    # fills are the quote rule bars.
+    rules = [s for s in shapes if getattr(s, "width", 0) <= 3.0]
+    bgs = [s for s in shapes if getattr(s, "width", 0) > 3.0]
+    assert rules and bgs, "expected both rule bars and a code background"
+    rule_right = max(s.x + s.width for s in rules)
+    bg_left = min(s.x for s in bgs)
+    # The background must start at or right of the rule's right edge.
+    assert bg_left >= rule_right - 0.01, (
+        f"code background left {bg_left} overlaps quote rule right {rule_right}"
+    )
+    # And the background must not begin at the bare page margin.
+    assert bg_left > DEFAULT_MARGIN + 0.5
+
+
+def test_table_inside_blockquote_is_not_dropped():
+    """Regression (finding-25 adjacent): a table nested in a blockquote
+    used to vanish entirely because _render_blockquote reconstructed the
+    inner block without its prepositioned payload. It must now render with
+    its cell content, shifted right by the quote indent."""
+    from inkmd.render import render_document, FAMILIES, QUOTE_INDENT_PT
+    from inkmd.layout import DEFAULT_MARGIN
+
+    md = "> | A | B |\n> |---|---|\n> | x | y |\n"
+    blocks = render_document(parse(md), FAMILIES["helvetica"])
+    table_block = next((b for b in blocks if b.prepositioned), None)
+    assert table_block is not None, "table inside blockquote was dropped"
+    assert table_block.prepositioned_lines, "table has no content lines"
+    assert table_block.body_indent >= QUOTE_INDENT_PT
+
+    shapes, runs = _quote_shapes_and_runs(md)
+    cell_texts = {r.text for r in runs}
+    assert {"A", "B", "x", "y"} <= cell_texts
+    # The table content is indented past the bare page margin (quote shift).
+    assert min(r.x for r in runs) > DEFAULT_MARGIN + 0.5
