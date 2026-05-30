@@ -31,6 +31,11 @@ _KEYCAP = 0x20E3         # combining enclosing keycap (#️⃣, 1️⃣ …)
 _SKIN_TONES = range(0x1F3FB, 0x1F3FF + 1)  # Fitzpatrick modifiers
 _TAG_RANGE = range(0xE0020, 0xE007F + 1)   # tag chars (subdivision flags)
 _REGIONAL = range(0x1F1E6, 0x1F1FF + 1)    # regional indicators (flag halves)
+# Keycap emoji (#️⃣ *️⃣ 0️⃣–9️⃣) are an ASCII base + optional FE0F + U+20E3.
+# The base is ordinary text everywhere else, so a keycap is only detected
+# by looking ahead for the enclosing-keycap combiner — never by the base
+# codepoint alone.
+_KEYCAP_BASES = frozenset({0x23, 0x2A} | set(range(0x30, 0x3A)))
 
 
 def _is_cluster_glue(cp: int) -> bool:
@@ -190,7 +195,12 @@ def _resolve_sequence(cluster: tuple[int, ...]) -> tuple[EmojiImage | None, int]
             if img is not None:
                 return img, 2
 
-    # 3. the bare base codepoint.
+    # 3. the bare base codepoint — but NOT for an ASCII keycap base. A '#'
+    #    or digit is only an emoji as part of a keycap ligature; if that
+    #    didn't match (e.g. the keycap is absent from a subset font), it
+    #    must stay ordinary text, not render as a lone glyph.
+    if base in _KEYCAP_BASES:
+        return None, 0
     img = _glyph_image(gids[0], (base,))
     if img is not None:
         # If a presentation selector immediately follows, swallow it so it
@@ -220,11 +230,12 @@ def split_text_into_runs(
     """
     if not text:
         return []
-    # Cheap fast path: if the text has no emoji-range codepoint at all,
-    # return a single text run WITHOUT touching the font (no glob, no
-    # 10MB parse). This keeps non-emoji documents exactly as fast as
-    # before. Only when an emoji codepoint is present do we load the font.
-    if not any(is_emoji_codepoint(ord(ch)) for ch in text):
+    # Cheap fast path: if the text has no emoji-range codepoint AND no
+    # keycap combiner (the one emoji whose base is ASCII), return a single
+    # text run WITHOUT touching the font (no glob, no 10MB parse). This
+    # keeps non-emoji documents exactly as fast as before. Only when a
+    # trigger is present do we load the font.
+    if not any(is_emoji_codepoint(ord(ch)) or ord(ch) == _KEYCAP for ch in text):
         return [_text_run(text, font, size, link_url, color, strike)]
     if not emoji_available():
         return [_text_run(text, font, size, link_url, color, strike)]
@@ -241,7 +252,7 @@ def split_text_into_runs(
     n = len(text)
     while i < n:
         cp = ord(text[i])
-        if is_emoji_codepoint(cp):
+        if is_emoji_codepoint(cp) or _starts_keycap(text, i, n):
             # Gather the maximal emoji cluster starting here: the base
             # codepoint plus any following glue (selectors, skin tones,
             # keycap) and ZWJ-joined emoji. _resolve_sequence decides how
@@ -262,6 +273,19 @@ def split_text_into_runs(
         i += 1
     flush_text()
     return runs
+
+
+def _starts_keycap(text: str, i: int, n: int) -> bool:
+    """True if a keycap emoji begins at ``i``: an ASCII keycap base
+    (# * 0-9) followed by an optional FE0F and the enclosing-keycap
+    combiner U+20E3. Detected by look-ahead so a bare digit or '#' stays
+    ordinary text."""
+    if ord(text[i]) not in _KEYCAP_BASES:
+        return False
+    j = i + 1
+    if j < n and ord(text[j]) in (_VS16, _VS15):
+        j += 1
+    return j < n and ord(text[j]) == _KEYCAP
 
 
 def _gather_cluster(text: str, start: int, n: int) -> tuple[int, ...]:

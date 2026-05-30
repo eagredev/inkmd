@@ -216,12 +216,15 @@ def sequence_emoji_font(monkeypatch):
     cmap = {
         _ROCKET: 1, _MAN: 2, _WOMAN: 3, _GIRL: 4, _ZWJ: 5,
         _THUMB: 6, _SKIN: 7, _RI_J: 8, _RI_P: 9,
+        0x0023: 10, 0x0035: 11, 0x20E3: 12,  # '#', '5', keycap combiner
     }
     # Ligature glyphs live at gids 20+.
     ligs = {
         (2, 5, 3, 5, 4): 20,   # man ZWJ woman ZWJ girl -> family
         (6, 7): 21,            # thumb + skin tone
         (8, 9): 22,            # J + P -> Japan flag
+        (10, 12): 23,          # '#' + keycap -> #-keycap
+        (11, 12): 24,          # '5' + keycap -> 5-keycap
     }
     pngs = {g: _tiny_png() for g in list(cmap.values()) + list(ligs.values())}
     font = EmojiFont(_build_cbdt_font(cmap, pngs, ligatures=ligs))
@@ -295,3 +298,60 @@ def test_sequence_emits_single_image_placement(sequence_emoji_font):
     placements = [s for pg in pages for s in pg.shapes if isinstance(s, ImagePlacement)]
     assert len(placements) == 1
     assert placements[0].image_id == "emoji:1F1EF-1F1F5"
+
+
+# --- Keycap emoji (ASCII base + FE0F? + U+20E3) ---------------------------
+
+
+def test_keycap_with_fe0f_renders(sequence_emoji_font):
+    runs = _split("press 5️⃣ now")
+    emoji = [r for r in runs if r.emoji]
+    assert len(emoji) == 1
+    assert emoji[0].emoji.image_id == "emoji:0035-FE0F-20E3"
+    assert "".join(r.text for r in runs if not r.emoji) == "press  now"
+
+
+def test_keycap_without_fe0f_renders(sequence_emoji_font):
+    runs = _split("x 5⃣ y")  # some sources omit the FE0F
+    emoji = [r for r in runs if r.emoji]
+    assert len(emoji) == 1
+    assert emoji[0].emoji.image_id == "emoji:0035-20E3"
+
+
+def test_hash_keycap_renders(sequence_emoji_font):
+    runs = _split("#️⃣")
+    emoji = [r for r in runs if r.emoji]
+    assert len(emoji) == 1
+    assert emoji[0].emoji.image_id == "emoji:0023-FE0F-20E3"
+
+
+def test_bare_digits_stay_text(sequence_emoji_font):
+    runs = _split("I have 25 apples and 5 pears")
+    assert all(r.emoji is None for r in runs)
+    assert "".join(r.text for r in runs) == "I have 25 apples and 5 pears"
+
+
+def test_bare_hash_stays_text(sequence_emoji_font):
+    runs = _split("item #5 and #10")
+    assert all(r.emoji is None for r in runs)
+    assert "".join(r.text for r in runs) == "item #5 and #10"
+
+
+def test_keycap_base_without_combiner_not_consumed_as_emoji(sequence_emoji_font):
+    # A '5' followed by FE0F but NO keycap combiner is not a keycap; it
+    # must stay text (an ASCII base is only ever an emoji via the keycap
+    # ligature).
+    runs = _split("5️ rest")
+    assert all(r.emoji is None for r in runs)
+    assert "5" in "".join(r.text for r in runs)
+
+
+def test_keycap_emits_image_placement(sequence_emoji_font):
+    from inkmd.layout import ImagePlacement
+    blocks = render_document(
+        parse("5️⃣"), FAMILIES["helvetica"], content_width=468.0
+    )
+    pages = paginate_runs(blocks, page_width=612, page_height=792)
+    placements = [s for pg in pages for s in pg.shapes if isinstance(s, ImagePlacement)]
+    assert len(placements) == 1
+    assert placements[0].image_id == "emoji:0035-FE0F-20E3"
