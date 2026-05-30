@@ -68,28 +68,25 @@ def is_emoji_codepoint(cp: int) -> bool:
     )
 
 
+#: Bundled color-emoji font, shipped in the default wheel. Absent in the
+#: ``inkmd[lite]`` install, where emoji fall back to text.
+_BUNDLED_FONT = os.path.join(
+    os.path.dirname(__file__), "assets", "emoji", "NotoColorEmoji.ttf"
+)
+
+
 def _emoji_font_path() -> str | None:
-    """Locate the emoji font: the bundled asset if present, else (during
-    development, before the subset is bundled) a system Noto Color Emoji.
-    Returns None if no emoji font is available — the caller then falls back
-    to a textual representation.
+    """Path to the bundled emoji font, or None if it isn't present.
+
+    The font ships with the default install. The ``inkmd[lite]`` install
+    omits it (and ``INKMD_NO_EMOJI`` forces it off); in either case this
+    returns None and the caller falls back to a textual representation.
+    Output is reproducible: there is no system-font lookup, so a document
+    renders identically wherever inkmd is installed.
     """
-    here = os.path.dirname(__file__)
-    bundled = os.path.join(here, "assets", "emoji", "emoji.ttf")
-    if os.path.isfile(bundled):
-        return bundled
-    # Development fallback: a system Noto Color Emoji, if installed. This
-    # path disappears once Phase 5 bundles the subset asset.
-    import glob
-    for pat in (
-        "/usr/share/fonts/**/NotoColorEmoji.ttf",
-        "/home/.steamos/offload/var/lib/flatpak/**/NotoColorEmoji.ttf",
-        os.path.expanduser("~/.fonts/**/NotoColorEmoji.ttf"),
-    ):
-        hits = glob.glob(pat, recursive=True)
-        if hits:
-            return hits[0]
-    return None
+    if os.environ.get("INKMD_NO_EMOJI"):
+        return None
+    return _BUNDLED_FONT if os.path.isfile(_BUNDLED_FONT) else None
 
 
 @lru_cache(maxsize=1)

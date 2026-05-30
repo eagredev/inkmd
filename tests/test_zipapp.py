@@ -29,9 +29,34 @@ def built_zipapp(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 def test_zipapp_builds(built_zipapp: Path) -> None:
-    """The build produces a non-empty .pyz file."""
+    """The build produces a non-empty .pyz file.
+
+    The zipapp is inkmd's featherweight tier: it excludes the bundled
+    ~10 MB color-emoji font, so it stays well under 1 MB compressed."""
     assert built_zipapp.stat().st_size > 100_000  # at least 100 KB (AFM tables alone)
     assert built_zipapp.stat().st_size < 1_000_000  # but well under 1 MB compressed
+
+
+def test_zipapp_excludes_emoji_font(built_zipapp: Path) -> None:
+    """The zipapp must not carry the emoji font asset (it's the lite tier)."""
+    import zipfile
+    with zipfile.ZipFile(built_zipapp) as z:
+        assert not any("assets/emoji" in n for n in z.namelist())
+
+
+def test_zipapp_emoji_falls_back_to_text(built_zipapp: Path, tmp_path: Path) -> None:
+    """Without the bundled font, emoji in the zipapp render via the text
+    fallback rather than as images — and the compile still succeeds."""
+    src = tmp_path / "in.md"
+    src.write_text("Launch \U0001F680 now\n", encoding="utf-8")
+    dst = tmp_path / "out.pdf"
+    subprocess.run(
+        [sys.executable, str(built_zipapp), str(src), "-o", str(dst)],
+        check=True,
+    )
+    out = dst.read_bytes()
+    assert out.startswith(b"%PDF-1.4\n")
+    assert b"/Subtype /Image" not in out  # no emoji image XObject
 
 
 def test_zipapp_version_flag(built_zipapp: Path) -> None:

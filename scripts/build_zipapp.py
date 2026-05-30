@@ -40,7 +40,14 @@ def build(output: Path) -> None:
 
     with tempfile.TemporaryDirectory() as staging:
         staging_path = Path(staging)
-        shutil.copytree(SOURCE_PKG, staging_path / "inkmd")
+        # The zipapp is the "single small file, runs anywhere" distribution
+        # — inkmd's featherweight tier. It omits the bundled color-emoji
+        # font (~10 MB); emoji fall back to text in the zipapp, exactly like
+        # the inkmd[lite] install. Everything else is identical.
+        shutil.copytree(
+            SOURCE_PKG, staging_path / "inkmd",
+            ignore=shutil.ignore_patterns("assets"),
+        )
         # Remove the package-level __main__.py from the staging copy.
         # The non-zipapp install keeps it (for `python -m inkmd`); but
         # for the zipapp, we want a fresh top-level __main__.py that

@@ -355,3 +355,40 @@ def test_keycap_emits_image_placement(sequence_emoji_font):
     placements = [s for pg in pages for s in pg.shapes if isinstance(s, ImagePlacement)]
     assert len(placements) == 1
     assert placements[0].image_id == "emoji:0035-FE0F-20E3"
+
+
+# --- Bundled font (Phase 5): emoji render with no patching ----------------
+
+
+def test_bundled_font_renders_emoji_unpatched():
+    """With the font bundled in the package, emoji render out of the box —
+    no monkeypatch, no system font. Proves the default-install experience."""
+    emoji_mod._load_font.cache_clear()
+    try:
+        assert emoji_mod.emoji_available()
+        pdf = inkmd.compile("Ship it \U0001F680")
+        assert b"/Subtype /Image" in pdf
+    finally:
+        emoji_mod._load_font.cache_clear()
+
+
+def test_inkmd_no_emoji_env_disables(monkeypatch):
+    """INKMD_NO_EMOJI=1 forces the text-fallback path (the lite behaviour)
+    even when the bundled font is present."""
+    monkeypatch.setenv("INKMD_NO_EMOJI", "1")
+    emoji_mod._load_font.cache_clear()
+    try:
+        assert not emoji_mod.emoji_available()
+        pdf = inkmd.compile("Ship it \U0001F680")
+        assert b"/Subtype /Image" not in pdf
+    finally:
+        emoji_mod._load_font.cache_clear()
+
+
+def test_bundled_emoji_output_deterministic():
+    emoji_mod._load_font.cache_clear()
+    try:
+        md = "Status \U00002705 and flag \U0001F1EF\U0001F1F5"
+        assert inkmd.compile(md) == inkmd.compile(md)
+    finally:
+        emoji_mod._load_font.cache_clear()

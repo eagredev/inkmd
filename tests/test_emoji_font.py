@@ -314,44 +314,43 @@ def test_font_without_cmap12_raises_on_lookup():
         font.glyph_id(0x1F680)
 
 
-# --- Optional smoke test against a real system Noto Color Emoji -----------
-# Skipped when the font isn't installed; guards against the synthetic
-# fixture diverging from a real-world CBDT font (big metrics, index format 2,
-# format-12 binary search over thousands of groups, etc.).
+# --- Smoke test against the bundled Noto Color Emoji ----------------------
+# Exercises the parser against the real (full, unmodified) font shipped with
+# inkmd, guarding against the synthetic fixture diverging from a real-world
+# CBDT font (big metrics, index format 2, format-12 binary search over
+# thousands of groups, real GSUB with 4000+ ligatures).
 
-import glob
 import os
 
 
-def _find_system_noto() -> str | None:
-    candidates = []
-    candidates += glob.glob("/usr/share/fonts/**/NotoColorEmoji.ttf", recursive=True)
-    candidates += glob.glob(
-        "/home/.steamos/offload/var/lib/flatpak/**/NotoColorEmoji.ttf", recursive=True
-    )
-    candidates += glob.glob(
-        os.path.expanduser("~/.fonts/**/NotoColorEmoji.ttf"), recursive=True
-    )
-    return candidates[0] if candidates else None
+def _bundled_font_path() -> str:
+    import inkmd.emoji as _e
+    return _e._BUNDLED_FONT
 
 
-def test_real_noto_color_emoji_smoke():
-    path = _find_system_noto()
-    if path is None:
-        pytest.skip("system NotoColorEmoji.ttf not found")
-    font = EmojiFont(open(path, "rb").read())
-    assert "CBDT" in font.tables and "CBLC" in font.tables
+def test_bundled_font_present():
+    assert os.path.isfile(_bundled_font_path()), "bundled emoji font missing"
+
+
+def test_bundled_noto_color_emoji_smoke():
+    font = EmojiFont(open(_bundled_font_path(), "rb").read())
+    assert "CBDT" in font.tables and "CBLC" in font.tables and "GSUB" in font.tables
     rocket = font.glyph_id(0x1F680)
     assert rocket != 0
     bmp = font.glyph_bitmap(rocket)
     assert bmp is not None
     assert bmp.png[:8] == b"\x89PNG\r\n\x1a\n"
     assert bmp.width > 0 and bmp.height > 0
-    # A few more common emoji resolve and extract.
-    for cp in (0x2705, 0x26A0, 0x1F44D, 0x1F600):
+    # A spread of common emoji resolve and extract.
+    for cp in (0x2705, 0x26A0, 0x1F44D, 0x1F600, 0x2764):
         gid = font.glyph_id(cp)
         assert gid != 0
         assert font.glyph_bitmap(gid) is not None
+    # The real font carries thousands of ligatures (ZWJ/flag/keycap/skin).
+    assert font.max_ligature_length >= 2
+    # Japan flag composes (regional indicators J + P).
+    j, p = font.glyph_id(0x1F1EF), font.glyph_id(0x1F1F5)
+    assert font.lookup_ligature((j, p)) is not None
 
 
 # --- GSUB ligature parsing (Phase 4) --------------------------------------
