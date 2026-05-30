@@ -186,7 +186,12 @@ TABLE_CELL_PADDING_Y = 3.0
 TABLE_GRID_FILL = (0.5, 0.5, 0.5)
 TABLE_GRID_WIDTH = 0.5
 TABLE_HEADER_BG = (0.95, 0.95, 0.95)
-TABLE_AVAILABLE_WIDTH = 468.0  # letter width minus default margins
+# Default text-column width: letter (8.5in) minus two 1in margins = 468pt.
+# A4 documents pass their own narrower width (595 - 144 = 451pt) through
+# render_document so tables and images stay inside the page margins.
+DEFAULT_CONTENT_WIDTH = 468.0
+# Retained as an alias for the default; the live budget is now passed in.
+TABLE_AVAILABLE_WIDTH = DEFAULT_CONTENT_WIDTH
 TABLE_LINE_HEIGHT_RATIO = 1.2
 # Minimum content width per column so the proportional-shrink path
 # can't squeeze short columns to near-zero, jamming text against
@@ -270,15 +275,28 @@ def _shrink_to_budget(
     return widths
 
 
-def render_document(doc: Document, family: FontFamily = DEFAULT_FAMILY) -> list[RenderedBlock]:
-    """Lower a Document into a list of ``RenderedBlock``."""
+def render_document(
+    doc: Document,
+    family: FontFamily = DEFAULT_FAMILY,
+    content_width: float = DEFAULT_CONTENT_WIDTH,
+) -> list[RenderedBlock]:
+    """Lower a Document into a list of ``RenderedBlock``.
+
+    ``content_width`` is the available text-column width in points (page
+    width minus both margins). Tables and block-level images are sized
+    to it so they stay within the page margins. Defaults to the letter
+    content width; ``compile`` passes the width derived from the actual
+    page size so A4 documents do not overflow.
+    """
     blocks: list[RenderedBlock] = []
     for block in doc.blocks:
-        blocks.extend(_render_block(block, family, depth=0))
+        blocks.extend(_render_block(block, family, depth=0, content_width=content_width))
     return blocks
 
 
-def _render_block(block, family: FontFamily, depth: int) -> list[RenderedBlock]:
+def _render_block(
+    block, family: FontFamily, depth: int, content_width: float = DEFAULT_CONTENT_WIDTH
+) -> list[RenderedBlock]:
     """Lower one AST block (recursively for lists) to flat RenderedBlocks."""
     if isinstance(block, Heading):
         return [_render_heading(block, family)]
@@ -290,16 +308,16 @@ def _render_block(block, family: FontFamily, depth: int) -> list[RenderedBlock]:
         if single_image is not None:
             from inkmd.image_loader import ImageData
             if isinstance(single_image.resolved, ImageData):
-                return [_render_image_block(single_image)]
+                return [_render_image_block(single_image, content_width)]
         return [RenderedBlock(runs=tuple(_render_paragraph(block, family)))]
     if isinstance(block, List):
-        return _render_list(block, family, depth)
+        return _render_list(block, family, depth, content_width)
     if isinstance(block, BlockQuote):
-        return _render_blockquote(block, family, depth)
+        return _render_blockquote(block, family, depth, content_width)
     if isinstance(block, CodeBlock):
         return [_render_code_block(block, family)]
     if isinstance(block, Table):
-        return [_render_table(block, family)]
+        return [_render_table(block, family, content_width)]
     if isinstance(block, ThematicBreak):
         return [_render_thematic_break()]
     raise NotImplementedError(f"render: unsupported block {type(block).__name__}")
@@ -348,22 +366,22 @@ _IMAGE_SPACE_BELOW = 6.0
 # Approximate column width used by the renderer when sizing images.
 # The paginator scales further to the actual available width per page;
 # this is the initial guess.
-_RENDER_COLUMN_WIDTH = 468.0
-
-
-def _render_image_block(image) -> RenderedBlock:
+def _render_image_block(
+    image, content_width: float = DEFAULT_CONTENT_WIDTH
+) -> RenderedBlock:
     """Build a prepositioned RenderedBlock for a block-level image.
 
     The prepositioned_shapes carry a single dict with ``kind="image"``;
     the paginator translates it to a layout.ImagePlacement at emit time.
+    ``content_width`` caps the displayed width to the page's text column.
     """
     data = image.resolved
     # Display size: natural pixel size at 72 dpi, capped to column width.
     nat_w = data.width * _PIXEL_TO_POINT
     nat_h = data.height * _PIXEL_TO_POINT
-    if nat_w > _RENDER_COLUMN_WIDTH and nat_w > 0:
-        scale = _RENDER_COLUMN_WIDTH / nat_w
-        disp_w = _RENDER_COLUMN_WIDTH
+    if nat_w > content_width and nat_w > 0:
+        scale = content_width / nat_w
+        disp_w = content_width
         disp_h = nat_h * scale
     else:
         disp_w = nat_w
@@ -437,16 +455,22 @@ def _render_thematic_break() -> RenderedBlock:
 _COLUMN_WIDTH_FALLBACK = 468.0
 
 
-def _render_blockquote(quote: BlockQuote, family: FontFamily, depth: int) -> list[RenderedBlock]:
+def _render_blockquote(
+    quote: BlockQuote, family: FontFamily, depth: int,
+    content_width: float = DEFAULT_CONTENT_WIDTH,
+) -> list[RenderedBlock]:
     """Flatten a BlockQuote: render inner blocks with extra indent + left rule.
 
     Each nesting level adds one rule at its own x position. Inner-quote
     rules sit to the *right* of outer-quote rules so a `> > >` source
     produces three rules side-by-side, indented progressively.
     """
+    # Content inside the quote is indented by QUOTE_INDENT_PT, so the
+    # width available to inner tables/images shrinks accordingly.
+    inner_width = max(1.0, content_width - QUOTE_INDENT_PT)
     inner: list[RenderedBlock] = []
     for child in quote.blocks:
-        inner.extend(_render_block(child, family, depth))
+        inner.extend(_render_block(child, family, depth, inner_width))
     out: list[RenderedBlock] = []
     for cb in inner:
         # Our new rule sits at the outermost x relative to inner blocks.
@@ -473,7 +497,9 @@ def _render_blockquote(quote: BlockQuote, family: FontFamily, depth: int) -> lis
     return out
 
 
-def _render_table(table: Table, family: FontFamily) -> RenderedBlock:
+def _render_table(
+    table: Table, family: FontFamily, content_width: float = DEFAULT_CONTENT_WIDTH
+) -> RenderedBlock:
     """Lower a Table to a pre-positioned RenderedBlock.
 
     Strategy: compute per-column widths from natural content widths,
@@ -514,7 +540,7 @@ def _render_table(table: Table, family: FontFamily) -> RenderedBlock:
 
     # 2. Available content width per cell = column_width - 2 × padding.
     #    Total cell content width budget = available - n_cols × 2 padding.
-    available_total = TABLE_AVAILABLE_WIDTH
+    available_total = content_width
     padding_total = n_cols * 2 * TABLE_CELL_PADDING_X
     content_budget = available_total - padding_total
 
@@ -633,6 +659,11 @@ def _render_table(table: Table, family: FontFamily) -> RenderedBlock:
                         size=run.size,
                         link_url=run.link_url,
                         color=run.color,
+                        strike=run.strike,
+                        y_shift=run.y_shift,
+                        background_fill=run.background_fill,
+                        border_fill=run.border_fill,
+                        underline=run.underline,
                     )
                 )
                 cx += text_width(run.text, run.font, run.size)
@@ -706,6 +737,11 @@ class _PR:
     size: float
     link_url: str | None = None
     color: tuple[float, float, float] | None = None
+    strike: bool = False
+    y_shift: float = 0.0
+    background_fill: tuple[float, float, float] | None = None
+    border_fill: tuple[float, float, float] | None = None
+    underline: bool = False
 
 
 def _render_code_block(cb: CodeBlock, family: FontFamily) -> RenderedBlock:
@@ -727,7 +763,10 @@ def _render_code_block(cb: CodeBlock, family: FontFamily) -> RenderedBlock:
     )
 
 
-def _render_list(lst: List, family: FontFamily, depth: int) -> list[RenderedBlock]:
+def _render_list(
+    lst: List, family: FontFamily, depth: int,
+    content_width: float = DEFAULT_CONTENT_WIDTH,
+) -> list[RenderedBlock]:
     """Flatten a List into a sequence of RenderedBlocks.
 
     Each item's first body-block carries the marker prefix and the
@@ -786,7 +825,8 @@ def _render_list(lst: List, family: FontFamily, depth: int) -> list[RenderedBloc
 
         first_of_item = True
         for sub_idx, child in enumerate(item.blocks):
-            child_blocks = _render_block(child, family, depth + 1)
+            child_width = max(1.0, content_width - indent_for_items)
+            child_blocks = _render_block(child, family, depth + 1, child_width)
             # A nested list computes its own absolute indent from its
             # deeper depth, so it must NOT have this item's indent added
             # on top. Every other child block (paragraph, code, image,

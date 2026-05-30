@@ -695,6 +695,10 @@ def paginate_runs(
                             link_url=getattr(pr, "link_url", None),
                             color=getattr(pr, "color", None),
                             strike=getattr(pr, "strike", False),
+                            y_shift=getattr(pr, "y_shift", 0.0),
+                            background_fill=getattr(pr, "background_fill", None),
+                            border_fill=getattr(pr, "border_fill", None),
+                            underline=getattr(pr, "underline", False),
                         )
                     )
                 current_lines.append(StyledLine(tuple(positioned_list)))

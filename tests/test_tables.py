@@ -331,3 +331,75 @@ def test_compile_alignment_affects_x_position():
                 x_right = r.x_rel
     assert x_left is not None and x_right is not None
     assert x_right > x_left
+
+
+# --- Inline decorations inside table cells (red-team family, 15 findings) ---
+
+
+def _table_cell_runs(md: str):
+    """Paginate a table and return all positioned runs across pages."""
+    from inkmd.render import render_document, FAMILIES
+    from inkmd.html_filter import filter_document as fh
+    from inkmd.url_filter import filter_document as fu
+    from inkmd.image_loader import resolve_images as ri
+    from inkmd.layout import paginate_runs
+
+    doc = parse(md)
+    doc = fh(doc, html=True)
+    doc = fu(doc, safe=True)
+    doc = ri(doc, base_dir=None, allow_remote=False)
+    blocks = render_document(doc, FAMILIES["helvetica"])
+    pages = paginate_runs(blocks, page_width=612, page_height=792)
+    return [r for pg in pages for ln in pg.lines for r in ln.runs]
+
+
+def test_strikethrough_survives_in_table_cell():
+    """Regression: ~~struck~~ in a table cell must keep its strike flag
+    (was silently dropped because _PR omitted the decoration fields)."""
+    runs = _table_cell_runs("| F | S |\n|---|---|\n| ~~struck~~ | x |")
+    assert any(getattr(r, "strike", False) for r in runs)
+
+
+def test_mark_highlight_survives_in_table_cell():
+    runs = _table_cell_runs("| F | S |\n|---|---|\n| <mark>hi</mark> | x |")
+    assert any(getattr(r, "background_fill", None) for r in runs)
+
+
+def test_underline_survives_in_table_cell():
+    runs = _table_cell_runs("| F | S |\n|---|---|\n| <u>under</u> | x |")
+    assert any(getattr(r, "underline", False) for r in runs)
+
+
+def test_kbd_border_survives_in_table_cell():
+    runs = _table_cell_runs("| F | S |\n|---|---|\n| <kbd>K</kbd> | x |")
+    assert any(getattr(r, "border_fill", None) for r in runs)
+
+
+def test_superscript_baseline_shift_survives_in_table_cell():
+    runs = _table_cell_runs("| F | S |\n|---|---|\n| x<sup>2</sup> | x |")
+    assert any(getattr(r, "y_shift", 0.0) for r in runs)
+
+
+def test_table_fits_within_a4_margins():
+    """Regression: table width must be budgeted to the actual page size.
+    On A4 (narrower than letter) a wide table must not overflow the
+    right margin (TABLE width was hardcoded to letter's 468pt)."""
+    from inkmd.render import render_document, FAMILIES
+    from inkmd.layout import paginate_runs, DEFAULT_MARGIN
+    from inkmd.fonts import text_width
+    from inkmd.pdf import PAGE_SIZES
+
+    md = ("| Setting | Value |\n|---|---|\n"
+          "| `application.feature.flag.enabled` | `org.example.module.Sub` |")
+    pw, ph = PAGE_SIZES["A4"]
+    cw = pw - 2 * DEFAULT_MARGIN
+    blocks = render_document(parse(md), FAMILIES["helvetica"], content_width=cw)
+    pages = paginate_runs(blocks, page_width=pw, page_height=ph)
+    limit = pw - DEFAULT_MARGIN
+    for pg in pages:
+        for ln in pg.lines:
+            for r in ln.runs:
+                assert r.x + text_width(r.text, r.font, r.size) <= limit + 0.5
+        for s in pg.shapes:
+            right = getattr(s, "x", 0.0) + getattr(s, "width", 0.0)
+            assert right <= limit + 0.6  # +grid stroke tolerance

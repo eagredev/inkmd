@@ -116,7 +116,14 @@ def compile(
     doc = filter_html(doc, html=html)
     doc = filter_document(doc, safe=safe)
     doc = resolve_images(doc, base_dir=base_dir, allow_remote=allow_remote_images)
-    paragraphs = render_document(doc, family=FAMILIES[family])
+    # Text-column width = page width minus both default 1in (72pt) margins.
+    # Threaded into render so tables and block images are sized to the
+    # actual page (A4 is narrower than letter and would otherwise overflow).
+    from inkmd.pdf import PAGE_SIZES
+    from inkmd.layout import DEFAULT_MARGIN
+    page_w = PAGE_SIZES[page_size][0]
+    content_width = page_w - 2 * DEFAULT_MARGIN
+    paragraphs = render_document(doc, family=FAMILIES[family], content_width=content_width)
     return styled_pdf(paragraphs, page_size=page_size)
 
 
