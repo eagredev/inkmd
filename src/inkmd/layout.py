@@ -330,6 +330,102 @@ def _tokenise_runs(runs: list[Run]) -> list[Run]:
     return out
 
 
+# Break points for splitting an over-wide token, in the order we prefer
+# to break at. These are the boundaries a reader tolerates a break at
+# inside an identifier or path: after a separator character, the split
+# keeps the separator on the left piece. camelCase boundaries are
+# handled separately (no character is consumed there).
+_TOKEN_BREAK_AFTER = "_/.-:,;|\\"
+
+
+def _token_break_points(text: str) -> list[int]:
+    """Candidate break offsets within ``text``, as indices *after* which
+    a line may break. Returns offsets in increasing order.
+
+    A break after index ``k`` puts ``text[:k+1]`` on one line and
+    ``text[k+1:]`` on the next. We offer breaks after any separator
+    character in ``_TOKEN_BREAK_AFTER`` and at camelCase boundaries
+    (a lowercase or digit immediately followed by an uppercase letter),
+    where the break falls *before* the uppercase letter.
+    """
+    points: list[int] = []
+    for k, ch in enumerate(text):
+        if ch in _TOKEN_BREAK_AFTER and k < len(text) - 1:
+            points.append(k)
+        elif (
+            k < len(text) - 1
+            and (ch.islower() or ch.isdigit())
+            and text[k + 1].isupper()
+        ):
+            # camelCase: break before the uppercase letter, i.e. after k.
+            points.append(k)
+    return points
+
+
+def _split_run_at(run: Run, cut: int) -> tuple[Run, Run]:
+    """Return two runs splitting ``run.text`` at offset ``cut`` (the
+    second run starts at ``cut``), preserving all styling."""
+    def clone(text: str) -> Run:
+        return Run(
+            text=text, font=run.font, size=run.size,
+            link_url=run.link_url, color=run.color, strike=run.strike,
+            y_shift=run.y_shift,
+            background_fill=run.background_fill,
+            border_fill=run.border_fill,
+            underline=run.underline,
+        )
+    return clone(run.text[:cut]), clone(run.text[cut:])
+
+
+def _break_long_token(tok: Run, column_width: float) -> list[Run]:
+    """Break a single over-wide token into pieces that each fit within
+    ``column_width``, preferring sensible break points (separators,
+    camelCase) and falling back to character-level splitting so even an
+    unbreakable run (e.g. ``aaaaaa...``) wraps rather than overflowing.
+
+    Returns the token unchanged (as a one-element list) if it already
+    fits or ``column_width`` is non-positive.
+    """
+    if column_width <= 0:
+        return [tok]
+    if text_width(tok.text, tok.font, tok.size) <= column_width:
+        return [tok]
+
+    pieces: list[Run] = []
+    remaining = tok
+    # Guard against pathological non-termination; each iteration must
+    # consume at least one character.
+    while text_width(remaining.text, remaining.font, remaining.size) > column_width:
+        text = remaining.text
+        # Find the largest prefix that fits, preferring a break point.
+        breaks = _token_break_points(text)
+        cut = 0
+        # Prefer the furthest break point whose prefix (including the
+        # separator char) still fits.
+        for bp in breaks:
+            prefix_len = bp + 1
+            if text_width(text[:prefix_len], remaining.font, remaining.size) <= column_width:
+                cut = prefix_len
+            else:
+                break
+        if cut == 0:
+            # No break point fits: fall back to character-level. Find the
+            # longest character prefix that fits (at least one char).
+            lo, hi = 1, len(text)
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                if text_width(text[:mid], remaining.font, remaining.size) <= column_width:
+                    lo = mid
+                else:
+                    hi = mid - 1
+            cut = lo
+        head, tail = _split_run_at(remaining, cut)
+        pieces.append(head)
+        remaining = tail
+    pieces.append(remaining)
+    return pieces
+
+
 def wrap_runs(
     runs: list[Run],
     column_width: float,
@@ -339,6 +435,11 @@ def wrap_runs(
     Each returned line is a list of runs; concatenating their texts
     gives the line's visible string. Leading and trailing whitespace
     runs on each wrapped line are stripped.
+
+    Tokens wider than ``column_width`` (long inline code spans, URLs,
+    identifiers) are broken at sensible points so they wrap inside the
+    column rather than overflowing its right edge. This matches how
+    GitHub renders long code in narrow table cells.
     """
     tokens = _tokenise_runs(runs)
     if not tokens:
@@ -358,6 +459,25 @@ def wrap_runs(
             line.pop()
         return line
 
+    def place(tok: Run) -> None:
+        # Place a single (already-fitting-or-space) token, wrapping the
+        # current line first if it would overflow.
+        nonlocal current, current_width
+        tok_w = text_width(tok.text, tok.font, tok.size)
+        if not current and is_space(tok):
+            return  # don't start a wrapped line with leading whitespace
+        if current_width + tok_w <= column_width or not current:
+            current.append(tok)
+            current_width += tok_w
+        else:
+            lines.append(strip_edges(current))
+            if is_space(tok):
+                current = []
+                current_width = 0.0
+            else:
+                current = [tok]
+                current_width = tok_w
+
     for tok in tokens:
         # Hard-break sentinel: force a line break and consume the token.
         # The HardBreak inline emits a single-char run with text "\x00".
@@ -367,23 +487,15 @@ def wrap_runs(
             current_width = 0.0
             continue
         tok_w = text_width(tok.text, tok.font, tok.size)
-        # If the very next token is a space and current line is empty,
-        # skip it — don't start a wrapped line with leading whitespace.
-        if not current and is_space(tok):
+        # A token wider than the whole column can never fit on one line;
+        # break it at sensible points so it wraps inside the column
+        # instead of overflowing the right edge. Each resulting piece is
+        # placed through the normal fit logic.
+        if not is_space(tok) and tok_w > column_width:
+            for piece in _break_long_token(tok, column_width):
+                place(piece)
             continue
-        if current_width + tok_w <= column_width or not current:
-            current.append(tok)
-            current_width += tok_w
-        else:
-            lines.append(strip_edges(current))
-            # If the token that triggered the break is itself a space,
-            # consume it instead of starting the next line with a space.
-            if is_space(tok):
-                current = []
-                current_width = 0.0
-            else:
-                current = [tok]
-                current_width = tok_w
+        place(tok)
 
     if current:
         lines.append(strip_edges(current))

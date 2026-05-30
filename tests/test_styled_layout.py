@@ -85,13 +85,82 @@ def test_wrap_runs_empty_input():
     assert wrap_runs([Run("", "Helvetica", 12)], column_width=500) == []
 
 
-def test_wrap_runs_long_word_overflows_alone():
-    """A single word wider than the column must still produce a line."""
+def test_wrap_runs_long_word_breaks_to_fit():
+    """A single word wider than the column is broken across lines so it
+    fits, rather than overflowing the column edge. No characters lost."""
     long_word = "x" * 200
     runs = [Run(f"a {long_word} b", "Helvetica", 12)]
     lines = wrap_runs(runs, column_width=50)
-    found = any(long_word in "".join(r.text for r in line) for line in lines)
-    assert found
+    # Every line fits within the column (allowing a tiny rounding slack).
+    for line in lines:
+        w = sum(text_width(r.text, r.font, r.size) for r in line)
+        assert w <= 50 + 0.5, f"line exceeds column width: {w}"
+    # All 200 x's survive, in order, across however many lines it took.
+    joined = "".join(r.text for line in lines for r in line)
+    assert "x" * 200 in joined.replace(" ", "")
+
+
+def test_wrap_runs_breaks_long_identifier_at_underscores():
+    """A long snake_case identifier (e.g. a code span) wider than the
+    column breaks at underscores so it fits, rather than overflowing."""
+    ident = "process_emphasis_with_a_really_long_function_name_here"
+    runs = [Run(ident, "Courier", 12)]
+    lines = wrap_runs(runs, column_width=120)
+    assert len(lines) >= 2, "long identifier should wrap to multiple lines"
+    for line in lines:
+        w = sum(text_width(r.text, r.font, r.size) for r in line)
+        assert w <= 120 + 0.5, f"wrapped line exceeds column width: {w}"
+    # No characters lost; order preserved.
+    joined = "".join(r.text for line in lines for r in line)
+    assert joined == ident
+    # At least one break landed after an underscore (preferred break point).
+    assert any(line and "".join(r.text for r in line).endswith("_") for line in lines)
+
+
+def test_wrap_runs_breaks_long_dotted_path_at_dots():
+    """A long dotted path breaks at '.' boundaries."""
+    path = "RenderedBlock.positioned_runs.overflow.the.cell.boundary.here"
+    runs = [Run(path, "Courier", 12)]
+    lines = wrap_runs(runs, column_width=140)
+    for line in lines:
+        w = sum(text_width(r.text, r.font, r.size) for r in line)
+        assert w <= 140 + 0.5, f"wrapped line exceeds column width: {w}"
+    joined = "".join(r.text for line in lines for r in line)
+    assert joined == path
+
+
+def test_table_with_long_codespan_stays_within_table_width():
+    """End-to-end: a table cell with a long inline code span must not
+    place any run past the table's right edge (the launch-blocking
+    overflow bug). Regression test for the 2026-05-30 fix."""
+    import inkmd
+    from inkmd.parser import parse
+    from inkmd.render import _render_table, TABLE_AVAILABLE_WIDTH, FAMILIES
+    from inkmd.ast import Table
+
+    md = (
+        "| Step | Action | Detail |\n"
+        "|------|--------|--------|\n"
+        "| 1 | Re-run `layout` | Calls "
+        "`process_emphasis_with_a_really_long_function_name_here` and bleeds |\n"
+    )
+    doc = parse(md)
+    table = next(b for b in doc.blocks if isinstance(b, Table))
+    rendered = _render_table(table, FAMILIES["helvetica"])
+
+    # Every positioned run must sit within the table's right edge.
+    from inkmd.fonts import text_width as _tw
+    max_x = 0.0
+    for _baseline, line in rendered.prepositioned_lines:
+        for run in line:
+            right = run.x_rel + _tw(run.text, run.font, run.size)
+            max_x = max(max_x, right)
+    assert max_x <= TABLE_AVAILABLE_WIDTH + 0.5, (
+        f"content right edge {max_x} exceeds table width {TABLE_AVAILABLE_WIDTH}"
+    )
+
+    # And the document compiles to a valid PDF.
+    assert inkmd.compile(md)[:4] == b"%PDF"
 
 
 def test_wrap_runs_bold_takes_more_space_than_regular():
