@@ -4,7 +4,7 @@
 << /Type /Catalog /Pages 2 0 R >>
 endobj
 2 0 obj
-<< /Type /Pages /Kids [11 0 R 15 0 R 18 0 R 20 0 R] /Count 4 >>
+<< /Type /Pages /Kids [12 0 R 16 0 R 19 0 R 21 0 R] /Count 4 >>
 endobj
 3 0 obj
 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
@@ -31,9 +31,12 @@ endobj
 << /Type /Font /Subtype /Type1 /BaseFont /Times-BoldItalic /Encoding /WinAnsiEncoding >>
 endobj
 11 0 obj
-<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R /F4 6 0 R /F5 7 0 R /F6 8 0 R /F7 9 0 R /F8 10 0 R >> >> /Contents 12 0 R /Annots [13 0 R 14 0 R] >>
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-BoldOblique /Encoding /WinAnsiEncoding >>
 endobj
 12 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R /F4 6 0 R /F5 7 0 R /F6 8 0 R /F7 9 0 R /F8 10 0 R /F9 11 0 R >> >> /Contents 13 0 R /Annots [14 0 R 15 0 R] >>
+endobj
+13 0 obj
 << /Length 19158 >>
 stream
 0 0.2 0.8 rg
@@ -1155,16 +1158,16 @@ BT
 ET
 endstream
 endobj
-13 0 obj
+14 0 obj
 << /Type /Annot /Subtype /Link /Rect [228.552 564.36 288.564 577.56] /Border [0 0 0] /A << /Type /Action /S /URI /URI (https://llm.datasette.io/) >> >>
 endobj
-14 0 obj
+15 0 obj
 << /Type /Annot /Subtype /Link /Rect [433.56 486.66 518.088 499.86] /Border [0 0 0] /A << /Type /Action /S /URI /URI (https://lobste.rs/) >> >>
 endobj
-15 0 obj
-<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R /F4 6 0 R /F5 7 0 R /F6 8 0 R /F7 9 0 R /F8 10 0 R >> >> /Contents 16 0 R /Annots [17 0 R] >>
-endobj
 16 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R /F4 6 0 R /F5 7 0 R /F6 8 0 R /F7 9 0 R /F8 10 0 R /F9 11 0 R >> >> /Contents 17 0 R /Annots [18 0 R] >>
+endobj
+17 0 obj
 << /Length 22571 >>
 stream
 0.7 0.7 0.7 rg
@@ -2447,13 +2450,13 @@ BT
 ET
 endstream
 endobj
-17 0 obj
+18 0 obj
 << /Type /Annot /Subtype /Link /Rect [72 213.06 109.404 226.26] /Border [0 0 0] /A << /Type /Action /S /URI /URI (https://github.com/BurntSushi/ripgrep) >> >>
 endobj
-18 0 obj
-<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R /F4 6 0 R /F5 7 0 R /F6 8 0 R /F7 9 0 R /F8 10 0 R >> >> /Contents 19 0 R >>
-endobj
 19 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R /F4 6 0 R /F5 7 0 R /F6 8 0 R /F7 9 0 R /F8 10 0 R /F9 11 0 R >> >> /Contents 20 0 R >>
+endobj
+20 0 obj
 << /Length 11050 >>
 stream
 0.95 0.95 0.95 rg
@@ -3069,10 +3072,10 @@ BT
 ET
 endstream
 endobj
-20 0 obj
-<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R /F4 6 0 R /F5 7 0 R /F6 8 0 R /F7 9 0 R /F8 10 0 R >> >> /Contents 21 0 R /Annots [22 0 R 23 0 R 24 0 R] >>
-endobj
 21 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R /F4 6 0 R /F5 7 0 R /F6 8 0 R /F7 9 0 R /F8 10 0 R /F9 11 0 R >> >> /Contents 22 0 R /Annots [23 0 R 24 0 R 25 0 R] >>
+endobj
+22 0 obj
 << /Length 10306 >>
 stream
 0.95 0.95 0.95 rg
@@ -3674,17 +3677,17 @@ BT
 ET
 endstream
 endobj
-22 0 obj
+23 0 obj
 << /Type /Annot /Subtype /Link /Rect [502.752 459.96 522.096 473.16] /Border [0 0 0] /A << /Type /Action /S /URI /URI (https://github.com/simonw/ttok) >> >>
 endobj
-23 0 obj
+24 0 obj
 << /Type /Annot /Subtype /Link /Rect [299.748 394.56 393.948 407.76] /Border [0 0 0] /A << /Type /Action /S /URI /URI (https://openai.com/pricing) >> >>
 endobj
-24 0 obj
+25 0 obj
 << /Type /Annot /Subtype /Link /Rect [160.38 183.66 319.788 196.86] /Border [0 0 0] /A << /Type /Action /S /URI /URI (https://gist.github.com/simonw/91ec0c784535ebf9a1ce575b34e0c79f) >> >>
 endobj
 xref
-0 25
+0 26
 0000000000 65535 f 
 0000000015 00000 n 
 0000000064 00000 n 
@@ -3697,21 +3700,22 @@ xref
 0000000739 00000 n 
 0000000839 00000 n 
 0000000944 00000 n 
-0000001167 00000 n 
-0000020379 00000 n 
-0000020547 00000 n 
-0000020707 00000 n 
-0000020923 00000 n 
-0000043548 00000 n 
-0000043723 00000 n 
-0000043922 00000 n 
-0000055026 00000 n 
-0000055256 00000 n 
-0000065616 00000 n 
-0000065789 00000 n 
-0000065958 00000 n 
+0000001054 00000 n 
+0000001288 00000 n 
+0000020500 00000 n 
+0000020668 00000 n 
+0000020828 00000 n 
+0000021055 00000 n 
+0000043680 00000 n 
+0000043855 00000 n 
+0000044065 00000 n 
+0000055169 00000 n 
+0000055410 00000 n 
+0000065770 00000 n 
+0000065943 00000 n 
+0000066112 00000 n 
 trailer
-<< /Size 25 /Root 1 0 R >>
+<< /Size 26 /Root 1 0 R >>
 startxref
-66163
+66317
 %%EOF

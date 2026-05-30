@@ -4,7 +4,7 @@
 << /Type /Catalog /Pages 2 0 R >>
 endobj
 2 0 obj
-<< /Type /Pages /Kids [11 0 R 13 0 R] /Count 2 >>
+<< /Type /Pages /Kids [12 0 R 14 0 R] /Count 2 >>
 endobj
 3 0 obj
 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
@@ -31,9 +31,12 @@ endobj
 << /Type /Font /Subtype /Type1 /BaseFont /Times-BoldItalic /Encoding /WinAnsiEncoding >>
 endobj
 11 0 obj
-<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R /F4 6 0 R /F5 7 0 R /F6 8 0 R /F7 9 0 R /F8 10 0 R >> >> /Contents 12 0 R >>
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-BoldOblique /Encoding /WinAnsiEncoding >>
 endobj
 12 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R /F4 6 0 R /F5 7 0 R /F6 8 0 R /F7 9 0 R /F8 10 0 R /F9 11 0 R >> >> /Contents 13 0 R >>
+endobj
+13 0 obj
 << /Length 11915 >>
 stream
 BT
@@ -342,7 +345,7 @@ BT
 ( ) Tj
 1 0 0 1 272.208 474.6 Tm
 (italic-inside-bold.) Tj
-/F2 12 Tf
+/F9 12 Tf
 1 0 0 1 72 454.2 Tm
 [(f) 20 (oo)] TJ
 /F1 12 Tf
@@ -366,7 +369,7 @@ BT
 (is) Tj
 1 0 0 1 230.112 433.8 Tm
 ( ) Tj
-/F2 12 Tf
+/F9 12 Tf
 1 0 0 1 233.448 433.8 Tm
 [(str) 20 (ong)] TJ
 1 0 0 1 270.54 433.8 Tm
@@ -491,7 +494,7 @@ BT
 /F1 12 Tf
 1 0 0 1 219.672 356.1 Tm
 (.) Tj
-/F2 12 Tf
+/F9 12 Tf
 1 0 0 1 72 335.7 Tm
 [(f) 20 (oo)] TJ
 /F3 12 Tf
@@ -594,7 +597,7 @@ BT
 [(f) 30 (oo)] TJ
 1 0 0 1 88.32 280.5 Tm
 ( ) Tj
-/F2 12 Tf
+/F9 12 Tf
 1 0 0 1 91.656 280.5 Tm
 (bar) Tj
 /F2 18 Tf
@@ -748,10 +751,10 @@ BT
 ET
 endstream
 endobj
-13 0 obj
-<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R /F4 6 0 R /F5 7 0 R /F6 8 0 R /F7 9 0 R /F8 10 0 R >> >> /Contents 14 0 R >>
-endobj
 14 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R /F4 6 0 R /F5 7 0 R /F6 8 0 R /F7 9 0 R /F8 10 0 R /F9 11 0 R >> >> /Contents 15 0 R >>
+endobj
+15 0 obj
 << /Length 12638 >>
 stream
 BT
@@ -1500,7 +1503,7 @@ ET
 endstream
 endobj
 xref
-0 15
+0 16
 0000000000 65535 f 
 0000000015 00000 n 
 0000000064 00000 n 
@@ -1513,11 +1516,12 @@ xref
 0000000725 00000 n 
 0000000825 00000 n 
 0000000930 00000 n 
-0000001129 00000 n 
-0000013098 00000 n 
-0000013297 00000 n 
+0000001040 00000 n 
+0000001250 00000 n 
+0000013219 00000 n 
+0000013429 00000 n 
 trailer
-<< /Size 15 /Root 1 0 R >>
+<< /Size 16 /Root 1 0 R >>
 startxref
-25989
+26121
 %%EOF
