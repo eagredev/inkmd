@@ -42,6 +42,7 @@ from inkmd.ast import (
     ThematicBreak,
     Underline,
 )
+from inkmd.emoji import split_text_into_runs
 from inkmd.fonts import text_width
 from inkmd.layout import Rect, Run, wrap_runs
 
@@ -931,10 +932,13 @@ def _render_inline(
     color = LINK_COLOR if link_url is not None else None
 
     if isinstance(inline, Text):
-        return [Run(
-            text=inline.content, font=font, size=size,
+        # Text may contain emoji, which render as inline images rather than
+        # font glyphs. Split into text runs + emoji runs (a no-op returning
+        # one plain run when no emoji font is available or none are present).
+        return split_text_into_runs(
+            inline.content, font=font, size=size,
             link_url=link_url, color=color, strike=strike,
-        )]
+        )
 
     if isinstance(inline, Code):
         return [Run(

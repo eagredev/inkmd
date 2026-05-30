@@ -40,6 +40,16 @@ DEFAULT_MARGIN = 72.0  # 1 inch on all sides
 # nesting is far below it.
 MIN_CONTENT_WIDTH = 90.0
 
+# An inline emoji is drawn as a square-ish image scaled to the run's font
+# size. The box height is this fraction of the font size (emoji glyphs read
+# best at roughly the cap-to-descender extent, a touch larger than x-height
+# text); the width follows the bitmap's aspect ratio.
+EMOJI_BOX_RATIO = 1.2
+# Fraction of the emoji box that drops below the text baseline, so the
+# glyph's visual centre aligns with the surrounding lowercase text rather
+# than sitting on the baseline like a capital letter.
+EMOJI_BASELINE_DROP = 0.2
+
 
 @dataclass(frozen=True)
 class Line:
@@ -52,6 +62,23 @@ class Line:
     y: float
     font: str
     size: float
+
+
+@dataclass(frozen=True)
+class EmojiImage:
+    """A color-emoji glyph to be drawn as an inline image.
+
+    Carried on a ``Run``/``PositionedRun`` whose ``text`` is the source
+    emoji string (kept for copy/extraction fallback, never drawn as
+    glyphs). ``image_id`` is a stable identifier (``"emoji:<hex>"``) so
+    the PDF emitter deduplicates repeated emoji to one XObject.
+    ``image_data`` is an ``inkmd.image_loader.ImageData`` (the glyph PNG).
+    ``aspect`` is the bitmap's width/height ratio, used to size the inline
+    box from the run's font size.
+    """
+    image_id: str
+    image_data: object  # inkmd.image_loader.ImageData
+    aspect: float
 
 
 @dataclass(frozen=True)
@@ -94,6 +121,7 @@ class Run:
     background_fill: tuple[float, float, float] | None = None
     border_fill: tuple[float, float, float] | None = None
     underline: bool = False
+    emoji: EmojiImage | None = None  # set => render as an inline image, not text
 
 
 @dataclass(frozen=True)
@@ -111,6 +139,7 @@ class PositionedRun:
     background_fill: tuple[float, float, float] | None = None
     border_fill: tuple[float, float, float] | None = None
     underline: bool = False
+    emoji: EmojiImage | None = None  # set => render as an inline image, not text
 
 
 @dataclass(frozen=True)
@@ -304,6 +333,11 @@ def _tokenise_runs(runs: list[Run]) -> list[Run]:
     """
     out: list[Run] = []
     for run in runs:
+        # An emoji run is an atomic inline image — never split or merged,
+        # and not subject to whitespace tokenisation. Emit it as-is.
+        if run.emoji is not None:
+            out.append(run)
+            continue
         if not run.text:
             continue
         # Preserve internal whitespace as separate tokens so we can break
@@ -474,7 +508,7 @@ def wrap_runs(
         # Place a single (already-fitting-or-space) token, wrapping the
         # current line first if it would overflow.
         nonlocal current, current_width
-        tok_w = text_width(tok.text, tok.font, tok.size)
+        tok_w = _run_width(tok)
         if not current and is_space(tok):
             return  # don't start a wrapped line with leading whitespace
         if current_width + tok_w <= column_width or not current:
@@ -497,12 +531,13 @@ def wrap_runs(
             current = []
             current_width = 0.0
             continue
-        tok_w = text_width(tok.text, tok.font, tok.size)
+        tok_w = _run_width(tok)
         # A token wider than the whole column can never fit on one line;
         # break it at sensible points so it wraps inside the column
         # instead of overflowing the right edge. Each resulting piece is
-        # placed through the normal fit logic.
-        if not is_space(tok) and tok_w > column_width:
+        # placed through the normal fit logic. Emoji are atomic images and
+        # are never broken — they place as-is even if pathologically large.
+        if not is_space(tok) and tok.emoji is None and tok_w > column_width:
             for piece in _break_long_token(tok, column_width):
                 place(piece)
             continue
@@ -511,6 +546,21 @@ def wrap_runs(
     if current:
         lines.append(strip_edges(current))
     return [ln for ln in lines if ln]
+
+
+def emoji_box(size: float, aspect: float) -> tuple[float, float]:
+    """Return the (width, height) in points of an inline emoji box drawn
+    at font ``size`` with bitmap ``aspect`` (width/height)."""
+    height = size * EMOJI_BOX_RATIO
+    return height * aspect, height
+
+
+def _run_width(run: Run) -> float:
+    """Advance width of a run: the emoji box width for emoji runs,
+    otherwise the measured text width."""
+    if run.emoji is not None:
+        return emoji_box(run.size, run.emoji.aspect)[0]
+    return text_width(run.text, run.font, run.size)
 
 
 def _line_max_size(line: list[Run]) -> float:
@@ -850,9 +900,26 @@ def paginate_runs(
                         background_fill=run.background_fill,
                         border_fill=run.border_fill,
                         underline=run.underline,
+                        emoji=run.emoji,
                     )
                 )
-                x += text_width(run.text, run.font, run.size)
+                if run.emoji is not None:
+                    # Draw the emoji as an inline image. Its box sits on the
+                    # text baseline: bottom = baseline - descent, so the
+                    # glyph aligns with surrounding text rather than floating.
+                    e_w, e_h = emoji_box(run.size, run.emoji.aspect)
+                    descent = e_h * EMOJI_BASELINE_DROP
+                    current_shapes.append(
+                        ImagePlacement(
+                            image_id=run.emoji.image_id,
+                            image_data=run.emoji.image_data,
+                            x=x,
+                            y=y_cursor - descent,
+                            width=e_w,
+                            height=e_h,
+                        )
+                    )
+                x += _run_width(run)
             current_lines.append(StyledLine(tuple(positioned)))
             # Backgrounds first (under text), then borders, then
             # link/explicit underlines, then strikes.

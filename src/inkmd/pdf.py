@@ -429,6 +429,11 @@ def _styled_page_content_stream(page: Page, image_xobject_names: dict[str, str] 
     current_text_rg: tuple[float, float, float] | None = None
     for line in page.lines:
         for run in line.runs:
+            # Emoji runs are drawn as inline image XObjects (emitted into
+            # the shapes section above), not as text glyphs — skip them
+            # here so we don't stamp their placeholder text.
+            if getattr(run, "emoji", None) is not None:
+                continue
             if run.font != current_font or run.size != current_size:
                 slot = FONT_SLOTS[run.font]
                 parts.append(f"/{slot} {_fmt(run.size)} Tf".encode("ascii"))
