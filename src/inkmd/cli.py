@@ -74,6 +74,18 @@ def _build_parser() -> argparse.ArgumentParser:
             "etc.) becomes literal text."
         ),
     )
+    p.add_argument(
+        "--emoji-fallback",
+        choices=("name", "drop"),
+        default="name",
+        help=(
+            "what to do with an emoji the font can't render (only the "
+            "font-less zipapp build or INKMD_NO_EMOJI=1): 'name' (default) "
+            "substitutes a [rocket]-style label, 'drop' omits it. The pip "
+            "install renders all emoji as colour glyphs, so this has no "
+            "effect there."
+        ),
+    )
     p.add_argument("--version", action="version", version=f"inkmd {__version__}")
     return p
 
@@ -98,6 +110,7 @@ def main(argv: list[str] | None = None) -> int:
         html=args.html,
         base_dir=base_dir,
         allow_remote_images=args.allow_remote_images,
+        emoji_fallback=args.emoji_fallback,
     )
 
     if args.output == "-":

@@ -484,3 +484,37 @@ def test_many_column_table_columns_do_not_overprint():
     gaps = [xs[i + 1] - xs[i] for i in range(len(xs) - 1)]
     assert gaps, "expected multiple header columns"
     assert min(gaps) > 2.0  # clearly separated, not z-fighting
+
+
+# --- Emoji in table cells (Phase 7) ---------------------------------------
+
+
+def test_emoji_in_table_cell_renders_as_image():
+    """A status emoji in a table cell must render as an inline image
+    (placed in the cell), not fall through to '?'. Uses a synthetic font
+    so the test is portable."""
+    from inkmd import emoji as emoji_mod
+    from inkmd.emoji_font import EmojiFont
+    from inkmd.render import render_document, FAMILIES
+    from inkmd.layout import paginate_runs, ImagePlacement
+    from tests.test_emoji_font import _build_cbdt_font, _tiny_png
+
+    font = EmojiFont(_build_cbdt_font({0x2705: 1}, {1: _tiny_png(120, 128)}))
+    emoji_mod._load_font.cache_clear()
+    orig = emoji_mod._load_font
+    emoji_mod._load_font = lambda: font
+    try:
+        md = "| Feature | Status |\n|---|---|\n| Parser | \U00002705 |"
+        blocks = render_document(parse(md), FAMILIES["helvetica"], content_width=468.0)
+        pages = paginate_runs(blocks, page_width=612, page_height=792)
+        placements = [
+            s for pg in pages for s in pg.shapes if isinstance(s, ImagePlacement)
+        ]
+        assert len(placements) == 1
+        assert placements[0].image_id == "emoji:2705"
+        # The check glyph must NOT also appear as a '?' text run.
+        texts = {r.text for pg in pages for ln in pg.lines for r in ln.runs}
+        assert "\U00002705" not in texts
+    finally:
+        emoji_mod._load_font = orig
+        emoji_mod._load_font.cache_clear()

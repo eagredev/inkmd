@@ -74,6 +74,21 @@ _KEYCAP = 0x20E3         # combining enclosing keycap (#️⃣, 1️⃣ …)
 _SKIN_TONES = range(0x1F3FB, 0x1F3FF + 1)  # Fitzpatrick modifiers
 _TAG_RANGE = range(0xE0020, 0xE007F + 1)   # tag chars (subdivision flags)
 _REGIONAL = range(0x1F1E6, 0x1F1FF + 1)    # regional indicators (flag halves)
+# Codepoints in these BMP blocks are emoji-range but Unicode defaults them
+# to *text* presentation: plain arrows (→ ← ↑ ↓), many misc-technical and
+# misc-symbol characters. They only become emoji with an explicit FE0F or
+# when the font actually carries a colour glyph. When neither holds we must
+# leave them as text (→ the WinAnsi path) rather than emit an emoji-name
+# label, which would be misleading for what is really a text symbol.
+def _is_text_default_symbol(cp: int) -> bool:
+    return (
+        0x2190 <= cp <= 0x21FF   # arrows
+        or 0x2300 <= cp <= 0x23FF  # misc technical (most are text-default)
+        or 0x2B00 <= cp <= 0x2BFF  # misc symbols & arrows
+        or cp in (0x203C, 0x2049, 0x2122, 0x2139)  # ‼ ⁉ ™ ℹ
+    )
+
+
 # Keycap emoji (#️⃣ *️⃣ 0️⃣–9️⃣) are an ASCII base + optional FE0F + U+20E3.
 # The base is ordinary text everywhere else, so a keycap is only detected
 # by looking ahead for the enclosing-keycap combiner — never by the base
@@ -322,9 +337,22 @@ def split_text_into_runs(
                 ))
                 i += used
                 continue
-            # Couldn't render: consume the whole cluster and fall back.
-            # (Consuming the full cluster — not just the base — keeps a
-            # ZWJ family from leaving stray component emoji behind.)
+            # Couldn't render as a glyph. A lone text-default symbol (a
+            # plain arrow, a misc-technical char) with no presentation
+            # selector is really text, not an emoji — leave it for the
+            # normal text path (where it renders if WinAnsi has it, else
+            # '?') rather than mislabel it as an emoji name.
+            if (
+                len(cluster) == 1
+                and _is_text_default_symbol(cluster[0])
+            ):
+                buf.append(text[i])
+                i += 1
+                continue
+            # Otherwise it's a genuine emoji we can't draw: consume the
+            # whole cluster and apply the fallback policy. (Consuming the
+            # full cluster — not just the base — keeps a ZWJ family from
+            # leaving stray component emoji behind.)
             flush_text()
             emit_fallback(cluster)
             i += len(cluster)

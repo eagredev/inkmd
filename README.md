@@ -7,7 +7,7 @@ pip install inkmd
 inkmd in.md -o out.pdf
 ```
 
-That's the whole install. No system packages, no fonts to install, no Chrome binary, no `apt-get`. Works the same on macOS, Linux, Windows, Alpine, AWS Lambda, a locked-down CI runner, or a Steam Deck.
+That's the whole install. No system packages, no system fonts, no Chrome binary, no `apt-get`. Works the same on macOS, Linux, Windows, Alpine, AWS Lambda, a locked-down CI runner, or a Steam Deck. Color emoji are bundled, so they render anywhere without a system emoji font.
 
 <p align="center">
   <img src="docs/images/hero-sample.png" alt="A quarterly report rendered by inkmd, showing headings, a styled paragraph with strikethrough, a blockquote, a right-aligned table with tinted header, a bulleted list, and a fenced Python code block with a grey background." width="640">
@@ -21,6 +21,7 @@ That's the whole install. No system packages, no fonts to install, no Chrome bin
 
 - **A single pure-Python wheel.** No native extensions, no system libraries. Installs in under a second.
 - **Faithful CommonMark plus the parts of GFM people actually use:** tables, autolinks, strikethrough, fenced code with language tags. The [supported features](#supported-markdown) section has the full matrix.
+- **Color emoji that render anywhere.** 🚀 ✅ 🇯🇵 👍🏽 — single emoji, flags, skin tones, and ZWJ sequences (families, the rainbow flag) all render as color glyphs, inline and in table cells, from a bundled font. No system emoji font required.
 - **PDFs that look right.** Real AFM-driven kerning emitted via TJ arrays, clickable links, tinted code-block backgrounds, blockquote rules that stack for nested quotes, table alignment, headings that breathe.
 - **Byte-identical output for the same input.** No clocks, no random IDs. Useful for version control, signed PDFs, audit trails, reproducible CI.
 - **Two layers of API:** a CLI and a `compile()` / `render_file()` library function. The whole public surface is two functions.
@@ -104,6 +105,7 @@ inkmd in.md -o out.pdf --page-size A4 --family times
 inkmd in.md -o out.pdf --no-autolinks --no-html
 inkmd in.md -o out.pdf --allow-remote-images   # fetch http(s) image URLs
 inkmd in.md -o out.pdf --allow-unsafe-urls     # disable URL scheme filter
+inkmd in.md -o out.pdf --emoji-fallback drop   # only matters in the no-font build
 inkmd --version
 ```
 
@@ -127,8 +129,15 @@ pdf_bytes = inkmd.compile(
     safe=True,               # URL scheme allow-list (default True)
     html=True,               # inline HTML allow-list (default True)
     allow_remote_images=False,  # explicit opt-in to fetch http(s) images
+    emoji_fallback="name",   # for emoji the font can't render: "name" -> [rocket], or "drop"
 )
 ```
+
+Emoji render as color glyphs out of the box (the font is bundled). Set the
+`INKMD_NO_EMOJI=1` environment variable to disable emoji rendering; emoji
+then take the `emoji_fallback` path (`"name"` → a `[rocket]`-style label, or
+`"drop"`). The single-file zipapp build ships without the font and behaves
+the same way.
 
 The public API is intentionally narrow: two functions, no classes to instantiate, no state to manage. The CLI is a thin argparse wrapper around `compile()`.
 
@@ -205,7 +214,8 @@ The public API is intentionally narrow: two functions, no classes to instantiate
 - Helvetica family (default) or Times family. Code uses Courier.
 - Standard PDF letter and A4 page sizes.
 - WinAnsi character encoding: em-dash, en-dash, curly quotes, ellipsis, most Western European glyphs.
-- Codepoints outside WinAnsi (CJK, Cyrillic, emoji, most non-Latin scripts) render as `?` in v0.1 and v0.2. v0.3 lifts this with TTF font embedding.
+- **Color emoji** render as inline images from a bundled font: single emoji, presentation selectors, regional-indicator flags, skin-tone modifiers, ZWJ sequences (families, the rainbow flag), and keycaps — inline and in table cells. (Bitmaps scaled to text size; they soften slightly at very large heading sizes.)
+- Other codepoints outside WinAnsi (CJK, Cyrillic, Greek, most non-Latin scripts) render as `?`. Full text-font embedding would lift this in a later release.
 
 ## Determinism
 
@@ -217,13 +227,12 @@ If you hash the markdown and the PDF, the relationship is stable forever. Useful
 
 | Feature | When | Why |
 |---------|------|-----|
-| TTF / OTF font embedding | v0.3 | v0.2 uses PDF's 14 base fonts. Tiny output, no font files to ship, but limits codepoints to WinAnsi |
+| Text-font embedding for non-Latin scripts (CJK, Cyrillic, …) | later | v0.2 uses PDF's 14 base fonts for text (WinAnsi). Color **emoji** are embedded from a bundled font; other non-Latin scripts still render as `?` |
 | Block-level raw HTML (`<table>...</table>` etc.) | v0.3 | inkmd v0.2 covers **inline** HTML via the safe allow-list; block-level passthrough is queued |
 | Headers, footers, page numbers | v0.3 | Needs a per-page chrome system |
 | Page-splitting for oversized tables | v0.3 | Tables currently place atomically and overflow if taller than a page |
-| Tables inside blockquotes | v0.3 | Table detection runs at document level only |
 | Blockquote inside a list item | v0.3 | `>` inside an item renders as paragraph text in v0.2; per-item blockquote state coming |
-| RGBA / indexed PNG embedding | v0.3 | v0.2 supports RGB and grayscale PNG; common screen-grab RGBA needs the alpha-channel pipeline |
+| RGBA PNG embedding | v0.3 | v0.2 supports RGB, grayscale, and **indexed** PNG (with `tRNS` transparency); full RGBA alpha is queued |
 | GIF image support | v0.3 | LZW decoder + palette resolution |
 | Tagged PDF / PDF/UA accessibility | v1.0+ | Under consideration |
 | PDF/A archival format | n/a | Not planned |
@@ -264,8 +273,8 @@ For most use cases this is fine. If you need pixel-identical rendering across ev
 The release tiers are about **what a real user sees**, not about chasing a percentage.
 
 - **v0.1** — Proof of concept: working basic PDFs. **Shipped.**
-- **v0.2** — Most sane use cases work; remaining failures are rare and defensible. **Shipped.** CommonMark 85%, GFM extensions 71%. Adds reference links, images (PNG + JPEG), task lists, inline HTML allow-list, hard line breaks, indented code blocks (including inside list items), URL scheme filter, tab preservation, image-inside-link.
-- **v0.3** — Visually identical for the user even where spec tests still fail. Adds block-level raw HTML pass-through, blockquote-inside-list, headers/footers/page numbers, page-splitting for oversized tables, TTF font embedding (full Unicode), RGBA/indexed PNG, GIF.
+- **v0.2** — Most sane use cases work; remaining failures are rare and defensible. CommonMark 85%, GFM extensions 71%. Adds reference links, images (PNG + JPEG + indexed PNG with transparency), **color emoji** (single, flags, skin tones, ZWJ sequences, keycaps — inline and in tables), task lists, inline HTML allow-list, hard line breaks, indented code blocks (including inside list items), URL scheme filter, tab preservation, image-inside-link.
+- **v0.3** — Visually identical for the user even where spec tests still fail. Adds block-level raw HTML pass-through, blockquote-inside-list, headers/footers/page numbers, page-splitting for oversized tables, text-font embedding for non-Latin scripts (CJK, Cyrillic, …), full RGBA PNG, GIF.
 - **v0.4** — 100% CommonMark and 100% GFM extensions. The long-tail spec-corner cases.
 - **v1.0 and beyond** — Tagged PDF, accessibility, TOC generation, cross-references. PDF/A and similar under consideration.
 
@@ -273,9 +282,11 @@ The release tiers are about **what a real user sees**, not about chasing a perce
 
 MIT. See [LICENSE](LICENSE).
 
+The bundled color-emoji font is **Noto Color Emoji** (© Google), distributed under the [SIL Open Font License 1.1](src/inkmd/assets/emoji/OFL.txt) — a separate, permissive licence from inkmd's own MIT code. It is shipped unmodified.
+
 ## Acknowledgements
 
-The 14 standard PDF fonts and their AFM metric files are public-domain artefacts published by Adobe ([adobe-type-tools/Core14_AFMs](https://github.com/adobe-type-tools/Core14_AFMs)). PDF format reference: ISO 32000-1.
+The 14 standard PDF fonts and their AFM metric files are public-domain artefacts published by Adobe ([adobe-type-tools/Core14_AFMs](https://github.com/adobe-type-tools/Core14_AFMs)). Color emoji are rendered from Google's [Noto Color Emoji](https://github.com/googlefonts/noto-emoji) (SIL OFL 1.1). PDF format reference: ISO 32000-1.
 
 ## About
 

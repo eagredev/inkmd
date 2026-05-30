@@ -44,7 +44,7 @@ from inkmd.ast import (
 )
 from inkmd.emoji import split_text_into_runs
 from inkmd.fonts import text_width
-from inkmd.layout import Rect, Run, wrap_runs
+from inkmd.layout import EMOJI_BASELINE_DROP, Rect, Run, emoji_box, wrap_runs
 
 
 @dataclass(frozen=True)
@@ -543,9 +543,17 @@ def _render_table(
     ]
 
     # 1. Natural column widths: max over header + body, of the unwrapped
-    #    cell width (no padding, no border).
+    #    cell width (no padding, no border). Emoji runs measure as their
+    #    box width so an emoji-bearing cell isn't undersized (the run's
+    #    text is the raw emoji char, which would otherwise measure as ~0).
     def runs_natural_width(runs: list[Run]) -> float:
-        return sum(text_width(r.text, r.font, r.size) for r in runs)
+        total = 0.0
+        for r in runs:
+            if r.emoji is not None:
+                total += emoji_box(r.size, r.emoji.aspect)[0]
+            else:
+                total += text_width(r.text, r.font, r.size)
+        return total
 
     natural = [0.0] * n_cols
     for i, runs in enumerate(header_runs):
@@ -653,9 +661,15 @@ def _render_table(
         # Baseline of first line: row_top + padding_y + ascent (~ line_height).
         # Use line_height as effective ascent for now (good enough at body size).
         baseline_y_from_top = row_top + TABLE_CELL_PADDING_Y + line_height
+        def run_advance(r: Run) -> float:
+            if r.emoji is not None:
+                return emoji_box(r.size, r.emoji.aspect)[0]
+            return text_width(r.text, r.font, r.size)
+
         for li, line in enumerate(cell_lines):
-            # Compute aligned x offset for this line's content.
-            line_w = sum(text_width(r.text, r.font, r.size) for r in line)
+            # Compute aligned x offset for this line's content (emoji runs
+            # measure as their box width, not text width).
+            line_w = sum(run_advance(r) for r in line)
             if alignment == "center":
                 x_start = x_left + (cell_content_w - line_w) / 2.0
             elif alignment == "right":
@@ -669,15 +683,35 @@ def _render_table(
             # the right is acceptable; overflow to the left is corruption.
             if x_start < x_left:
                 x_start = x_left
-            # Emit positioned runs for the line.
+            # Emit positioned runs for the line. Emoji runs become image
+            # shapes placed in the cell (the same kind="image" shape a
+            # block image uses), not text records.
             runs_record: list[_PR] = []
             cx = x_start
+            baseline = baseline_y_from_top + li * line_height
             for run in line:
+                if run.emoji is not None:
+                    e_w, e_h = emoji_box(run.size, run.emoji.aspect)
+                    descent = e_h * EMOJI_BASELINE_DROP
+                    # rel_y_top measures down from the table top; the box
+                    # bottom sits descent below the baseline.
+                    rel_y_top = baseline - (e_h - descent)
+                    shapes.append({
+                        "kind": "image",
+                        "image_id": run.emoji.image_id,
+                        "image_data": run.emoji.image_data,
+                        "rel_y_top": rel_y_top,
+                        "x_offset": cx,
+                        "width": e_w,
+                        "height": e_h,
+                    })
+                    cx += e_w
+                    continue
                 runs_record.append(
                     PR(
                         text=run.text,
                         x_rel=cx,
-                        y_from_top=baseline_y_from_top + li * line_height,
+                        y_from_top=baseline,
                         font=run.font,
                         size=run.size,
                         link_url=run.link_url,
@@ -691,7 +725,7 @@ def _render_table(
                 )
                 cx += text_width(run.text, run.font, run.size)
             if runs_record:
-                positioned_lines.append((baseline_y_from_top + li * line_height, tuple(runs_record)))
+                positioned_lines.append((baseline, tuple(runs_record)))
 
     # Headers.
     for i in range(n_cols):
