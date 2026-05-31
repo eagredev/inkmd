@@ -6,18 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-Nothing yet. v0.3 will target visually-identical rendering for the spec-test edges where the current AST shape differs but the rendered PDF is correct (blockquote-inside-list, mixed-indent siblings). See the [roadmap](README.md#roadmap).
+Nothing yet. v0.3 will target visually-identical rendering for the spec-test edges where the current AST shape differs but the rendered PDF is correct (blockquote-inside-list, mixed-indent siblings), plus block-level raw HTML passthrough, headers/footers/page numbers, horizontal fitting for very wide tables (tall tables already split across pages in v0.2), text-font embedding for non-Latin scripts (CJK, Cyrillic), full RGBA PNG, and GIF. See the [roadmap](README.md#roadmap).
 
-## [0.2.0] - 2026-05-13
+## [0.2.0] - 2026-05-31
 
-Conformance, breadth, and the v0.2 design principle.
+Conformance, breadth, the v0.2 design principle, and color emoji.
 
 inkmd v0.2 covers the **sane-use-case bar**: most real-world markdown renders correctly, with the remaining failing spec tests confined to niche edges (raw block-level HTML, pathological nesting). Conformance against the public spec suites:
 
 - **CommonMark 0.31.2**: 554/652 = **85.0%** (up from 60.4%, +160 tests)
 - **GFM extensions**: 20/28 = **71.4%** (up from 60.7%, +3 tests)
 
-The full per-section breakdown plus a real-world impact audit of remaining failures is in [`docs/conformance.md`](docs/conformance.md).
+The headline visible-output change is **color emoji**: the emoji-as-`?` artefact that made output look broken to anyone who pasted a README into inkmd is gone. Emoji now render as color glyphs from a bundled font, including flags, skin tones, and ZWJ sequences. The full per-section conformance breakdown plus a real-world impact audit of remaining failures is in [`docs/conformance.md`](docs/conformance.md).
 
 ### Added
 
@@ -36,18 +36,28 @@ The full per-section breakdown plus a real-world impact audit of remaining failu
 #### GFM extensions
 
 - **Task list items** (`- [ ]` / `- [x]`): the prefix is recognised, stripped from the rendered content, and the PDF renders a coloured checkbox marker in place of the bullet.
+- **Tables split across pages.** A table taller than one page now breaks at a row boundary and continues on the next page with the header row repeated and each page-slice fully boxed, instead of overflowing off the bottom and silently losing rows. The renderer emits the table as per-row groups (row-local coordinates) and the layout places them top-to-bottom, paginating at row boundaries. Single-page tables are visually unchanged. (Very wide tables — too many columns to fit even at minimum width — still overflow the right edge; horizontal fitting is v0.3.)
+
+#### Color emoji
+
+- **Color emoji render as inline images** from a bundled copy of Google's Noto Color Emoji (SIL OFL 1.1, shipped unmodified). The previous behaviour rendered every emoji as `?`; that artefact is gone. Emoji render inline, in headings (scaled to the heading size), and in table cells.
+- **Hand-rolled OpenType reader** (`emoji_font.py`), no `fonttools` or any third-party dependency. It parses `cmap` formats 12 and 14, walks the `CBLC`/`CBDT` bitmap tables to extract each glyph's embedded PNG verbatim, and applies `GSUB` type-4 ligature lookups. The extracted PNG reuses the same Image XObject path the image-embedding feature already uses.
+- **Emoji sequences** compose correctly via GSUB ligatures: presentation selectors (`U+FE0F`/`U+FE0E`), regional-indicator flag pairs, skin-tone modifiers, ZWJ sequences (families, the rainbow flag), and keycaps (`0` through `9`, `#`, `*` followed by `U+20E3`).
+- **Fallback for the font-less build.** The pip install bundles the font and renders all emoji in colour. The single-file zipapp ships without the font (it is the small "lite" artefact); there, and when `INKMD_NO_EMOJI=1` is set, emoji take a configurable fallback: `emoji_fallback="name"` (default) substitutes a readable `[rocket]`-style label, `emoji_fallback="drop"` omits them. Either way the `?` is gone in both tiers. The implementation note is in [`docs/design/emoji-rendering-plan.md`](docs/design/emoji-rendering-plan.md) and [`docs/internals.md`](docs/internals.md).
 
 #### Images
 
-- **PNG and JPEG embedding** via PDF XObjects (`/DCTDecode` for JPEG, `/FlateDecode` with `/Predictor 15` for PNG). PNG colour types 0 (grayscale) and 2 (RGB) are supported in v0.2; RGBA and indexed PNG are queued for v0.3.
+- **PNG and JPEG embedding** via PDF XObjects (`/DCTDecode` for JPEG, `/FlateDecode` with `/Predictor 15` for PNG). PNG colour types 0 (grayscale), 2 (RGB), and 3 (**indexed/palette**) are supported. Indexed PNGs with a `tRNS` chunk get per-palette alpha decoded into a `/SMask` soft mask, so palette transparency renders correctly. Full RGBA (colour type 6) is queued for v0.3.
 - **Block-level image rendering** for image-only paragraphs (single image on a line renders with its natural aspect ratio, capped at page width).
 - **Inline image rendering** with alt-text fallback when the source is missing or unreadable.
+- **HTML `<img>` support**: the `<img>` tag is promoted to the same image pipeline as markdown `![alt](url)` (riding the identical `base_dir`/`allow_remote` security gating — not a new surface). The `width` attribute is honoured as a display-width hint (capped to the text column, aspect preserved), and a wrapping `align`/`<center>` or an `align` on the tag positions a block image left/centre/right. The `<p align="center"><img><br>caption</p>` figure idiom common in GitHub READMEs embeds the image and renders the caption beneath it — so inkmd now renders its own README in full, hero included.
 - **Local file paths** and **`data:` URIs** are loaded by default. **HTTP(S) URLs** require explicit opt-in via `--allow-remote-images` (CLI) or `allow_remote_images=True` (library), preserving inkmd's zero-network default.
 
 #### Security
 
 - **URL scheme allow-list (on by default)**: links to `http`, `https`, `mailto`, `tel`, `ftp`, and `xmpp` schemes pass through as clickable; anything else (`javascript:`, `data:`, `vbscript:`, `file:`, custom schemes) renders as plain text with no annotation. Disable via `--allow-unsafe-urls` (CLI) or `safe=False` (library). The threat model in [`docs/security.md`](docs/security.md) covers the full posture.
 - **HTML allow-list** drops `<script>`, `<style>`, `<iframe>`, `<object>`, and similar tag bodies entirely; the filter is render-time and the dropped content does not reach the PDF.
+- **The bundled emoji font is a static read-only package asset**, parsed only for the bytes of each glyph's embedded PNG. No font program is ever embedded in the output PDF and no executable font logic runs; emoji reach the PDF as the same inert Image XObjects as any other image. inkmd loads no font from the user's system or from the document.
 
 #### Performance
 
@@ -73,6 +83,24 @@ The full per-section breakdown plus a real-world impact audit of remaining failu
 - **Ordered list markers** other than `1.` no longer interrupt an open paragraph (`14. cont.` mid-sentence stays paragraph).
 - **Thematic break vs list marker** ordering: `* * *` at the outer list's marker column is a thematic break, not a sibling list item.
 
+#### Rendering robustness (adversarial render audit)
+
+A multi-pass adversarial render audit surfaced and fixed a batch of layout edge cases that produced overflowing, clipped, or misplaced output rather than incorrect-but-contained output. Highlights:
+
+- **Long unbreakable tokens** (URLs, code spans, identifiers) in narrow table cells and in prose now break at separators and camelCase boundaries with a character-level fallback, instead of overflowing the cell or the page margin. Styling is preserved across the break.
+- **Table column widths** honour each column's minimum content width: a table too wide for the page overflows to the right rather than crushing columns to unreadable slivers, and right/centre-aligned cells clamp to the left cell edge so content never starts left of its own column.
+- **Deeply nested list/quote indentation** is clamped so content always keeps a usable minimum width rather than marching off the right margin.
+- **Code-block backgrounds inside blockquotes** tint the correct region: the grey fill and the quote rule no longer fight over the same pixels.
+- **Table-cell decorations** (links, strikethrough, code-span backgrounds) and A4 page-width accounting were corrected.
+
+A second, focused audit run just before release swept the new emoji and indexed-PNG surface and fixed:
+
+- **Malformed PNGs that crashed compilation.** An indexed PNG missing its `IDAT` image data or its `PLTE` palette passed the dimension check but raised an uncaught error at emission. Such images now fall back to their alt text like any other unloadable image, so a single bad embed can never abort the whole document.
+- **Emoji inside code spans and code blocks** now render as color images (or their textual fallback in the font-less build) instead of leaking a literal `?` from the WinAnsi encoder — emoji are the documented exception to the WinAnsi rule and now hold everywhere, monospace included.
+- **Orphaned zero-width joiners.** A ZWJ emoji cluster the bundled font can't fully ligature decomposes into its component emoji; the joiners between them are now dropped rather than surfacing as `?`.
+- **Soft hyphens** (U+00AD) are treated as the invisible optional-break hints they are and dropped, instead of printing a visible hyphen and stealing its width.
+- **Bold-italic in table headers** composes correctly (`***x***` in a header keeps its italic), matching body cells.
+
 ### Known limitations (carried to v0.3)
 
 - **Raw HTML blocks** (`<table>...</table>` as a top-level construct) render as inline text rather than passing through verbatim. CommonMark HTML-blocks section is 2/44 = 4.5%.
@@ -82,7 +110,7 @@ The full per-section breakdown plus a real-world impact audit of remaining failu
 
 ### Tests
 
-649 unit tests + 652 CommonMark spec tests + 28 GFM extension spec tests, all measurable and passing within the documented gap. End-to-end PDF validity verified via `qpdf --check`.
+788 unit tests across 33 files + 652 CommonMark spec tests + 28 GFM extension spec tests, all measurable and passing within the documented gap. The emoji feature is tested against a synthetic in-memory CBDT/GSUB font, so the suite has no system-font dependency. End-to-end PDF validity verified via `qpdf --check`.
 
 ## [0.1.0] - 2026-05-12
 

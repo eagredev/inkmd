@@ -33,10 +33,17 @@ The current security-relevant findings:
 The known *non-issues* — things people might expect to be problems
 that are not:
 
-- inkmd does not fetch any URLs at parse or render time.
-- inkmd does not load fonts from the system. All AFM metric data
-  is embedded in the package; rendering uses the 14 base fonts the
-  PDF reader provides.
+- inkmd does not fetch any URLs at parse or render time, unless the
+  caller explicitly opts in to remote images (`allow_remote_images`
+  / `--allow-remote-images`, off by default). Local image paths and
+  `data:` URIs are read by default; see "Image handling" below.
+- inkmd does not load fonts from the system or from the document.
+  Text uses the 14 base fonts the PDF reader provides (AFM metric
+  data is embedded in the package). Color emoji are drawn from a
+  single read-only emoji font bundled in the package as a static
+  asset; inkmd reads only the embedded-PNG bytes out of it and never
+  embeds a font program in the output. No user-supplied or
+  system-resident font is ever loaded.
 - inkmd does not execute Python code from markdown input.
 - inkmd does not write to any file path the caller did not request.
 
@@ -53,10 +60,16 @@ The first reads only the `md_text` argument; it produces a byte
 string and returns. It performs no I/O, no network, no subprocess.
 
 The second reads the file at `in_path` (UTF-8 strict) and writes
-to `out_path`. These are the only paths the function touches. It
-does not honour markdown-embedded references to local files;
-images and link references would only be fetched if a *future*
-version implemented that feature (it does not in v0.1).
+to `out_path`. Beyond those two paths, the only other reads happen
+for **images**: when the markdown references a local image
+(`![alt](diagram.png)`), inkmd reads that file from disk so it can
+embed it, resolving the path relative to the input document's
+directory. `data:` URI images are decoded inline. `http(s)` image
+URLs are **not** fetched unless the caller opts in with
+`allow_remote_images=True` / `--allow-remote-images`. See "Image
+handling" below for the full posture. inkmd does not honour any
+other markdown-embedded file reference (link targets are written
+into the PDF as annotations, never opened).
 
 ## Threat model: who's adversarial, what they can do
 
@@ -90,6 +103,18 @@ In Scenario B, what can an adversarial author do?
 - Supply input containing null bytes, BOM, CRLF, control
   characters. We pass them through to the PDF text content. Most
   PDF readers handle them silently; we do not strip them.
+- Reference a **local image path** the operator did not intend
+  (`![x](/etc/hostname)`, `![x](../../secret.png)`). inkmd will
+  read that path relative to the input document and embed whatever
+  bytes a valid image decoder accepts. The image content ends up in
+  the PDF, so an adversarial document author who can also read the
+  resulting PDF could exfiltrate a readable image file the operator
+  has access to. inkmd does **not** sandbox this path. If you
+  compile untrusted markdown that may reference local images,
+  compile it with an input `base_dir` pointing at a directory that
+  contains only intended assets, or run the process with file-system
+  permissions scoped to what it should see. Remote (`http(s)`) image
+  fetches stay off unless explicitly enabled.
 
 **Scenario C: untrusted operator.** Not a scenario we defend
 against. If the operator can call `inkmd.compile()` with arbitrary
@@ -115,7 +140,7 @@ modest clock). Numbers are from
 | (`*a`) repeated 1000 times | 31 ms | 43 KB |
 
 The parser is iterative on the container stack; there is no known
-input in v0.1.0 that triggers a `RecursionError` with the default
+input that triggers a `RecursionError` with the default
 `sys.setrecursionlimit`. The 10000-blockquote case shows roughly
 O(*N*²) scaling. Profiling (2026-05-13, post-Phase-2) localised
 the cost to the renderer: each level of `_render_blockquote`
@@ -184,11 +209,41 @@ occurred. We deliberately do not advertise "a suspicious URL was
 here" in the rendered output — that would leak source information
 to anyone viewing the PDF.
 
+## Image handling
+
+inkmd embeds raster images as PDF Image XObjects. The same three
+sources are recognised in a markdown `![alt](src)` **and** in an HTML
+`<img src=...>` — the HTML tag is promoted to the identical image node
+during filtering (before resolution), so it inherits exactly the gating
+below and is *not* a separate or wider surface than markdown images:
+
+| Source | Behaviour |
+|--------|-----------|
+| Local path | Read from disk, resolved relative to the input document's directory. Embedded if it decodes as a supported PNG/JPEG; otherwise the alt text renders. |
+| `data:` URI | Decoded inline. No disk or network access. |
+| `http(s)` URL | **Not fetched** unless `allow_remote_images=True` / `--allow-remote-images`. Off by default, preserving the zero-network default. |
+
+Supported formats are PNG (grayscale, RGB, and indexed/palette,
+including `tRNS` transparency) and JPEG. The decoders are
+stdlib-only (`zlib` for PNG `/FlateDecode`, raw passthrough for
+JPEG `/DCTDecode`); inkmd does not shell out to an image library.
+The image bytes are re-emitted into the PDF content as an inline
+stream, not referenced as an external file. The local-path read is
+the one file-system surface an untrusted *document* (as opposed to
+an untrusted operator) can reach; see Scenario B above for how to
+scope it.
+
+Color emoji travel the same Image XObject path: each emoji glyph is
+a PNG extracted from the bundled emoji font and embedded as inline
+image bytes, identical in kind to any other embedded image. There is
+no font program in the output.
+
 ## Output handling
 
 The PDF bytes produced by inkmd contain *only* content derived
-from the markdown source plus inkmd's own scaffolding (catalog
-dictionary, page tree, font references, fixed kerning tables).
+from the markdown source (text, and image/emoji raster data) plus
+inkmd's own scaffolding (catalog dictionary, page tree, font
+references, fixed kerning tables).
 
 inkmd's PDF emitter:
 
@@ -196,10 +251,13 @@ inkmd's PDF emitter:
   triggers, or AcroForm fields.
 - Does not embed any embedded files (`/EmbeddedFile`), file
   attachments, or alternate file references.
-- Does not embed any external streams. Every byte is generated
-  inline.
-- Does not embed font outlines or any binary glyph data. Fonts
-  are referenced by name only; the reader provides the outlines.
+- Does not reference any external stream. Image and emoji raster
+  data is written inline into the PDF as Image XObject streams; the
+  reader never reaches back out to a file or URL.
+- Does not embed any text-font outlines or font programs. The 14
+  base text fonts are referenced by name; the reader provides their
+  outlines. The only binary glyph data in the output is the inline
+  PNG image data behind embedded images and color emoji.
 
 The only "active content" the PDF can contain is `/URI` link
 annotations, which are subject to the limitation above.
@@ -221,7 +279,7 @@ property — it lets callers:
 
 ## What inkmd does not promise
 
-- **PDF/A or PDF/UA compliance.** v0.1 PDFs are valid PDF 1.4 but
+- **PDF/A or PDF/UA compliance.** inkmd's PDFs are valid PDF 1.4 but
   are not certified against archival or accessibility specs.
 - **Resistance to file-system attacks at the CLI level.** The CLI
   reads and writes whatever paths the caller gives it. Symlink
@@ -251,7 +309,7 @@ but cannot make response-time guarantees.
 
 ## Reproducing the findings in this document
 
-Every finding here is reproducible from the v0.1.0 source. The
+Every finding here is reproducible from the current source. The
 resource-exhaustion measurements are in
 `tests/conformance/resource_probe.py` (added in the Phase 1
 hardening pass); the URL-handling demo is a single-line `compile()`

@@ -13,10 +13,10 @@ Run on `2026-05-12` with `lizard src/inkmd/ -x "*/_kerning_data.py" -C 15`. This
 
 | CCN | NLOC | Function | File | Disposition |
 |-----|------|----------|------|-------------|
-| 34 | 160 | `paginate_runs` | `layout.py` | **Deferred (v0.2)**: central state machine |
+| 34 | 160 | `paginate_runs` | `layout.py` | **Refactor candidate**: central state machine |
 | 29 | 57 | `_try_inline_link` | `parser.py` | Left as-is: six numbered spec steps |
 | 28 | 82 | `feed` | `parser.py` | Left as-is: block-parser dispatch |
-| 26 | 105 | `_render_table` | `render.py` | **Deferred (v0.2)**: column-layout state machine |
+| 26 | 105 | `_render_table` | `render.py` | **Refactor candidate**: column-layout state machine |
 | 22 | 31 | `_scan_url_body` | `parser.py` | Left as-is: RFC-3986 char-by-char scan |
 | 21 | 32 | `_shrink_to_budget` | `render.py` | Left as-is: numerical iteration |
 | 21 | 70 | `_tokenise` | `parser.py` | Left as-is: inline-token dispatch |
@@ -47,9 +47,9 @@ inkmd ships 495 tests across 23 files. Coverage exercises:
 
 The combination of high test count, byte-deterministic output, and every public API tested end-to-end is what makes shipping CCN-34 functions safe. If we couldn't refactor them later without breaking output, we'd have a problem. We can; the tests pin behaviour.
 
-## Deferred refactors (v0.2)
+## Deferred refactors
 
-Two functions are noted as future-refactor candidates rather than v0.1 work:
+Two functions are noted as future-refactor candidates rather than near-term work:
 
 ### `paginate_runs` (`layout.py`, CCN 34, 160 NLOC)
 
@@ -57,7 +57,7 @@ The body has three top-level branches: prepositioned blocks (tables), preserve-l
 
 ### `_render_table` (`render.py`, CCN 26, 105 NLOC)
 
-Computes natural widths, per-column min widths (widest-token-width guard), then either uses naturals directly or runs `_shrink_to_budget`, then lays out cell-by-cell with alignment. Splitting into `_table_widths(rows, cols, family)` and `_lay_out_cells(rows, widths, alignments)` would isolate the width-computation strategy from the placement loop. Risk lower than `paginate_runs` (no shared cross-call state). Worth doing alongside table-page-splitting work, which is also v0.2.
+Computes natural widths, per-column min widths (widest-token-width guard), then either uses naturals directly or runs `_shrink_to_budget`, then lays out cell-by-cell with alignment. Splitting into `_table_widths(rows, cols, family)` and `_lay_out_cells(rows, widths, alignments)` would isolate the width-computation strategy from the placement loop. Risk lower than `paginate_runs` (no shared cross-call state). Worth doing alongside table-page-splitting work, which is on the v0.3 roadmap.
 
 ## How to re-run
 

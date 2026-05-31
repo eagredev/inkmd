@@ -11,7 +11,7 @@ If your existing pipeline works, **keep it**. inkmd is for the specific case whe
 | You already have Pandoc + LaTeX installed and aren't shipping anywhere | Pandoc + LaTeX |
 | You're rendering HTML to PDF and markdown is just one input format | WeasyPrint (or Puppeteer if you can afford the install) |
 | You need CSS theming, custom page chrome, fine typographical control | WeasyPrint |
-| You need full Unicode (CJK, emoji, RTL) right now | WeasyPrint or markdown-it-py + WeasyPrint |
+| You need full Unicode text (CJK, Cyrillic, RTL scripts) right now | WeasyPrint or markdown-it-py + WeasyPrint |
 | You're rendering markdown to PDF from inside a Python process, in an Alpine container, on Lambda, on Windows-without-admin, on a locked-down CI runner | **inkmd** |
 | You need byte-identical reproducible output for signed docs / audit trails | **inkmd** |
 | You're building an LLM agent that produces PDFs and don't want to subprocess Chrome | **inkmd** |
@@ -133,10 +133,10 @@ Being clear about the tradeoffs:
 
 - **No CSS theming.** inkmd's typography is fixed (Helvetica or Times, two page sizes, set spacing rules). If you need custom fonts, colours, layouts, you're better off with WeasyPrint.
 - **No headers, footers, page numbers** in v0.2. Tracked for v0.3.
-- **No full Unicode.** v0.2 supports WinAnsi (Western European). CJK, Cyrillic, emoji render as `?` until v0.3 adds font embedding. WeasyPrint handles Unicode out of the box.
-- **No page-splitting for oversized tables.** A table taller than one page overflows. v0.3.
+- **No full Unicode text.** v0.2 supports WinAnsi (Western European) for text, plus **color emoji** from a bundled font. CJK, Cyrillic, Greek and other non-Latin scripts still render as `?` until a later release adds text-font embedding. WeasyPrint handles all of it out of the box.
+- **Partial table fitting.** A table **taller** than one page splits across pages, repeating the header. A table with too many **columns** to fit even at minimum legible width (~25+) still overflows the right edge rather than crushing columns into illegible slivers — horizontal column fitting (auto-shrink / landscape) is v0.3.
 - **No accessibility / tagged PDF.** v1.0+.
-- **No CommonMark `block-level HTML`.** Raw `<table>...</table>` at top level renders as text. v0.3.
+- **Limited raw HTML.** inkmd handles an inline-HTML allow-list plus `<img>` (with `width`/`align` and the `<p align><img>` figure idiom). Arbitrary block-level HTML — `<table>...</table>`, `<div>` layout — renders as text. v0.3.
 
 If any of these matter, use a different tool — that's what they're for.
 

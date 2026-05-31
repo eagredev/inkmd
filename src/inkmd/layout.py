@@ -18,7 +18,7 @@ Coordinate system is PDF-native: origin bottom-left, y increases up.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from inkmd.fonts import text_width
 
@@ -587,6 +587,7 @@ class _BlockParts:
     prepositioned_lines: tuple
     prepositioned_line_heights: tuple
     prepositioned_shapes: tuple
+    prepositioned_table: dict | None
 
 
 def _block_parts(block) -> _BlockParts:
@@ -617,6 +618,7 @@ def _block_parts(block) -> _BlockParts:
             prepositioned_lines=tuple(getattr(block, "prepositioned_lines", ())),
             prepositioned_line_heights=tuple(getattr(block, "prepositioned_line_heights", ())),
             prepositioned_shapes=tuple(getattr(block, "prepositioned_shapes", ())),
+            prepositioned_table=getattr(block, "prepositioned_table", None),
         )
     return _BlockParts(
         runs=list(block),
@@ -635,6 +637,7 @@ def _block_parts(block) -> _BlockParts:
         prepositioned_lines=(),
         prepositioned_line_heights=(),
         prepositioned_shapes=(),
+        prepositioned_table=None,
     )
 
 
@@ -696,6 +699,151 @@ def paginate_runs(
         body_indent = min(parts.body_indent, max_indent)
         indent_delta = parts.body_indent - body_indent
         marker_x = parts.marker_x - indent_delta
+
+        # Splittable table: place row groups (header + per body row) top to
+        # bottom, breaking at row boundaries across pages and repeating the
+        # header at the top of each page-slice, instead of overflowing off
+        # the bottom. Grid: each slice draws verticals spanning the slice
+        # height plus a bottom rule, so every page-fragment is fully boxed.
+        if parts.prepositioned and parts.prepositioned_table is not None:
+            tbl = parts.prepositioned_table
+            prepos_x0 = margin + body_indent
+            header = tbl["header"]
+            grid_w = tbl["grid_width"]
+            grid_fill = tbl["grid_fill"]
+            table_width = tbl["table_width"]
+            col_x = tbl["col_x"]
+
+            def place_group(group: dict, group_top_y: float) -> None:
+                """Place one row group with its top at absolute y group_top_y.
+                Emits the group's fills/images/text lines + decorations."""
+                for sh in group["shapes"]:
+                    kind = sh.get("kind", "fill")
+                    if kind == "image":
+                        current_shapes.append(ImagePlacement(
+                            image_id=sh["image_id"],
+                            image_data=sh["image_data"],
+                            x=prepos_x0 + sh["x_offset"],
+                            y=group_top_y - sh["rel_y_top"] - sh["height"],
+                            width=sh["width"],
+                            height=sh["height"],
+                        ))
+                    else:
+                        current_shapes.append(Rect(
+                            x=prepos_x0 + sh["x_offset"],
+                            y=group_top_y - sh["rel_y_top"] - sh["height"],
+                            width=sh["width"],
+                            height=sh["height"],
+                            fill=sh["fill"],
+                        ))
+                for baseline_from_top, runs_record in group["lines"]:
+                    positioned_list = [
+                        PositionedRun(
+                            text=pr.text,
+                            x=prepos_x0 + pr.x_rel,
+                            y=group_top_y - pr.y_from_top,
+                            font=pr.font, size=pr.size,
+                            link_url=getattr(pr, "link_url", None),
+                            color=getattr(pr, "color", None),
+                            strike=getattr(pr, "strike", False),
+                            y_shift=getattr(pr, "y_shift", 0.0),
+                            background_fill=getattr(pr, "background_fill", None),
+                            border_fill=getattr(pr, "border_fill", None),
+                            underline=getattr(pr, "underline", False),
+                        )
+                        for pr in runs_record
+                    ]
+                    current_lines.append(StyledLine(tuple(positioned_list)))
+                    for bg_rect in _background_decorations(positioned_list):
+                        current_shapes.append(bg_rect)
+                    for bd_rect in _border_decorations(positioned_list):
+                        current_shapes.append(bd_rect)
+                    for ul_rect, ann in _link_decorations(positioned_list):
+                        current_shapes.append(ul_rect)
+                        current_annotations.append(ann)
+                    for u_rect in _underline_decorations(positioned_list):
+                        current_shapes.append(u_rect)
+                    for sk_rect in _strike_decorations(positioned_list):
+                        current_shapes.append(sk_rect)
+
+            def draw_slice_grid(slice_top_y: float, slice_h: float) -> None:
+                """Vertical column rules spanning this slice + the bottom rule.
+                (Each group already carries its own top horizontal rule via a
+                fill shape, so per-row separators come for free.)"""
+                for vx in list(col_x) + [table_width]:
+                    current_shapes.append(Rect(
+                        x=prepos_x0 + vx - grid_w / 2.0,
+                        y=slice_top_y - slice_h,
+                        width=grid_w,
+                        height=slice_h,
+                        fill=grid_fill,
+                    ))
+                # Bottom rule of the slice.
+                current_shapes.append(Rect(
+                    x=prepos_x0,
+                    y=slice_top_y - slice_h - grid_w / 2.0,
+                    width=table_width,
+                    height=grid_w,
+                    fill=grid_fill,
+                ))
+
+            header_h = header["height"]
+
+            def page_room() -> float:
+                return y_cursor - bottom_y
+
+            # If the header + at least one row can't fit in the remaining
+            # space (and the page already has content), start fresh first.
+            first_row_h = tbl["rows"][0]["height"] if tbl["rows"] else 0.0
+            need = header_h + first_row_h
+            page_has_content = bool(
+                current_lines or current_shapes or current_annotations
+            )
+            if page_room() < need and page_has_content:
+                flush_page()
+                current_lines = []
+                current_shapes = []
+                current_annotations = []
+                y_cursor = top_y
+
+            # Place header + rows, slicing across pages. slice_top is the y
+            # of the current slice's top; slice_h accumulates placed height
+            # so the grid can be drawn when the slice ends.
+            slice_top = y_cursor
+            slice_h = 0.0
+            place_group(header, y_cursor)
+            slice_h += header_h
+            y_cursor -= header_h
+
+            for row in tbl["rows"]:
+                rh = row["height"]
+                # If this row won't fit, close the current slice (draw its
+                # grid), flush, open a new page, repeat the header.
+                if y_cursor - rh < bottom_y and slice_h > 0:
+                    draw_slice_grid(slice_top, slice_h)
+                    flush_page()
+                    current_lines = []
+                    current_shapes = []
+                    current_annotations = []
+                    y_cursor = top_y
+                    slice_top = y_cursor
+                    slice_h = 0.0
+                    place_group(header, y_cursor)
+                    slice_h += header_h
+                    y_cursor -= header_h
+                place_group(row, y_cursor)
+                slice_h += rh
+                y_cursor -= rh
+
+            draw_slice_grid(slice_top, slice_h)
+
+            # Space below + next-block spacing, mirroring the atomic path.
+            if p_idx < len(paragraphs) - 1:
+                y_cursor -= parts.space_below
+                next_parts = _block_parts(paragraphs[p_idx + 1])
+                if not next_parts.compact:
+                    y_cursor -= paragraph_spacing
+            continue
 
         # Prepositioned content (tables): atomic placement, translate
         # relative coordinates to absolute.
@@ -1204,13 +1352,20 @@ def _split_preserved_lines(
     source_lines: list[list[Run]] = []
     current: list[Run] = []
     for run in runs:
+        # An emoji run is an atomic inline image and never contains a
+        # newline — carry it through whole (preserving .emoji and styling)
+        # so emoji survive inside code blocks instead of being flattened to
+        # bare text and mangled to '?'.
+        if run.emoji is not None:
+            current.append(run)
+            continue
         parts = run.text.split("\n")
         for i, part in enumerate(parts):
             if i > 0:
                 source_lines.append(current)
                 current = []
             if part:
-                current.append(Run(text=part, font=run.font, size=run.size))
+                current.append(replace(run, text=part))
     source_lines.append(current)
 
     if column_width is None:
@@ -1233,33 +1388,52 @@ def _wrap_preserved_line(line: list[Run], column_width: float) -> list[list[Run]
     if not line:
         return [[]]
     # Fast path: does the whole line already fit?
-    total = sum(text_width(r.text, r.font, r.size) for r in line)
+    total = sum(_run_width(r) for r in line)
     if total <= column_width:
         return [line]
 
-    # Flatten the line into (char, font, size) tuples so we can walk
-    # codepoint-by-codepoint while tracking width and run boundaries.
-    chars: list[tuple[str, str, float]] = []
+    # Flatten the line into atomic units so we can walk it while tracking
+    # width and break points. A text run becomes one unit per character
+    # (so it can hard-break anywhere); an emoji run is a single atomic unit
+    # — an inline image that must never be split or merged into text.
+    # Each unit carries its source run so styling (and .emoji) survives
+    # reassembly.
+    Unit = tuple  # (char_or_None, width, source_run, is_space)
+    units: list[tuple[str | None, float, Run, bool]] = []
     for r in line:
-        for ch in r.text:
-            chars.append((ch, r.font, r.size))
+        if r.emoji is not None:
+            units.append((None, _run_width(r), r, False))
+        else:
+            for ch in r.text:
+                units.append(
+                    (ch, text_width(ch, r.font, r.size), r, ch == " ")
+                )
 
     def make_runs(start: int, end: int) -> list[Run]:
         out: list[Run] = []
         buf = ""
-        cur_font = chars[start][1]
-        cur_size = chars[start][2]
-        for ch, font, size in chars[start:end]:
-            if font != cur_font or size != cur_size:
+        cur: Run | None = None
+        for ch, _w, src, _sp in units[start:end]:
+            if ch is None:
+                # Atomic emoji unit — flush any pending text, emit as-is.
+                if buf and cur is not None:
+                    out.append(replace(cur, text=buf))
+                    buf = ""
+                cur = None
+                out.append(src)
+                continue
+            if cur is not None and (
+                src.font != cur.font or src.size != cur.size
+            ):
                 if buf:
-                    out.append(Run(text=buf, font=cur_font, size=cur_size))
+                    out.append(replace(cur, text=buf))
                 buf = ch
-                cur_font = font
-                cur_size = size
+                cur = src
             else:
                 buf += ch
-        if buf:
-            out.append(Run(text=buf, font=cur_font, size=cur_size))
+                cur = src
+        if buf and cur is not None:
+            out.append(replace(cur, text=buf))
         return out
 
     wrapped: list[list[Run]] = []
@@ -1267,9 +1441,8 @@ def _wrap_preserved_line(line: list[Run], column_width: float) -> list[list[Run]
     i = 0
     last_space = -1
     width_so_far = 0.0
-    while i < len(chars):
-        ch, font, size = chars[i]
-        w = text_width(ch, font, size)
+    while i < len(units):
+        _ch, w, _src, is_sp = units[i]
         if width_so_far + w > column_width and i > start:
             # Break point: prefer last_space if found within this segment.
             if last_space > start:
@@ -1283,10 +1456,10 @@ def _wrap_preserved_line(line: list[Run], column_width: float) -> list[list[Run]
             last_space = -1
             width_so_far = 0.0
             continue
-        if ch == " ":
+        if is_sp:
             last_space = i
         width_so_far += w
         i += 1
-    if start < len(chars):
-        wrapped.append(make_runs(start, len(chars)))
+    if start < len(units):
+        wrapped.append(make_runs(start, len(units)))
     return wrapped or [[]]

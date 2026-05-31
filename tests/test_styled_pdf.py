@@ -43,6 +43,20 @@ def test_winansi_unknown_codepoint_becomes_question_mark():
     assert encode_winansi("a☃b") == b"a?b"
 
 
+def test_winansi_soft_hyphen_dropped():
+    # U+00AD soft hyphen is an invisible break hint, not a printing glyph.
+    # It must be dropped, never mapped to the WinAnsi hyphen byte (0xAD).
+    assert encode_winansi("super\xadlong") == b"superlong"
+    assert b"\xad" not in encode_winansi("a\xadb")
+
+
+def test_compile_soft_hyphen_emits_no_hyphen_byte():
+    import inkmd
+    pdf = inkmd.compile("super\xadcalifragilistic")
+    assert pdf[:4] == b"%PDF"
+    assert bytes([0xAD]) not in pdf
+
+
 def test_encode_pdf_literal_escapes_parens():
     assert _encode_pdf_literal("a (b) c") == b"a \\(b\\) c"
 

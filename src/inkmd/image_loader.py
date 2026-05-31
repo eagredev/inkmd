@@ -274,6 +274,13 @@ def _inspect(raw: bytes) -> ImageData | None:
         dims = _png_dimensions(raw)
         if dims is None:
             return None
+        # Reject PNGs the emitter cannot turn into an XObject (no IDAT,
+        # indexed-without-PLTE, interlaced, unsupported colour type). These
+        # would otherwise pass dimension inspection and crash compile() at
+        # emission time; instead they take the alt-text path like any other
+        # unloadable image.
+        if not _png_emittable(raw):
+            return None
         return ImageData(format="png", width=dims[0], height=dims[1], data=raw)
     if raw.startswith(b"\xff\xd8"):
         dims = _jpeg_dimensions(raw)
@@ -281,6 +288,58 @@ def _inspect(raw: bytes) -> ImageData | None:
             return None
         return ImageData(format="jpeg", width=dims[0], height=dims[1], data=raw)
     return None
+
+
+# Colour types the PDF emitter supports: 0 (grey), 2 (RGB), 3 (indexed).
+_SUPPORTED_PNG_COLOUR_TYPES = frozenset({0, 2, 3})
+
+
+def _png_emittable(raw: bytes) -> bool:
+    """True if a PNG (already past dimension inspection) carries everything
+    the emitter needs to build an Image XObject.
+
+    Mirrors the structural requirements of ``pdf._png_xobject_pieces``
+    without importing it (the loader sits below the PDF layer): the PNG
+    must be non-interlaced, a supported colour type, have at least one
+    IDAT chunk, and — when indexed — have a PLTE palette. Any malformed
+    or unsupported PNG returns False so it falls back to alt text rather
+    than raising at emission.
+    """
+    # IHDR payload starts at signature(8)+len(4)+type(4) = byte 16.
+    if len(raw) < 29:
+        return False
+    bit_depth = raw[24]
+    colour_type = raw[25]
+    interlace = raw[28]
+    if interlace != 0:
+        return False
+    if colour_type not in _SUPPORTED_PNG_COLOUR_TYPES:
+        return False
+    if bit_depth == 0:
+        return False
+    # Walk chunks: need an IDAT, and a PLTE for indexed (type 3).
+    offset = 8
+    has_idat = False
+    has_plte = False
+    n = len(raw)
+    while offset + 8 <= n:
+        try:
+            chunk_len = struct.unpack(">I", raw[offset:offset + 4])[0]
+        except struct.error:
+            return False
+        chunk_type = raw[offset + 4:offset + 8]
+        if chunk_type == b"IDAT":
+            has_idat = True
+        elif chunk_type == b"PLTE":
+            has_plte = True
+        elif chunk_type == b"IEND":
+            break
+        offset += 8 + chunk_len + 4
+    if not has_idat:
+        return False
+    if colour_type == 3 and not has_plte:
+        return False
+    return True
 
 
 def _png_dimensions(raw: bytes) -> tuple[int, int] | None:

@@ -49,13 +49,18 @@ def main() -> int:
             continue
 
         md = source.read_text(encoding="utf-8")
+        # Most exhibits resolve their images relative to their own folder.
+        # The self-render exhibit is inkmd's own README, whose image paths
+        # (the hero) are relative to the repository root — render it exactly
+        # as `inkmd README.md` would, from the root, so the hero embeds.
+        base = REPO_ROOT if d.name == "inkmd-self-render" else d
         start = time.perf_counter()
         pdf = inkmd.compile(
             md,
             page_size="letter",
             family="helvetica",
             allow_remote_images=True,
-            base_dir=d,
+            base_dir=base,
         )
         elapsed = time.perf_counter() - start
         output.write_bytes(pdf)

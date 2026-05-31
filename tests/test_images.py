@@ -239,6 +239,67 @@ def test_compile_inline_image_uses_alt_fallback(tmp_path):
     assert b"/XObject" not in pdf
 
 
+# --- Malformed PNG must fall back to alt text, never crash compile() ------
+# Regression: a malformed-but-plausible PNG (valid IHDR, so it passes
+# dimension inspection) used to crash compile() at emission time inside
+# pdf._png_xobject_pieces instead of taking the alt-text path. Both cases
+# below were confirmed HIGH-severity crashers in the 2026-05-30 audit.
+
+
+def _png_chunk(tag: bytes, data: bytes) -> bytes:
+    return (
+        struct.pack(">I", len(data))
+        + tag
+        + data
+        + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+    )
+
+
+_PNG_SIG = b"\x89PNG\r\n\x1a\n"
+
+
+def _png_indexed_no_idat() -> bytes:
+    """Indexed PNG with IHDR + PLTE + IEND but NO IDAT chunk."""
+    ihdr = struct.pack(">IIBBBBB", 2, 1, 8, 3, 0, 0, 0)
+    return (
+        _PNG_SIG
+        + _png_chunk(b"IHDR", ihdr)
+        + _png_chunk(b"PLTE", b"\xff\x00\x00\x00\xff\x00")
+        + _png_chunk(b"IEND", b"")
+    )
+
+
+def _png_indexed_no_plte() -> bytes:
+    """Indexed PNG (colour type 3) with an IDAT but NO PLTE palette."""
+    ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 3, 0, 0, 0)
+    return (
+        _PNG_SIG
+        + _png_chunk(b"IHDR", ihdr)
+        + _png_chunk(b"IDAT", zlib.compress(b"\x00\x00"))
+        + _png_chunk(b"IEND", b"")
+    )
+
+
+def _data_uri(raw: bytes) -> str:
+    return "data:image/png;base64," + base64.b64encode(raw).decode()
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [_png_indexed_no_idat(), _png_indexed_no_plte()],
+    ids=["indexed-no-idat", "indexed-no-plte"],
+)
+def test_malformed_png_falls_back_to_alt_text_not_crash(raw):
+    # The loader must reject it, so it never reaches the emitter.
+    assert load(_data_uri(raw)) is None
+    # compile() must succeed and render the alt text, not raise.
+    md = f"![the alt text]({_data_uri(raw)})"
+    pdf = inkmd.compile(md)
+    assert pdf[:4] == b"%PDF"
+    assert b"/XObject" not in pdf  # no image embedded
+    assert b"/F3" in pdf  # Helvetica-Oblique slot used for italic alt text
+
+
 def test_compile_same_image_referenced_twice_shares_xobject(tmp_path):
     p = _tiny_png(tmp_path)
     md = f"![a]({p})\n\n![b]({p})"
@@ -498,3 +559,114 @@ def test_unfilter_paeth_roundtrip():
         assert alpha == expected
     finally:
         p.unlink()
+
+
+# --- HTML <img> support (v0.2): promotion, width, alignment, security -----
+# inkmd v0.2 promotes the HTML <img> tag to the same Image pipeline that
+# markdown ![alt](url) uses, so the GitHub-README idiom
+# <p align="center"><img src=... width=...></p> renders the image (and a
+# caption, if present) instead of dropping it. <img> rides the existing
+# resolve_images() base_dir / allow_remote gating — it is NOT a new
+# security surface.
+
+
+def test_html_img_embeds_like_markdown_image(tmp_path):
+    p = _tiny_png(tmp_path)
+    pdf = inkmd.compile(f'<img src="{p}" alt="a">')
+    assert b"/XObject" in pdf
+    assert b"/Im0" in pdf
+
+
+def test_html_img_promotes_to_image_node():
+    from inkmd.html_filter import filter_document as fh
+
+    doc = fh(parse('<img src="x.png" alt="hi" width="640">'), html=True)
+    img = next(n for n in doc.blocks[0].inlines if isinstance(n, Image))
+    assert img.url == "x.png"
+    assert img.display_width == 640.0
+    assert "".join(t.content for t in img.inlines if isinstance(t, Text)) == "hi"
+
+
+def test_html_img_without_src_falls_back_to_alt():
+    from inkmd.html_filter import filter_document as fh
+
+    doc = fh(parse('<img alt="just text">'), html=True)
+    # No src → no Image node; the alt survives as plain text.
+    assert not any(isinstance(n, Image) for n in doc.blocks[0].inlines)
+    text = "".join(t.content for t in doc.blocks[0].inlines if isinstance(t, Text))
+    assert "just text" in text
+
+
+def test_html_img_width_capped_to_column(tmp_path):
+    # A width larger than the text column is capped; aspect preserved.
+    from inkmd.render import _render_image_block
+    from inkmd.image_loader import resolve_images
+
+    p = _tiny_png(tmp_path, w=10, h=5)
+    doc = resolve_images(
+        Document(blocks=(Paragraph(inlines=(
+            Image(inlines=(), url=str(p), display_width=9999.0),
+        )),)),
+        base_dir=None,
+    )
+    img = doc.blocks[0].inlines[0]
+    block = _render_image_block(img, content_width=468.0)
+    shape = block.prepositioned_shapes[0]
+    assert shape["width"] == 468.0                 # capped to column
+    assert abs(shape["height"] - 468.0 * 0.5) < 1e-6  # 10x5 aspect kept
+
+
+def test_html_img_center_alignment_offsets_x(tmp_path):
+    from inkmd.render import _render_image_block
+    from inkmd.image_loader import resolve_images
+
+    p = _tiny_png(tmp_path, w=10, h=10)
+    doc = resolve_images(
+        Document(blocks=(Paragraph(inlines=(
+            Image(inlines=(), url=str(p), display_width=200.0, align="center"),
+        )),)),
+        base_dir=None,
+    )
+    img = doc.blocks[0].inlines[0]
+    block = _render_image_block(img, content_width=468.0)
+    shape = block.prepositioned_shapes[0]
+    assert shape["width"] == 200.0
+    # Centered: x_offset = (column - width) / 2.
+    assert abs(shape["x_offset"] - (468.0 - 200.0) / 2.0) < 1e-6
+
+
+def test_p_align_center_propagates_to_child_img():
+    from inkmd.html_filter import filter_document as fh
+
+    hero = '<p align="center"><img src="h.png" alt="a" width="640"></p>'
+    doc = fh(parse(hero), html=True)
+    img = next(n for n in doc.blocks[0].inlines if isinstance(n, Image))
+    assert img.align == "center"
+
+
+def test_figure_with_caption_embeds_image_and_keeps_caption(tmp_path):
+    # The hero idiom: <p align><img><br>caption</p> — image embeds as a
+    # block, caption text survives.
+    p = _tiny_png(tmp_path)
+    md = f'<p align="center">\n<img src="{p}" alt="a" width="200">\n<br>\n<em>the caption</em>\n</p>'
+    pdf = inkmd.compile(md)
+    assert b"/XObject" in pdf          # image embedded
+    # caption text is rendered (italic slot present + the word survives)
+    from inkmd.pdf import encode_winansi
+    assert encode_winansi("the caption") in pdf or b"caption" in pdf
+
+
+def test_html_img_remote_blocked_by_default():
+    # <img src="http..."> must obey the same allow_remote gate as markdown
+    # images: not fetched unless explicitly opted in. Falls back to alt.
+    md = '<img src="http://example.com/x.png" alt="remote pic">'
+    pdf = inkmd.compile(md, allow_remote_images=False)
+    assert b"/XObject" not in pdf
+    assert pdf[:4] == b"%PDF"
+
+
+def test_html_img_unresolved_falls_back_to_alt(tmp_path):
+    md = '<img src="/no/such/img.png" alt="the missing pic">'
+    pdf = inkmd.compile(md, base_dir=tmp_path)
+    assert b"/XObject" not in pdf
+    assert b"/F3" in pdf  # italic alt-text slot

@@ -27,6 +27,8 @@ the same behaviour as the v0.1 escaping when html=False.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from inkmd.ast import (
     AutoLink,
     BlockQuote,
@@ -133,11 +135,65 @@ _DROP_WITH_CONTENT = {
     "head",
 }
 
+def _img_from_attrs(attrs: dict[str, str]) -> Inline:
+    """Build an Image node from an HTML ``<img>`` tag's attributes.
+
+    ``src`` becomes the image URL (resolved later by resolve_images, which
+    applies the same base_dir / allow_remote gating markdown images get —
+    the html_filter runs before resolution in the pipeline). ``alt`` becomes
+    the alt-text inline (a single Text node; good enough for the fallback).
+    ``width`` is honoured as a display-width hint in points; ``height`` is
+    intentionally ignored (we preserve aspect ratio from the source pixels).
+    ``align`` carries through for block-level centring/right-alignment.
+
+    An ``<img>`` with no ``src`` has nothing to render; it collapses to its
+    alt text as plain inline so meaning survives.
+    """
+    src = attrs.get("src", "")
+    alt = attrs.get("alt", "")
+    alt_inlines: tuple[Inline, ...] = (Text(content=alt),) if alt else ()
+    if not src:
+        return Text(content=alt)
+    return Image(
+        inlines=alt_inlines,
+        url=src,
+        title=attrs.get("title", ""),
+        display_width=_parse_px(attrs.get("width")),
+        align=_normalise_align(attrs.get("align")),
+    )
+
+
+def _parse_px(value: str | None) -> float | None:
+    """Parse an HTML length attribute (``width="640"`` or ``"640px"``) into
+    points. HTML pixels are treated as points (the 72-dpi convention inkmd
+    already uses for natural image sizing), so the number passes through.
+    Percentages and unparseable values yield None (fall back to natural)."""
+    if not value:
+        return None
+    v = value.strip().lower().rstrip("px").strip()
+    try:
+        n = float(v)
+    except ValueError:
+        return None
+    return n if n > 0 else None
+
+
+def _normalise_align(value: str | None) -> str | None:
+    """Map an HTML align attribute to inkmd's block alignment vocabulary."""
+    if not value:
+        return None
+    v = value.strip().lower()
+    if v in ("center", "centre"):
+        return "center"
+    return "right" if v == "right" else None
+
+
 # Self-closing tags handled as standalone nodes.
 _SELF_CLOSING = {
     "br": lambda attrs: HardBreak(),
     "hr": lambda attrs: HardBreak(),  # in inline context, treat as a break.
     "wbr": lambda attrs: HardBreak(),
+    "img": _img_from_attrs,
 }
 
 
@@ -240,6 +296,8 @@ def _filter_inlines(inlines: tuple[Inline, ...]) -> tuple[Inline, ...]:
                 url=n.url,
                 title=n.title,
                 resolved=n.resolved,
+                display_width=n.display_width,
+                align=n.align,
             ))
         elif (
             isinstance(n, (Subscript, Superscript, Underline, Mark, Kbd))
@@ -339,7 +397,9 @@ def _scan_html(inlines: list[Inline]) -> tuple[Inline, ...]:
             i = end + 1
             continue
 
-        # Unwrap promotion: drop the tag, keep children.
+        # Unwrap promotion: drop the tag, keep children. A wrapper that
+        # carries an alignment (`<p align="center">`, `<div align>`) passes
+        # it down to a child block image — the GitHub hero pattern.
         if tag in _PROMOTE_UNWRAP:
             end = _find_matching_close(inlines, i, tag)
             if end is None:
@@ -347,6 +407,7 @@ def _scan_html(inlines: list[Inline]) -> tuple[Inline, ...]:
                 i += 1
                 continue
             inner = _scan_html(inlines[i + 1:end])
+            inner = _propagate_align(inner, _normalise_align(attrs.get("align")))
             out.extend(inner)
             i = end + 1
             continue
@@ -358,10 +419,34 @@ def _scan_html(inlines: list[Inline]) -> tuple[Inline, ...]:
             i += 1
             continue
         inner = _scan_html(inlines[i + 1:end])
+        # `<center>` implies centre alignment; an explicit `align` attr on
+        # any other unwrapped wrapper carries through too.
+        wrapper_align = (
+            "center" if tag == "center" else _normalise_align(attrs.get("align"))
+        )
+        inner = _propagate_align(inner, wrapper_align)
         out.extend(inner)
         i = end + 1
 
     return tuple(out)
+
+
+def _propagate_align(
+    inlines: tuple[Inline, ...], align: str | None
+) -> tuple[Inline, ...]:
+    """Push a wrapper's block alignment onto child Images lacking their own.
+
+    A no-op when ``align`` is None or there are no eligible images, so the
+    common (non-aligned) case stays untouched.
+    """
+    if align is None:
+        return inlines
+    return tuple(
+        replace(c, align=align)
+        if isinstance(c, Image) and c.align is None
+        else c
+        for c in inlines
+    )
 
 
 def _open_tag_name(raw: str) -> str:

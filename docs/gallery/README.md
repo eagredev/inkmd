@@ -31,24 +31,29 @@ committed PDF is exactly reproducible from its source.
 | `04-table-edges.md` | Wide tables, narrow tables, ragged tables, alignment edge cases |
 | `05-mixed-blocks.md` | Tight transitions between paragraph, code, list, quote, table |
 | `06-very-long-lines.md` | Single paragraphs of 500-3000 characters per logical line |
-| `07-unicode-winansi.md` | Glyphs at the WinAnsi boundary: currency symbols, accented letters, dashes, quotes |
+| `07-unicode-winansi.md` | Glyphs at the WinAnsi boundary (currency, accents, dashes, quotes), plus color emoji (flags, skin tones, ZWJ sequences, keycaps) and the non-Latin scripts that still fall back to `?` |
 | `08-code-density.md` | Code blocks with extreme indentation, very long lines, mixed languages |
 | `09-mid-paragraph-rules.md` | Thematic-break interactions with surrounding content |
 | `10-link-edge-cases.md` | Links with brackets in text, parentheses in URLs, nested formatting |
 
 ## What's NOT here
 
-Inputs that exercise *unsupported* features (raw HTML, images,
-reference links) are not in the gallery because they're already
-documented as known limitations in
-[`docs/conformance.md`](../conformance.md) and the README. The
-gallery shows what we *do*, and how it holds up at the edges.
+This adversarial gallery deliberately stays small and edge-focused.
+For supported features shown on *real* documents (images, reference
+links, tables, code, emoji rendered in context) see the
+[real-world gallery](real-world/README.md), which renders the Ruff
+README, a Rust Book chapter, a Simon Willison TIL, and inkmd's own
+README. The one genuine non-feature still worth knowing about,
+non-Latin text falling back to `?`, is documented in
+[`docs/conformance.md`](../conformance.md) and the README, and is
+visible in `07-unicode-winansi.md` here. This gallery shows the
+parser-and-layout edges; the real-world one shows the happy path.
 
 ## What rendering wrong looks like
 
 A failure to render means the PDF is missing content, has
 overlapping text, wraps incorrectly, places a code block over a
 heading, draws table borders in the wrong place, or otherwise
-visually corrupts the document. None of the gallery PDFs in v0.1.0
+visually corrupts the document. None of the committed gallery PDFs
 do this; if they ever do, treat it as a regression and file an
 issue.

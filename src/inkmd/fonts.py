@@ -288,6 +288,22 @@ _UNICODE_TO_WINANSI_PUNCT: dict[int, int] = {
 _UNDEFINED_WINANSI_BYTES: frozenset[int] = frozenset({0x81, 0x8D, 0x8F, 0x90, 0x9D})
 
 
+# Codepoints that are formatting hints with no visible glyph and zero
+# advance. They must never reach the WinAnsi encoder, which would otherwise
+# turn them into a printing character (U+00AD soft hyphen → a literal
+# hyphen glyph, altering the author's text). inkmd does no hyphenation-aware
+# line breaking, so a soft hyphen never becomes a real break and is simply
+# dropped. Both measurement (text_width) and emission (pdf encoders) consult
+# this so they stay in lockstep.
+_ZERO_WIDTH_CODEPOINTS: frozenset[int] = frozenset({0x00AD})
+
+
+def is_zero_width_codepoint(codepoint: int) -> bool:
+    """True if ``codepoint`` is a non-printing, zero-advance formatting
+    character that should be dropped before WinAnsi encoding."""
+    return codepoint in _ZERO_WIDTH_CODEPOINTS
+
+
 def to_winansi_byte(codepoint: int) -> int:
     """Map a Unicode codepoint to its WinAnsi byte position.
 
@@ -323,6 +339,8 @@ def _table_for(font: str) -> dict[int, int]:
 
 def char_width(codepoint: int, font: str, size: float) -> float:
     """Return the rendered width of one character (Unicode codepoint), in points."""
+    if is_zero_width_codepoint(codepoint):
+        return 0.0
     byte = to_winansi_byte(codepoint)
     if byte in _UNDEFINED_WINANSI_BYTES:
         return 0.0
@@ -342,6 +360,12 @@ def text_width(text: str, font: str, size: float) -> float:
     total = 0
     prev_byte: int | None = None
     for ch in text:
+        if is_zero_width_codepoint(ord(ch)):
+            # Fully transparent: drop the char but keep prev_byte so the
+            # glyphs on either side kern as if it were never there. This
+            # matches the rendered byte stream, where the codepoint is also
+            # dropped (pdf._show_text_operator), keeping width == emission.
+            continue
         byte = to_winansi_byte(ord(ch))
         if byte in _UNDEFINED_WINANSI_BYTES:
             prev_byte = None

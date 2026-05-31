@@ -285,6 +285,67 @@ def test_partial_sequence_falls_back_to_base(sequence_emoji_font):
     assert [e.emoji.image_id for e in emoji] == ["emoji:1F468", "emoji:1F680"]
 
 
+# --- ZWJ-leak regression (audit GROUP B) ----------------------------------
+# When a ZWJ cluster has no full ligature in the font, it decomposes into
+# its component emoji. The joiners between components are cluster glue and
+# must NEVER surface as text (they would be WinAnsi-mangled to '?'). The
+# fixture has man/woman glyphs + the 3-person family ligature but NO
+# 2-glyph couple ligature, so a man-ZWJ-woman couple is exactly this case.
+
+
+def _zwj_text_leaks(runs) -> bool:
+    """True if any non-emoji run carries a ZWJ or stray presentation
+    selector — the leak the GROUP B fix removes."""
+    glue = {"‍", "️", "︎"}
+    return any(
+        r.emoji is None and any(ch in glue for ch in r.text) for r in runs
+    )
+
+
+@pytest.mark.parametrize(
+    "couple",
+    [
+        "\U0001F468‍\U0001F469",  # man + woman
+        "\U0001F469‍\U0001F468",  # woman + man
+        "\U0001F469‍\U0001F469",  # woman + woman
+        "\U0001F468‍\U0001F468",  # man + man
+    ],
+    ids=["MW", "WM", "WW", "MM"],
+)
+def test_zwj_couple_decomposes_without_joiner_leak(sequence_emoji_font, couple):
+    # No couple ligature in the fixture, so each decomposes to two emoji.
+    # The ZWJ between them must be dropped, never emitted as a text run.
+    runs = _split(couple)
+    emoji = [r for r in runs if r.emoji]
+    assert len(emoji) == 2
+    assert not _zwj_text_leaks(runs)
+    # And the surrounding text is empty (no stray glue).
+    assert "".join(r.text for r in runs if not r.emoji) == ""
+
+
+def test_zwj_decompose_keeps_following_text(sequence_emoji_font):
+    # A decomposed couple mid-sentence must not eat or leak into the text
+    # that follows it.
+    runs = _split("a \U0001F468‍\U0001F469 b")
+    assert not _zwj_text_leaks(runs)
+    assert "".join(r.text for r in runs if not r.emoji) == "a  b"
+    assert len([r for r in runs if r.emoji]) == 2
+
+
+def test_ligaturing_sequence_unaffected_by_leak_fix(sequence_emoji_font):
+    # The fix must not disturb sequences that DO ligature to one run.
+    for seq, expect in [
+        ("\U0001F468‍\U0001F469‍\U0001F467", "emoji:1F468-200D-1F469-200D-1F467"),
+        ("\U0001F1EF\U0001F1F5", "emoji:1F1EF-1F1F5"),
+        ("\U0001F44D\U0001F3FD", "emoji:1F44D-1F3FD"),
+    ]:
+        runs = _split(seq)
+        emoji = [r for r in runs if r.emoji]
+        assert len(emoji) == 1
+        assert emoji[0].emoji.image_id == expect
+        assert not _zwj_text_leaks(runs)
+
+
 def test_longest_match_prefers_full_family(sequence_emoji_font):
     # The full 5-glyph family ligature must win even though shorter
     # prefixes exist as glyphs.
@@ -394,6 +455,71 @@ def test_bundled_emoji_output_deterministic():
     emoji_mod._load_font.cache_clear()
     try:
         md = "Status \U00002705 and flag \U0001F1EF\U0001F1F5"
+        assert inkmd.compile(md) == inkmd.compile(md)
+    finally:
+        emoji_mod._load_font.cache_clear()
+
+
+# --- Emoji inside code spans/blocks (audit GROUP A) -----------------------
+# Emoji are the documented exception to the WinAnsi-`?` rule and must
+# render even in monospace contexts. The inline-Code branch and the
+# code-block renderer used to bypass the emoji splitter, leaking a literal
+# `?`. These use the real bundled font (🚀 renders) — no monkeypatch.
+
+
+@pytest.mark.parametrize(
+    "md",
+    [
+        "`\U0001F680`",                       # inline code span
+        "```\n\U0001F680\n```",               # fenced block
+        "    \U0001F680 indented",            # indented code block
+        "```\nline one \U0001F680\nline two \U00002705\n```",  # multi-line
+        "before `code \U0001F680 here` after",  # emoji in mid-span
+    ],
+    ids=["inline", "fenced", "indented", "multiline", "midspan"],
+)
+def test_emoji_renders_inside_code(md):
+    emoji_mod._load_font.cache_clear()
+    try:
+        pdf = inkmd.compile(md)
+        assert pdf[:4] == b"%PDF"
+        assert b"/Subtype /Image" in pdf  # emoji became an image, not '?'
+    finally:
+        emoji_mod._load_font.cache_clear()
+
+
+def test_plain_code_without_emoji_still_renders():
+    # No emoji => no image XObject, normal monospace text path intact.
+    emoji_mod._load_font.cache_clear()
+    try:
+        pdf = inkmd.compile("`def f(): return 42`")
+        assert pdf[:4] == b"%PDF"
+        assert b"/Subtype /Image" not in pdf
+    finally:
+        emoji_mod._load_font.cache_clear()
+
+
+@pytest.mark.parametrize("mode", ["name", "drop"])
+def test_emoji_in_code_fallback_no_question_mark(monkeypatch, mode):
+    # Font-less tier: emoji in code must hit the fallback policy (label or
+    # drop), never the WinAnsi '?' path.
+    monkeypatch.setenv("INKMD_NO_EMOJI", "1")
+    emoji_mod._load_font.cache_clear()
+    try:
+        for md in ("`\U0001F680`", "```\n\U0001F680 go\n```"):
+            pdf = inkmd.compile(md, emoji_fallback=mode)
+            assert pdf[:4] == b"%PDF"
+            assert b"/Subtype /Image" not in pdf
+            if mode == "name":
+                assert b"rocket" in pdf
+    finally:
+        emoji_mod._load_font.cache_clear()
+
+
+def test_code_block_with_emoji_deterministic():
+    emoji_mod._load_font.cache_clear()
+    try:
+        md = "```\nfoo \U0001F680\nbar \U00002705\n```"
         assert inkmd.compile(md) == inkmd.compile(md)
     finally:
         emoji_mod._load_font.cache_clear()

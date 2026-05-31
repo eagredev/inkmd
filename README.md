@@ -66,7 +66,7 @@ For the longer, honest version of how inkmd compares against every realistic alt
 
 ## Status
 
-**v0.2, MIT-licensed.** 649 tests across 28 files. Stdlib-only, Python 3.9+. Byte-deterministic output.
+**v0.2, MIT-licensed.** 788 tests across 33 files. Stdlib-only, Python 3.9+. Byte-deterministic output.
 
 Conformance against the public spec suites: CommonMark 0.31.2 at 554/652 (85.0%); GFM extensions at 20/28 (71.4%). The full per-section breakdown, the v0.3-tier and v0.4-tier classification of remaining failures, and the real-world-impact framing are in [`docs/conformance.md`](docs/conformance.md). Threat model in [`docs/security.md`](docs/security.md). Spec-edge render samples in [`docs/gallery/`](docs/gallery/), and a real-world rendering gallery (the Ruff README, a Rust Book chapter, a Simon Willison TIL, and inkmd's own README) in [`docs/gallery/real-world/`](docs/gallery/real-world/).
 
@@ -182,7 +182,8 @@ The public API is intentionally narrow: two functions, no classes to instantiate
 | Reference-style images `![alt][ref]` | Yes |
 | Image-inside-link `[![badge](b.png)](/repo)` | Yes |
 | Inline HTML allow-list (`<sub>`, `<mark>`, `<u>`, `<kbd>`, `<br>`) | Yes |
-| Block-level raw HTML | v0.3 |
+| HTML `<img>` (incl. `width` + `align`, and the `<p align><img>` figure idiom) | Yes |
+| Block-level raw HTML (`<table>`, `<div>` layout, arbitrary tags) | v0.3 |
 
 ### GFM extensions
 
@@ -228,9 +229,9 @@ If you hash the markdown and the PDF, the relationship is stable forever. Useful
 | Feature | When | Why |
 |---------|------|-----|
 | Text-font embedding for non-Latin scripts (CJK, Cyrillic, …) | later | v0.2 uses PDF's 14 base fonts for text (WinAnsi). Color **emoji** are embedded from a bundled font; other non-Latin scripts still render as `?` |
-| Block-level raw HTML (`<table>...</table>` etc.) | v0.3 | inkmd v0.2 covers **inline** HTML via the safe allow-list; block-level passthrough is queued |
+| Block-level raw HTML (`<table>...</table>` etc.) | v0.3 | inkmd v0.2 covers **inline** HTML via the safe allow-list plus `<img>` (with `width`/`align`); arbitrary block-level passthrough is queued |
 | Headers, footers, page numbers | v0.3 | Needs a per-page chrome system |
-| Page-splitting for oversized tables | v0.3 | Tables currently place atomically and overflow if taller than a page |
+| Wide-table column fitting | v0.3 | A table **taller** than a page now splits across pages, repeating the header. A table with too many **columns** to fit even at minimum legible width (roughly 25+) still overflows the right edge rather than crushing columns into unreadable slivers. Horizontal column fitting (auto-shrink / landscape) is queued |
 | Blockquote inside a list item | v0.3 | `>` inside an item renders as paragraph text in v0.2; per-item blockquote state coming |
 | RGBA PNG embedding | v0.3 | v0.2 supports RGB, grayscale, and **indexed** PNG (with `tRNS` transparency); full RGBA alpha is queued |
 | GIF image support | v0.3 | LZW decoder + palette resolution |
@@ -248,7 +249,7 @@ Four layers, each strictly above the previous:
 3. **`layout`** wraps runs into pages, positions each `PositionedRun` against the page coordinate system, emits background rectangles for code blocks, vertical rules for blockquotes, underline plus annotation pairs for links, and bars for strikethrough.
 4. **`pdf`** serialises pages into PDF bytes. Text via `Tj`/`TJ`-with-kerning, graphics via `rg`/`re`/`f`, link annotations via per-page `/Annots` arrays.
 
-No layer imports a higher one. The whole pipeline is around 3,500 lines of pure-Python logic plus 4,700 lines of generated AFM kerning tables. That's it. For a deeper walk-through (the emphasis algorithm, AFM kerning, determinism mechanics), see [`docs/internals.md`](docs/internals.md). The complexity profile is in [`LIZARD-AUDIT.md`](LIZARD-AUDIT.md).
+No layer imports a higher one. The whole pipeline is around 9,600 lines of pure-Python logic (including the hand-rolled OpenType reader behind color emoji) plus 4,700 lines of generated AFM kerning tables. That's it. For a deeper walk-through (the emphasis algorithm, AFM kerning, color-emoji bitmap extraction, determinism mechanics), see [`docs/internals.md`](docs/internals.md). The complexity profile is in [`LIZARD-AUDIT.md`](LIZARD-AUDIT.md).
 
 <details>
 <summary><strong>A note on font rendering in v0.1 and v0.2</strong></summary>
@@ -274,7 +275,7 @@ The release tiers are about **what a real user sees**, not about chasing a perce
 
 - **v0.1** — Proof of concept: working basic PDFs. **Shipped.**
 - **v0.2** — Most sane use cases work; remaining failures are rare and defensible. CommonMark 85%, GFM extensions 71%. Adds reference links, images (PNG + JPEG + indexed PNG with transparency), **color emoji** (single, flags, skin tones, ZWJ sequences, keycaps — inline and in tables), task lists, inline HTML allow-list, hard line breaks, indented code blocks (including inside list items), URL scheme filter, tab preservation, image-inside-link.
-- **v0.3** — Visually identical for the user even where spec tests still fail. Adds block-level raw HTML pass-through, blockquote-inside-list, headers/footers/page numbers, page-splitting for oversized tables, text-font embedding for non-Latin scripts (CJK, Cyrillic, …), full RGBA PNG, GIF.
+- **v0.3** — Visually identical for the user even where spec tests still fail. Adds block-level raw HTML pass-through, blockquote-inside-list, headers/footers/page numbers, horizontal fitting for very wide tables (tall tables already split across pages in v0.2), text-font embedding for non-Latin scripts (CJK, Cyrillic, …), full RGBA PNG, GIF.
 - **v0.4** — 100% CommonMark and 100% GFM extensions. The long-tail spec-corner cases.
 - **v1.0 and beyond** — Tagged PDF, accessibility, TOC generation, cross-references. PDF/A and similar under consideration.
 

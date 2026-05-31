@@ -518,3 +518,197 @@ def test_emoji_in_table_cell_renders_as_image():
     finally:
         emoji_mod._load_font = orig
         emoji_mod._load_font.cache_clear()
+
+
+# --- Row = single source line (GFM spec); cell vertical alignment ---------
+# An audit finding claimed a "trailing-space hard break inside a cell"
+# mis-aligns the sibling cell. Per GFM, a pipe-table row is exactly one
+# source line: a newline mid-content ENDS the row and starts a new one.
+# So `| Cell with  \nhard break | Normal cell |` is two rows, not one row
+# with a two-line cell — and "Normal cell" correctly sits in row 2 beside
+# "hard break". The reported "misalignment" is spec-correct rendering of
+# malformed input (matches GitHub). These tests pin that behaviour so a
+# future "fix" can't silently break GFM row semantics, and confirm that a
+# genuinely multi-line (naturally-wrapped) cell top-aligns its short sibling.
+
+
+def _run_at_text(md, content_width=468.0):
+    """Map first-word-of-run text -> rounded baseline y, across the table."""
+    from inkmd.render import render_document, FAMILIES
+    from inkmd.layout import paginate_runs, StyledLine
+
+    blocks = render_document(parse(md), FAMILIES["helvetica"], content_width=content_width)
+    pages = paginate_runs(blocks, page_width=612, page_height=792)
+    out: dict[str, float] = {}
+    for pg in pages:
+        for ln in pg.lines:
+            if isinstance(ln, StyledLine):
+                for r in ln.runs:
+                    if r.text.strip():
+                        out.setdefault(r.text, round(r.y, 1))
+    return out
+
+
+def test_newline_mid_row_splits_into_two_rows_not_multiline_cell():
+    # The spec-correct reading of malformed input: the newline ends row 1
+    # (Col A = "Cell with", Col B empty), row 2 = "hard break" + "Normal
+    # cell". "Normal cell" therefore shares row 2's baseline with "hard
+    # break", BELOW "Cell with". This is correct, not a misalignment.
+    ys = _run_at_text(
+        "| Col A | Col B |\n|-------|-------|\n| Cell with  \nhard break | Normal cell |"
+    )
+    assert ys["Cell"] > ys["hard"]            # row 1 above row 2
+    assert ys["Normal"] == ys["hard"]         # Normal cell is in row 2
+    assert ys["Normal"] < ys["Cell"]          # ...not row 1
+
+
+def test_naturally_wrapped_cell_top_aligns_short_sibling():
+    # A VALID single-row table whose Col A wraps to multiple lines must
+    # top-align the short Col B sibling with Col A's FIRST line.
+    md = (
+        "| ColumnA | ColumnB |\n|---|---|\n"
+        "| alpha beta gamma delta epsilon zeta eta | Short |"
+    )
+    ys = _run_at_text(md, content_width=260.0)
+    # Col A's first word and the short sibling share the row's top baseline.
+    assert ys["alpha"] == ys["Short"]
+    # And Col A genuinely wrapped to a lower line (proving multi-line).
+    assert ys["eta"] < ys["alpha"]
+
+
+# --- Bold-italic composition in a (bold) table header ----------------------
+
+
+def _cell_font(md, text):
+    """Return the font of the run whose text == ``text`` in a table."""
+    from inkmd.render import render_document, FAMILIES
+    from inkmd.layout import paginate_runs, StyledLine
+
+    blocks = render_document(parse(md), FAMILIES["helvetica"], content_width=468.0)
+    pages = paginate_runs(blocks, page_width=612, page_height=792)
+    for pg in pages:
+        for ln in pg.lines:
+            if isinstance(ln, StyledLine):
+                for r in ln.runs:
+                    if r.text == text:
+                        return r.font
+    return None
+
+
+def test_bold_italic_in_table_header_keeps_italic():
+    # ***x*** in a header cell must compose to bold-italic, matching the
+    # body. The header seeds the run as bold; Strong/Emphasis composition
+    # used to drop the italic because it only checked == italic, not the
+    # already-bold (or bold_italic) face.
+    md = "| ***hdr*** | x |\n|---|---|\n| ***body*** | y |"
+    assert _cell_font(md, "hdr") == "Helvetica-BoldOblique"
+    assert _cell_font(md, "body") == "Helvetica-BoldOblique"
+
+
+def test_italic_in_bold_header_is_bold_italic():
+    # A header cell is already bold; *i* inside it adds italic → bold-italic.
+    md = "| *i* | h2 |\n|---|---|\n| r1 | r2 |"
+    assert _cell_font(md, "i") == "Helvetica-BoldOblique"
+
+
+def test_plain_bold_in_header_stays_bold():
+    md = "| **bld** | h2 |\n|---|---|\n| r1 | r2 |"
+    assert _cell_font(md, "bld") == "Helvetica-Bold"
+
+
+# --- Table page-splitting (v0.2): a too-tall table breaks across pages ----
+# A table taller than one page splits at a row boundary and repeats the
+# header on each page-slice, instead of overflowing off the bottom (which
+# silently lost rows). Single-page tables are unaffected.
+
+
+def _table_pages(md, page_height=792):
+    from inkmd.render import render_document, FAMILIES
+    from inkmd.layout import paginate_runs
+
+    blocks = render_document(parse(md), FAMILIES["helvetica"], content_width=468.0)
+    return paginate_runs(blocks, page_width=612, page_height=page_height)
+
+
+def _big_table(n_rows):
+    head = "| Idx | Value |\n|---|---|\n"
+    rows = "\n".join(f"| row{i} | val{i} |" for i in range(n_rows))
+    return head + rows
+
+
+def test_tall_table_splits_across_pages():
+    pages = _table_pages(_big_table(120))
+    assert len(pages) > 1
+
+
+def test_split_table_repeats_header_on_each_page():
+    from inkmd.layout import StyledLine
+
+    pages = _table_pages(_big_table(120))
+    for pidx, pg in enumerate(pages):
+        texts = [
+            r.text for ln in pg.lines if isinstance(ln, StyledLine) for r in ln.runs
+        ]
+        assert "Idx" in texts, f"header missing on page {pidx + 1}"
+
+
+def test_split_table_loses_no_rows_off_page():
+    from inkmd.layout import StyledLine
+
+    pages = _table_pages(_big_table(120))
+    # No run may sit below the bottom margin (y < 72 for a 792pt page).
+    for pidx, pg in enumerate(pages):
+        below = [
+            r.y
+            for ln in pg.lines
+            if isinstance(ln, StyledLine)
+            for r in ln.runs
+            if r.y < 72
+        ]
+        assert not below, f"page {pidx + 1} has {len(below)} runs off the page"
+    # And every body row's text is present exactly once across all pages.
+    all_text = "".join(
+        r.text
+        for pg in pages
+        for ln in pg.lines
+        if isinstance(ln, StyledLine)
+        for r in ln.runs
+    )
+    for i in range(120):
+        assert f"row{i}" in all_text, f"row{i} was dropped"
+
+
+def test_single_page_table_not_split():
+    # A small table stays on one page (no spurious splitting).
+    pages = _table_pages("| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |")
+    assert len(pages) == 1
+
+
+def test_single_page_table_output_unchanged():
+    # Byte-level guard: a fits-on-a-page table must compile to a valid PDF
+    # deterministically (the row-group refactor must not change small-table
+    # output behaviour).
+    md = "| H1 | H2 |\n|---|---|\n| a | b |\n| c | d |"
+    a = inkmd.compile(md)
+    assert a[:4] == b"%PDF"
+    assert inkmd.compile(md) == a
+
+
+def test_giant_single_row_degrades_without_crash():
+    # A single row taller than a whole page can't be split further; it
+    # places atomically (and may overflow) but must not crash compile().
+    md = "| H |\n|---|\n| " + ("word " * 4000) + " |"
+    pdf = inkmd.compile(md)
+    assert pdf[:4] == b"%PDF"
+
+
+def test_split_table_each_slice_is_boxed():
+    # Every page-slice draws its own grid (vertical rules + a bottom rule),
+    # so a continued table is fully boxed, not left open at the page break.
+    from inkmd.layout import Rect
+
+    pages = _table_pages(_big_table(120))
+    for pidx, pg in enumerate(pages):
+        rects = [s for s in pg.shapes if isinstance(s, Rect)]
+        # At least the two column verticals + edges + a bottom rule.
+        assert len(rects) >= 3, f"page {pidx + 1} under-boxed"

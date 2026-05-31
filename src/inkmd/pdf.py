@@ -246,15 +246,27 @@ def _show_text_operator(text: str, font: str) -> bytes:
     integers move the cursor *backward* by that many 1/1000 em — i.e.
     AFM's negative ``KPX`` adjustments become positive TJ numbers.
     """
-    from inkmd.fonts import kerning_adjustment, to_winansi_byte
+    from inkmd.fonts import (
+        is_zero_width_codepoint,
+        kerning_adjustment,
+        to_winansi_byte,
+    )
 
     if not text:
         return b"() Tj"
 
     # Walk through the text byte-by-byte, splitting on kerning pairs.
     # Each chunk is a run of bytes with no kerning between adjacent
-    # bytes; kerning offsets sit between chunks.
-    bytes_seq = [to_winansi_byte(ord(ch)) for ch in text]
+    # bytes; kerning offsets sit between chunks. Zero-width formatting
+    # codepoints (soft hyphen) are dropped so they never print a glyph —
+    # matching how text_width measures them (skipped).
+    bytes_seq = [
+        to_winansi_byte(ord(ch))
+        for ch in text
+        if not is_zero_width_codepoint(ord(ch))
+    ]
+    if not bytes_seq:
+        return b"() Tj"
     parts: list[tuple[bytes, int]] = []  # (chunk_bytes, kerning_after)
     chunk = bytearray([bytes_seq[0]])
     for i in range(1, len(bytes_seq)):
@@ -291,8 +303,12 @@ def encode_winansi(text: str) -> bytes:
     each character maps to. Latin-1 passes through, typographic
     punctuation remaps into 0x80..0x9F, anything else falls back to ?.
     """
-    from inkmd.fonts import to_winansi_byte
-    return bytes(to_winansi_byte(ord(ch)) for ch in text)
+    from inkmd.fonts import is_zero_width_codepoint, to_winansi_byte
+    return bytes(
+        to_winansi_byte(ord(ch))
+        for ch in text
+        if not is_zero_width_codepoint(ord(ch))
+    )
 
 
 def _page_content_stream(page: Page) -> bytes:

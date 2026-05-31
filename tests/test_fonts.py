@@ -155,3 +155,17 @@ def test_to_winansi_byte_handles_known_cases():
     assert to_winansi_byte(0x2026) == 0x85  # ellipsis
     assert to_winansi_byte(0x00E9) == 0xE9  # Latin-1 é
     assert to_winansi_byte(0x2603) == ord("?")  # snowman → fallback
+
+
+def test_soft_hyphen_is_zero_width():
+    """U+00AD is an invisible optional-break hint, not a printing glyph.
+    inkmd does no hyphenation-aware breaking, so it is dropped entirely:
+    zero advance, and the measured width of a word with a soft hyphen
+    equals the same word without it."""
+    from inkmd.fonts import char_width, is_zero_width_codepoint
+    assert is_zero_width_codepoint(0x00AD)
+    assert char_width(0x00AD, "Helvetica", 12.0) == 0.0
+    for font in ("Helvetica", "Times-Roman", "Courier"):
+        assert text_width("super\xadlong", font, 12.0) == text_width(
+            "superlong", font, 12.0
+        )

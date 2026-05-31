@@ -109,11 +109,24 @@ class Image:
     dimensions when the source was reachable and recognised, or None
     when the source was missing / unsupported. The renderer uses it to
     decide between PDF embedding and the alt-text-italic fallback.
+
+    ``display_width`` is an optional requested display width in points,
+    set when an HTML ``<img width="...">`` provides one. Markdown image
+    syntax has no width, so it stays None there. The renderer treats it
+    as a hint capped to the text column; when None the image renders at
+    its natural pixel size (also capped).
+
+    ``align`` is an optional horizontal alignment for a block-level image
+    (``"center"`` / ``"right"``), set from an HTML ``align`` attribute or
+    a wrapping ``<p align="...">``. Markdown images and unaligned HTML
+    images leave it None (left, the default).
     """
     inlines: tuple["Inline", ...]
     url: str
     title: str = ""
     resolved: object = None  # inkmd.image_loader.ImageData | None
+    display_width: float | None = None  # requested display width in points
+    align: str | None = None  # "center" | "right" | None (left)
 
 
 @dataclass(frozen=True)

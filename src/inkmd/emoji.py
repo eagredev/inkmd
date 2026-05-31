@@ -336,6 +336,19 @@ def split_text_into_runs(
                     color=color, strike=strike, emoji=img,
                 ))
                 i += used
+                # A ZWJ cluster the font can't fully ligature decomposes into
+                # its component emoji (e.g. man-first kiss → 👨 ❤️ 💋 👩). The
+                # joiners and orphaned presentation selectors *between* those
+                # components are cluster glue — never printing glyphs — but the
+                # loop would otherwise re-enter on a ZWJ and append it to the
+                # text buffer, where WinAnsi mangles it to a literal '?'. Skip
+                # any glue that immediately trails the consumed portion so it
+                # never surfaces as text. Only do this mid-cluster (used <
+                # cluster length); a clean cluster boundary keeps following
+                # text intact.
+                if used < len(cluster):
+                    while i < n and _is_cluster_glue(ord(text[i])):
+                        i += 1
                 continue
             # Couldn't render as a glyph. A lone text-default symbol (a
             # plain arrow, a misc-technical char) with no presentation

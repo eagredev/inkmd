@@ -24,6 +24,8 @@ out preserves the v0.1 behaviour for callers who explicitly want it.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from inkmd.ast import (
     AutoLink,
     BlockQuote,
@@ -223,11 +225,9 @@ def _filter_inline(node):
         # Image URLs are not link annotations — the URL is consulted at
         # embed time by inkmd.image_loader, which has its own
         # http(s)/file/data: gating. The URL-scheme filter does not
-        # apply here.
-        return [Image(
-            inlines=_filter_inlines(node.inlines),
-            url=node.url,
-            title=node.title,
-        )]
+        # apply here. Use replace() so all Image fields (display_width,
+        # align, resolved) survive — rebuilding by hand silently dropped
+        # the HTML-image width/align hints.
+        return [replace(node, inlines=_filter_inlines(node.inlines))]
     # Text, Code — opaque.
     return [node]

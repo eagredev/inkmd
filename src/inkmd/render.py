@@ -152,6 +152,11 @@ class RenderedBlock:
     prepositioned_lines: tuple = ()      # tuple of tuples of "PositionedRun"-like (relative y)
     prepositioned_line_heights: tuple = ()  # one float per line
     prepositioned_shapes: tuple = ()     # tuple of shape dicts with relative y
+    # Set for tables: a dict of row groups (header + per-row, row-local
+    # coords) the layout can split across pages, repeating the header. The
+    # flat prepositioned_* fields above are the single-page/atomic view of
+    # the same content; the layout prefers prepositioned_table when present.
+    prepositioned_table: dict | None = None
 
 
 # Layout constants for lists. ``LIST_INDENT_PT`` is the horizontal step per
@@ -321,11 +326,28 @@ def _render_block(
         # An image-only paragraph (modulo whitespace text) becomes a
         # block-level image. Mixed-with-text images stay inline and use
         # the alt-text fallback inside _render_inline.
+        from inkmd.image_loader import ImageData
         single_image = _paragraph_as_image(block)
         if single_image is not None:
-            from inkmd.image_loader import ImageData
             if isinstance(single_image.resolved, ImageData):
                 return [_render_image_block(single_image, content_width)]
+            return [RenderedBlock(runs=tuple(_render_paragraph(block, family)))]
+        # Figure idiom: a lead image plus a caption (`<img><br>caption`).
+        # Render the image as a block, the caption as a following paragraph.
+        # Only split when the image actually embeds; otherwise fall through
+        # so the whole paragraph (image alt + caption) stays one inline flow.
+        figure = _paragraph_as_figure(block)
+        if figure is not None and isinstance(figure[0].resolved, ImageData):
+            image, caption_inlines = figure
+            caption_runs = _flatten(caption_inlines, family, family.regular, BODY_SIZE)
+            blocks = [_render_image_block(image, content_width)]
+            if caption_runs:
+                blocks.append(RenderedBlock(
+                    runs=tuple(caption_runs),
+                    space_above=2.0,
+                    space_below=_IMAGE_SPACE_BELOW,
+                ))
+            return blocks
         return [RenderedBlock(runs=tuple(_render_paragraph(block, family)))]
     if isinstance(block, List):
         return _render_list(block, family, depth, content_width)
@@ -363,6 +385,49 @@ def _paragraph_as_image(p: Paragraph) -> "Image | None":
     return image
 
 
+def _paragraph_as_figure(p: Paragraph):
+    """Recognise a "figure" paragraph: a leading block image followed by a
+    caption, the `<p align><img><br>caption</p>` idiom GitHub READMEs use.
+
+    Returns ``(image, caption_inlines)`` when the paragraph is optional
+    leading whitespace, then exactly one Image, then a HardBreak, then any
+    caption content (which may itself contain links, emphasis, more breaks).
+    The image renders as a block; the caption renders as a following
+    paragraph that inherits the image's alignment. Returns None for anything
+    that isn't this shape — in particular a bare image-only paragraph
+    (handled by _paragraph_as_image) or an image with prose before it.
+    """
+    seen_image = None
+    rest_start = None
+    for idx, inline in enumerate(p.inlines):
+        if seen_image is None:
+            if isinstance(inline, Image):
+                seen_image = inline
+            elif isinstance(inline, Text) and not inline.content.strip():
+                continue  # leading whitespace before the image is fine
+            else:
+                return None  # content before the image → not a lead figure
+        else:
+            # First inline after the image must be the caption separator.
+            if isinstance(inline, HardBreak):
+                rest_start = idx + 1
+                break
+            if isinstance(inline, Text) and not inline.content.strip():
+                continue  # whitespace between image and break
+            return None  # image immediately followed by prose → inline case
+    if seen_image is None or rest_start is None:
+        return None
+    caption = tuple(p.inlines[rest_start:])
+    # A caption that is only whitespace/breaks isn't a caption — treat the
+    # paragraph as a plain (lone) image instead so _paragraph_as_image wins.
+    if not any(
+        (isinstance(c, Text) and c.content.strip()) or not isinstance(c, (Text, HardBreak))
+        for c in caption
+    ):
+        return None
+    return seen_image, caption
+
+
 # v0.2 block-level image rendering.
 #
 # A block-level image occupies its own RenderedBlock via the
@@ -393,16 +458,31 @@ def _render_image_block(
     ``content_width`` caps the displayed width to the page's text column.
     """
     data = image.resolved
-    # Display size: natural pixel size at 72 dpi, capped to column width.
+    # Base size: natural pixel size at 72 dpi. An HTML `width=` provides a
+    # requested display width (in points); honour it but never let it
+    # exceed the text column. Height follows from the source aspect ratio
+    # so images are never distorted. With no requested width, fall back to
+    # natural size (also capped to the column).
     nat_w = data.width * _PIXEL_TO_POINT
     nat_h = data.height * _PIXEL_TO_POINT
-    if nat_w > content_width and nat_w > 0:
-        scale = content_width / nat_w
-        disp_w = content_width
-        disp_h = nat_h * scale
+    aspect = (nat_h / nat_w) if nat_w > 0 else 0.0
+
+    requested = getattr(image, "display_width", None)
+    target_w = requested if (requested and requested > 0) else nat_w
+    disp_w = min(target_w, content_width) if content_width > 0 else target_w
+    disp_h = disp_w * aspect
+
+    # Horizontal placement within the text column. Left is the default;
+    # center / right shift the image by the slack between its width and the
+    # column. The layout adds this x_offset to the block's left edge.
+    slack = max(0.0, content_width - disp_w)
+    align = getattr(image, "align", None)
+    if align == "center":
+        x_offset = slack / 2.0
+    elif align == "right":
+        x_offset = slack
     else:
-        disp_w = nat_w
-        disp_h = nat_h
+        x_offset = 0.0
 
     # Identifier for the XObject registry: use the URL when available.
     image_id = image.url or f"image:{id(image)}"
@@ -420,7 +500,7 @@ def _render_image_block(
                 "image_id": image_id,
                 "image_data": data,  # ImageData; carries format, width, height, bytes
                 "rel_y_top": 0.0,
-                "x_offset": 0.0,
+                "x_offset": x_offset,
                 "width": disp_w,
                 "height": disp_h,
             },
@@ -628,47 +708,27 @@ def _render_table(
         row_tops.append(row_tops[-1] + h)
     total_height = header_h + sum(body_heights)
 
-    # 5. Emit positioned content. We produce a flat list of "line records":
-    #    each is (offset_y_baseline_from_top, tuple_of_PositionedRunLike).
-    #    The layout reads these in order, advancing the page y_cursor by
-    #    the y deltas implied by their baselines.
+    # 5. Emit positioned content as ROW GROUPS so the layout can split a
+    #    too-tall table across pages (repeating the header) rather than
+    #    overflow off the bottom. Each group is ROW-LOCAL: its lines/shapes
+    #    are measured from that group's own top (y=0) and it carries its own
+    #    height. The header group is flagged so pagination repeats it atop
+    #    each page-slice. A flattened table-top view is derived from the
+    #    groups for the single-page fast path and the PDF emitter, so byte
+    #    output is unchanged for tables that fit on one page.
     PR = _PR  # local alias
 
-    positioned_lines: list[tuple[float, tuple]] = []
-    shapes: list[dict] = []
+    def run_advance(r: Run) -> float:
+        if r.emoji is not None:
+            return emoji_box(r.size, r.emoji.aspect)[0]
+        return text_width(r.text, r.font, r.size)
 
-    # Header background tint.
-    shapes.append({
-        "kind": "fill",
-        "rel_y_top": 0.0,
-        "height": header_h,
-        "x_offset": 0.0,
-        "width": table_width,
-        "fill": TABLE_HEADER_BG,
-    })
-
-    # Build positioned runs for one cell.
-    def emit_cell(
-        cell_lines: list[list[Run]],
-        col_idx: int,
-        row_top: float,
-        alignment: str | None,
-        is_header: bool,
-    ) -> None:
-        cw = col_widths[col_idx]
+    def emit_cell_local(cell_lines, col_idx, alignment, lines_out, shapes_out):
+        """Emit one cell's lines/shapes in ROW-LOCAL coords (y from row top)."""
         x_left = col_x[col_idx] + TABLE_CELL_PADDING_X
         cell_content_w = content_widths[col_idx]
-        # Baseline of first line: row_top + padding_y + ascent (~ line_height).
-        # Use line_height as effective ascent for now (good enough at body size).
-        baseline_y_from_top = row_top + TABLE_CELL_PADDING_Y + line_height
-        def run_advance(r: Run) -> float:
-            if r.emoji is not None:
-                return emoji_box(r.size, r.emoji.aspect)[0]
-            return text_width(r.text, r.font, r.size)
-
+        baseline_y_from_top = TABLE_CELL_PADDING_Y + line_height
         for li, line in enumerate(cell_lines):
-            # Compute aligned x offset for this line's content (emoji runs
-            # measure as their box width, not text width).
             line_w = sum(run_advance(r) for r in line)
             if alignment == "center":
                 x_start = x_left + (cell_content_w - line_w) / 2.0
@@ -676,16 +736,10 @@ def _render_table(
                 x_start = x_left + (cell_content_w - line_w)
             else:
                 x_start = x_left
-            # Clamp to the cell's left edge. A line wider than the cell
-            # content width (an unbreakable token that overflowed) would
-            # otherwise push a right/centre-aligned x_start LEFT of x_left,
-            # flinging glyphs across the column's grid line. Overflow to
-            # the right is acceptable; overflow to the left is corruption.
+            # Left overflow is corruption (flings glyphs across the grid
+            # line); right overflow is acceptable. Clamp to the cell edge.
             if x_start < x_left:
                 x_start = x_left
-            # Emit positioned runs for the line. Emoji runs become image
-            # shapes placed in the cell (the same kind="image" shape a
-            # block image uses), not text records.
             runs_record: list[_PR] = []
             cx = x_start
             baseline = baseline_y_from_top + li * line_height
@@ -693,10 +747,8 @@ def _render_table(
                 if run.emoji is not None:
                     e_w, e_h = emoji_box(run.size, run.emoji.aspect)
                     descent = e_h * EMOJI_BASELINE_DROP
-                    # rel_y_top measures down from the table top; the box
-                    # bottom sits descent below the baseline.
                     rel_y_top = baseline - (e_h - descent)
-                    shapes.append({
+                    shapes_out.append({
                         "kind": "image",
                         "image_id": run.emoji.image_id,
                         "image_data": run.emoji.image_data,
@@ -707,65 +759,98 @@ def _render_table(
                     })
                     cx += e_w
                     continue
-                runs_record.append(
-                    PR(
-                        text=run.text,
-                        x_rel=cx,
-                        y_from_top=baseline,
-                        font=run.font,
-                        size=run.size,
-                        link_url=run.link_url,
-                        color=run.color,
-                        strike=run.strike,
-                        y_shift=run.y_shift,
-                        background_fill=run.background_fill,
-                        border_fill=run.border_fill,
-                        underline=run.underline,
-                    )
-                )
+                runs_record.append(PR(
+                    text=run.text, x_rel=cx, y_from_top=baseline,
+                    font=run.font, size=run.size, link_url=run.link_url,
+                    color=run.color, strike=run.strike, y_shift=run.y_shift,
+                    background_fill=run.background_fill,
+                    border_fill=run.border_fill, underline=run.underline,
+                ))
                 cx += text_width(run.text, run.font, run.size)
             if runs_record:
-                positioned_lines.append((baseline, tuple(runs_record)))
+                lines_out.append((baseline, tuple(runs_record)))
 
-    # Headers.
-    for i in range(n_cols):
-        emit_cell(header_lines[i], i, 0.0, table.alignments[i], is_header=True)
-
-    # Body rows.
-    for row_idx, row in enumerate(body_lines):
-        row_top = row_tops[row_idx + 1]
+    def build_group(cells_per_col, height, is_header, tint):
+        """One row group (header or a body row) in row-local coordinates:
+        optional background tint, the cell content, and the top horizontal
+        rule. Vertical grid segments + the group's bottom rule are drawn by
+        the layout per page-slice (they depend on how groups stack)."""
+        lines_out: list = []
+        shapes_out: list = []
+        if tint is not None:
+            shapes_out.append({
+                "kind": "fill", "rel_y_top": 0.0, "height": height,
+                "x_offset": 0.0, "width": table_width, "fill": tint,
+            })
+        # Top horizontal rule for this group (so per-page slices get row
+        # separators without the layout knowing the table's row structure).
+        shapes_out.append({
+            "kind": "fill", "rel_y_top": -TABLE_GRID_WIDTH / 2.0,
+            "height": TABLE_GRID_WIDTH, "x_offset": 0.0,
+            "width": table_width, "fill": TABLE_GRID_FILL,
+        })
         for i in range(n_cols):
-            emit_cell(row[i], i, row_top, table.alignments[i], is_header=False)
+            emit_cell_local(cells_per_col[i], i, table.alignments[i],
+                            lines_out, shapes_out)
+        return {
+            "height": height,
+            "is_header": is_header,
+            "lines": tuple(lines_out),
+            "shapes": tuple(shapes_out),
+        }
 
-    # 6. Grid lines as thin filled rectangles. Horizontal: top, below
-    #    header, between body rows, bottom. Vertical: between columns + edges.
-    h_lines_y: list[float] = []
-    h_lines_y.append(0.0)
-    h_lines_y.append(header_h)
+    header_group = build_group(header_lines, header_h, True, TABLE_HEADER_BG)
+    body_groups = [
+        build_group(body_lines[r], body_heights[r], False, None)
+        for r in range(len(body_lines))
+    ]
+
+    table_meta = {
+        "table_width": table_width,
+        "col_x": tuple(col_x),
+        "grid_width": TABLE_GRID_WIDTH,
+        "grid_fill": TABLE_GRID_FILL,
+        "line_height": line_height,
+        "header": header_group,
+        "rows": tuple(body_groups),
+    }
+
+    # Flattened single-block view (table-top coords) for the atomic fast
+    # path + PDF emitter. Derived from the groups so the two never drift.
+    positioned_lines: list[tuple[float, tuple]] = []
+    shapes: list[dict] = []
+
+    def stack_group(group: dict, top: float) -> None:
+        for baseline, runs in group["lines"]:
+            shifted = tuple(replace(pr, y_from_top=pr.y_from_top + top) for pr in runs)
+            positioned_lines.append((baseline + top, shifted))
+        for sh in group["shapes"]:
+            s = dict(sh)
+            s["rel_y_top"] = sh["rel_y_top"] + top
+            shapes.append(s)
+
+    stack_group(header_group, 0.0)
+    for r, group in enumerate(body_groups):
+        stack_group(group, row_tops[r + 1])
+
+    # Horizontal grid rules: top, below header, between & below body rows.
+    h_lines_y = [0.0, header_h]
     cumulative = header_h
     for h in body_heights:
         cumulative += h
         h_lines_y.append(cumulative)
     for y_top in h_lines_y:
         shapes.append({
-            "kind": "fill",
-            "rel_y_top": y_top - TABLE_GRID_WIDTH / 2.0,
-            "height": TABLE_GRID_WIDTH,
-            "x_offset": 0.0,
-            "width": table_width,
-            "fill": TABLE_GRID_FILL,
+            "kind": "fill", "rel_y_top": y_top - TABLE_GRID_WIDTH / 2.0,
+            "height": TABLE_GRID_WIDTH, "x_offset": 0.0,
+            "width": table_width, "fill": TABLE_GRID_FILL,
         })
-
-    # Vertical grid lines: left edge of each column, plus right edge.
-    v_lines_x = list(col_x) + [table_width]
-    for vx in v_lines_x:
+    # Vertical grid rules: left edge of each column plus the right edge.
+    for vx in list(col_x) + [table_width]:
         shapes.append({
-            "kind": "fill",
-            "rel_y_top": 0.0,
-            "height": total_height,
+            "kind": "fill", "rel_y_top": 0.0, "height": total_height,
             "x_offset": vx - TABLE_GRID_WIDTH / 2.0,
-            "width": TABLE_GRID_WIDTH,
-            "fill": TABLE_GRID_FILL,
+            "width": TABLE_GRID_WIDTH, "fill": TABLE_GRID_FILL,
         })
 
     return RenderedBlock(
@@ -776,7 +861,7 @@ def _render_table(
         prepositioned_lines=tuple(positioned_lines),
         prepositioned_line_heights=(line_height,) * len(positioned_lines),
         prepositioned_shapes=tuple(shapes),
-        # Stash total height in body_indent slot? No — use a custom attribute.
+        prepositioned_table=table_meta,
     )
 
 
@@ -803,12 +888,22 @@ class _PR:
 
 def _render_code_block(cb: CodeBlock, family: FontFamily) -> RenderedBlock:
     """Lower a CodeBlock to a RenderedBlock with monospace + background fill."""
-    # Each line becomes a run with embedded newline marker. The paginator
-    # uses `preserve_lines=True` to split on '\n' rather than wrapping.
-    runs = tuple(
-        Run(text=cb.content, font=family.monospace, size=CODE_FONT_SIZE)
-        for _ in [None]
-    )
+    # The paginator uses `preserve_lines=True` to split runs on '\n' rather
+    # than wrapping. Emoji are the documented exception to the WinAnsi-`?`
+    # rule and must render even in a code block, so route each source line
+    # through the emoji splitter (emoji become atomic image runs / fallback
+    # labels) and re-join the lines with newline-bearing text runs so the
+    # preserve-lines splitter still sees the line structure.
+    line_texts = cb.content.split("\n")
+    run_list: list[Run] = []
+    for idx, line_text in enumerate(line_texts):
+        if idx > 0:
+            run_list.append(Run(text="\n", font=family.monospace, size=CODE_FONT_SIZE))
+        run_list.extend(split_text_into_runs(
+            line_text, font=family.monospace, size=CODE_FONT_SIZE,
+            link_url=None, color=None, strike=False,
+        ))
+    runs = tuple(run_list)
     return RenderedBlock(
         runs=runs,
         space_above=6.0,
@@ -975,21 +1070,33 @@ def _render_inline(
         )
 
     if isinstance(inline, Code):
-        return [Run(
-            text=inline.content, font=family.monospace, size=size,
+        # Code spans are monospace, but emoji are the documented exception
+        # to the WinAnsi-`?` rule and must render everywhere — including
+        # inside `code`. Route through the splitter so an emoji in a code
+        # span becomes an image run (or its fallback label in the font-less
+        # tier) instead of leaking a literal `?` from the WinAnsi encoder.
+        return split_text_into_runs(
+            inline.content, font=family.monospace, size=size,
             link_url=link_url, color=color, strike=strike,
-        )]
+        )
 
     if isinstance(inline, Strong):
-        next_font = (
-            family.bold_italic if font == family.italic else family.bold
-        )
+        # Add bold to the current face. If the face already carries italic
+        # (a plain italic OR an already-composed bold_italic — the latter
+        # happens when a header cell seeds the run as bold and an Emphasis
+        # nests a Strong), the result must keep italic → bold_italic. Test
+        # the family's italic-bearing faces, not just == italic, so the
+        # header seed path composes the same as the body path.
+        italic_bearing = font in (family.italic, family.bold_italic)
+        next_font = family.bold_italic if italic_bearing else family.bold
         return _flatten(inline.inlines, family, next_font, size, link_url=link_url, strike=strike)
 
     if isinstance(inline, Emphasis):
-        next_font = (
-            family.bold_italic if font == family.bold else family.italic
-        )
+        # Add italic to the current face. If the face already carries bold
+        # (a plain bold — e.g. a bold header seed — OR an already-composed
+        # bold_italic), keep bold → bold_italic.
+        bold_bearing = font in (family.bold, family.bold_italic)
+        next_font = family.bold_italic if bold_bearing else family.italic
         return _flatten(inline.inlines, family, next_font, size, link_url=link_url, strike=strike)
 
     if isinstance(inline, Strikethrough):

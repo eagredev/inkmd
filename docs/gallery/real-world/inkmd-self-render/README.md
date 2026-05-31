@@ -4,14 +4,18 @@ The repository's own README, compiled by the tool it describes.
 
 - Source: `README.md` at the root of this repository
 - Licence: MIT (same as the rest of inkmd)
-- Rendered: 15,950 bytes of markdown to 9 pages of PDF, in 83 ms
+- Rendered: 18,375 bytes of markdown to 12 pages of PDF, in ~290 ms
+- Rendered from the repository root (as `inkmd README.md` would be), so the
+  README's relative image paths — the hero — resolve and embed.
 
 ## What this demonstrates
 
 The dogfooding exhibit. This is the document a visitor reads in HTML
 form on GitHub, now in PDF form via the tool it documents. Headings,
 fenced code blocks, GFM tables, mixed-content prose, inline links,
-the long feature matrix.
+the long feature matrix, and the **color emoji** in the "What you
+get" section, which render here as the same color glyphs GitHub
+shows: the README demonstrates the feature by containing it.
 
 ## What renders well
 
@@ -24,21 +28,28 @@ content (CommonMark does not specify a folded representation for
 `<details>`; inkmd renders the heading and the body inline, which is
 the only sensible thing it can do in PDF output).
 
-## What does not render
+## The hero, including the centred `<p align><img>` pattern
 
-The hero image at the top of the README is missing. The README
-embeds it as `<p align="center"><img src="docs/images/hero-sample.png"></p>`,
-which uses inline HTML markup for an image and for centering. inkmd
-v0.2's curated inline HTML allow-list does not include `<img>` (only
-inline decoration tags such as `<sub>`, `<sup>`, `<mark>`, `<kbd>`).
-The image reference is therefore dropped along with the surrounding
-HTML, leaving the rest of the README intact but without its hero.
+The README's hero is `<p align="center"><img src="docs/images/hero-sample.png" width="640"></p>`
+— an HTML image inside a centring paragraph, followed by an `<em>`
+caption. inkmd v0.2 promotes the HTML `<img>` tag into the same image
+pipeline markdown `![alt](path)` uses, honours the `width` attribute as
+a display-width hint (capped to the text column) and the wrapping
+`align="center"`, and recognises the image-plus-caption "figure" shape so
+the caption renders as text beneath the embedded image. The hero appears,
+centred, with its caption — the document renders itself in full.
 
-Block-level HTML support, including `<img>` outside markdown image
-syntax and the `align` attribute on paragraphs, is queued for v0.3.
-A README that uses the markdown image syntax `![alt](path.png)` for
-its hero would render with the image embedded in v0.2 today; the
-`<p align><img>` pattern specifically is the gap.
+This used to be the one gap: the `<img>` was dropped as raw HTML, leaving
+the README's hero missing in PDF. It now round-trips.
+
+## What still differs from GitHub
+
+Block-level *raw HTML passthrough* — arbitrary `<table>`, `<div>` layout,
+attributes inkmd doesn't model — is still v0.3. The image and its caption
+render, but the caption is left-aligned beneath the centred image rather
+than centred itself (inkmd has no centred-text-block primitive yet).
+Remote/SVG images elsewhere fall back to their alt text, since inkmd
+embeds raster PNG/JPEG, not SVG.
 
 ## Why it's in the gallery
 
