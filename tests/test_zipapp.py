@@ -32,9 +32,13 @@ def test_zipapp_builds(built_zipapp: Path) -> None:
     """The build produces a non-empty .pyz file.
 
     The zipapp is inkmd's featherweight tier: it excludes the bundled
-    ~10 MB color-emoji font, so it stays well under 1 MB compressed."""
+    ~10 MB color-emoji font AND compiled bytecode (``__pycache__``), so it
+    is a deterministic ~167 KB compressed. The upper bound here is the
+    regression guard for the bytecode-bloat bug: before ``__pycache__`` was
+    excluded, stray ``.pyc`` files from a prior test run inflated the archive
+    to 1 MB+ and made its bytes depend on the build environment."""
     assert built_zipapp.stat().st_size > 100_000  # at least 100 KB (AFM tables alone)
-    assert built_zipapp.stat().st_size < 1_000_000  # but well under 1 MB compressed
+    assert built_zipapp.stat().st_size < 300_000  # source-only, no bytecode bloat
 
 
 def test_zipapp_excludes_emoji_font(built_zipapp: Path) -> None:
@@ -42,6 +46,22 @@ def test_zipapp_excludes_emoji_font(built_zipapp: Path) -> None:
     import zipfile
     with zipfile.ZipFile(built_zipapp) as z:
         assert not any("assets/emoji" in n for n in z.namelist())
+
+
+def test_zipapp_excludes_compiled_bytecode(built_zipapp: Path) -> None:
+    """The zipapp must contain no ``__pycache__`` dirs or ``.pyc`` files.
+
+    Regression guard: the build copies ``src/inkmd`` wholesale, so without
+    an explicit ignore it would sweep in whatever bytecode a prior test run
+    left in ``src/inkmd/__pycache__``. That bloated the archive (1 MB+) and,
+    worse, made its bytes depend on the build environment — defeating the
+    'single small file, byte-deterministic' property the zipapp demonstrates.
+    """
+    import zipfile
+    with zipfile.ZipFile(built_zipapp) as z:
+        names = z.namelist()
+    assert not any("__pycache__" in n for n in names)
+    assert not any(n.endswith(".pyc") for n in names)
 
 
 def test_zipapp_emoji_falls_back_to_text(built_zipapp: Path, tmp_path: Path) -> None:

@@ -44,9 +44,14 @@ def build(output: Path) -> None:
         # — inkmd's featherweight tier. It omits the bundled color-emoji
         # font (~10 MB); emoji fall back to text in the zipapp, exactly like
         # the inkmd[lite] install. Everything else is identical.
+        # Also exclude compiled bytecode (`__pycache__` / `*.pyc`): sweeping
+        # in stray `.pyc` files left by a prior test run would both bloat the
+        # archive and make its bytes depend on the build environment, breaking
+        # the "single small file, byte-deterministic" property the zipapp is
+        # meant to demonstrate.
         shutil.copytree(
             SOURCE_PKG, staging_path / "inkmd",
-            ignore=shutil.ignore_patterns("assets"),
+            ignore=shutil.ignore_patterns("assets", "__pycache__", "*.pyc"),
         )
         # Remove the package-level __main__.py from the staging copy.
         # The non-zipapp install keeps it (for `python -m inkmd`); but

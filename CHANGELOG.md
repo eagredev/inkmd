@@ -8,6 +8,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Nothing yet. v0.3 will target visually-identical rendering for the spec-test edges where the current AST shape differs but the rendered PDF is correct (blockquote-inside-list, mixed-indent siblings), plus block-level raw HTML passthrough, headers/footers/page numbers, horizontal fitting for very wide tables (tall tables already split across pages in v0.2), text-font embedding for non-Latin scripts (CJK, Cyrillic), full RGBA PNG, and GIF. See the [roadmap](README.md#roadmap).
 
+## [0.2.1] - 2026-06-02
+
+A correctness release: re-verified every published benchmark and size claim, fixed a zipapp build bug, and hardened the test suite. No changes to the rendering or public API.
+
+### Corrected (honesty)
+
+The benchmark numbers published with 0.2.0 were measured on 2026-05-14, *before* color emoji was bundled into the package. Bundling the ~10 MB Noto Color Emoji font changed the install footprint, so the install-size claims were stale. They have been re-measured on 2026-06-02 and corrected:
+
+- **Install size: was stated as 10.5 MB / "7.1x smaller" than WeasyPrint; actually 22.2 MB / 3.4x smaller.** The speed and memory advantages are unchanged (the font is disk weight, not runtime cost — it's only read when an emoji is present): ~6–7x faster cold-start, ~6x lower peak RSS.
+- **Zipapp: was stated as ~300 KB; actually ~170 KB** after the build fix below.
+- Test count updated to the real **808 tests across 34 files** (was variously stated as 649 or 788).
+- CommonMark (85.0%) and GFM-extension (71.4%) conformance re-confirmed — unchanged.
+
+### Fixed
+
+- **Zipapp build swept in `__pycache__` / `.pyc` files**, making `inkmd.pyz` both bloated (up to ~1.3 MB depending on the build interpreter) and **non-deterministic** — two builds could differ byte-for-byte, contradicting the determinism guarantee. The build now excludes compiled bytecode; the zipapp is a deterministic ~170 KB on every supported Python.
+
+### Added
+
+- **Adversarial security test suite** (`tests/test_security_adversarial.py`, 19 tests) asserting on final compiled PDF bytes: `javascript:`/`data:`/`file:`/`vbscript:` links emit no `/URI` annotation; the emitter can never produce `/JavaScript`, `/Launch`, `/OpenAction`, `/EmbeddedFile`, or other dangerous PDF action types; `<script>`/`<style>`/`<iframe>` bodies are dropped; zero-network behaviour proven by monkeypatching the socket layer.
+- Cross-Python verification: the full suite now passes on CPython 3.9 through 3.13 (two test-portability bugs fixed; the library itself was always correct across the range).
+
 ## [0.2.0] - 2026-05-31
 
 Conformance, breadth, the v0.2 design principle, and color emoji.

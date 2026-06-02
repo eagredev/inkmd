@@ -6,15 +6,17 @@
 
 | Metric | inkmd | WeasyPrint | Ratio |
 |--------|-------|------------|-------|
-| Install size (venv) | 10.5 MB | 74.6 MB | 7.1x smaller |
-| Cold-start render, ~1 page | 132 ms | 814 ms | 6.2x faster |
-| Cold-start render, ~11 pages | 174 ms | 1.40 s | 8.0x faster |
-| Peak RSS, ~1 page | 17 MB | 65 MB | 3.8x lower |
-| Peak RSS, ~11 pages | 19 MB | 122 MB | 6.4x lower |
+| Cold-start render, ~1 page | 138 ms | 879 ms | 6.4x faster |
+| Cold-start render, ~11 pages | 227 ms | 1.64 s | 7.2x faster |
+| Peak RSS, ~1 page | 18 MB | 65 MB | 3.6x lower |
+| Peak RSS, ~11 pages | 20 MB | 122 MB | 6.2x lower |
+| Install size (venv) | 22.2 MB | 74.6 MB | 3.4x smaller |
 | Output size, ~1 page | 10.4 KB | 17.1 KB | inkmd 1.6x smaller |
-| Output size, ~11 pages | 150.0 KB | 121.8 KB | WeasyPrint 1.23x smaller |
+| Output size, ~11 pages | 150.6 KB | 121.8 KB | WeasyPrint 1.24x smaller |
 
-inkmd is 6 to 8x faster, 4 to 6x lighter on memory, and ~7x smaller to install. Output size goes either way depending on document size (see "Output size crossover" below).
+inkmd is 6 to 7x faster, 3 to 6x lighter on memory, and 3.4x smaller to install (22.2 MB vs 74.6 MB) while needing zero system packages. Output size goes either way depending on document size (see "Output size crossover" below).
+
+> **Install size note:** inkmd bundles the full Noto Color Emoji font (~10 MB) so emoji render anywhere without a system font — that's the bulk of the 22.2 MB. The font-less zipapp (`inkmd.pyz`, ~170 KB) is the size-sensitive distribution. inkmd's advantage over WeasyPrint is *zero system dependencies*, not just raw size: 22.2 MB of pip-installable wheel beats 74.6 MB of wheel **plus** 350–550 MB of system packages (Pango/Cairo/GObject) that break on Alpine and Windows.
 
 ## Caveats up front
 
@@ -55,20 +57,20 @@ Two real documents from the repo:
 
 ## Results
 
-Run on 2026-05-13 against `inkmd 0.2.0` and `weasyprint 68.1` with `markdown 3.10.2`, Python 3.13, on SteamOS x86_64.
+Run on 2026-06-02 against `inkmd 0.2.0` and `weasyprint 68.1` with `markdown 3.10.2`, Python 3.13, on SteamOS x86_64.
 
-A previous run on 2026-05-12 measured `inkmd 0.1.0` against the same WeasyPrint version. v0.2 added reference links, hard breaks, indented code blocks, HTML passthrough, image embedding, task lists, and a URL-scheme security model — each adds parser and renderer work. The result is a small (5-15%) regression on speed and memory ratios; the order-of-magnitude advantage holds.
+A previous run on 2026-05-12 measured `inkmd 0.1.0` against the same WeasyPrint version. v0.2 added reference links, hard breaks, indented code blocks, HTML passthrough, image embedding, task lists, a URL-scheme security model, and bundled color emoji — each adds parser/renderer work or install weight. Speed and memory ratios hold within a small band; the install-size ratio dropped from the v0.1 measurement because v0.2 bundles the ~10 MB emoji font (see note below).
 
 ### Install footprint
 
 ```
-inkmd venv:      10.5 MB
+inkmd venv:      22.2 MB
 weasyprint venv: 74.6 MB
 ```
 
-A complete `inkmd` install is 10.5 MB total venv. A complete `weasyprint + markdown` install is 74.6 MB.
+A complete `inkmd` install is 22.2 MB total venv. A complete `weasyprint + markdown` install is 74.6 MB — *plus* 350–550 MB of system packages (Pango, Cairo, GObject) that pip can't install and that break on Alpine and Windows. inkmd needs none of those.
 
-The `inkmd` package itself is around 1.2 MB. About 4,700 lines of that is generated AFM kerning data; the rest of the package is around 500 KB. The remainder of the venv is Python's `pip` and base files.
+The `inkmd` package itself is 11.67 MB, of which the bundled Noto Color Emoji font is 10.18 MB — bundled so emoji render anywhere without a system font. The remaining ~1.5 MB is the code plus ~4,700 lines of generated AFM kerning data. If you don't need emoji, the font-less `inkmd.pyz` zipapp is ~170 KB. The rest of the venv is Python's `pip` and base files.
 
 ### Cold-start render
 
@@ -76,14 +78,14 @@ This is what you feel from a CLI invocation or a serverless cold start. Each too
 
 ```
 Small (~1 page, ~1 KB markdown -> ~10 KB PDF):
-  inkmd:      median 132 ms
-  weasyprint: median 814 ms, min 719 ms
-  ratio: WeasyPrint takes 6.2x longer
+  inkmd:      median 138 ms
+  weasyprint: median 879 ms
+  ratio: WeasyPrint takes 6.4x longer
 
 Medium (~11 pages, ~15 KB markdown -> ~150 KB PDF):
-  inkmd:      median 174 ms
-  weasyprint: median 1.40 s, min 1.37 s
-  ratio: WeasyPrint takes 8.0x longer
+  inkmd:      median 227 ms
+  weasyprint: median 1.64 s
+  ratio: WeasyPrint takes 7.2x longer
 ```
 
 The ratio grows with document size because WeasyPrint's per-page render cost is higher, while inkmd's added work per page is mostly text wrapping and font measurement (both well-cached).
@@ -94,11 +96,11 @@ Peak resident-set size during a single subprocess render.
 
 ```
 Small (~1 page):
-  inkmd:      17 MB
+  inkmd:      18 MB
   weasyprint: 65 MB
 
 Medium (~11 pages):
-  inkmd:      19 MB
+  inkmd:      20 MB
   weasyprint: 122 MB
 ```
 

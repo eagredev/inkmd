@@ -32,10 +32,10 @@ Measured against `WeasyPrint + markdown` (the closest pure-Python alternative) o
 
 | Metric | inkmd | WeasyPrint | Ratio |
 |--------|-------|------------|-------|
-| Install size (venv) | 10.5 MB | 74.6 MB | 7.1x smaller |
-| Cold-start render, ~1 page | 132 ms | 814 ms | 6.2x faster |
-| Cold-start render, ~11 pages | 174 ms | 1.40 s | 8.0x faster |
-| Peak RSS, ~11 pages | 19 MB | 122 MB | 6.4x lower |
+| Cold-start render, ~1 page | 138 ms | 879 ms | 6.4x faster |
+| Cold-start render, ~11 pages | 227 ms | 1.64 s | 7.2x faster |
+| Peak RSS, ~11 pages | 20 MB | 122 MB | 6.2x lower |
+| Install size (venv) | 22.2 MB | 74.6 MB | 3.4x smaller, zero system deps |
 
 WeasyPrint produces slightly smaller PDFs for documents over a few pages (it compresses content streams; inkmd does not). WeasyPrint also supports full Unicode, page-splitting tables, and CSS, which inkmd does not. inkmd does support images as of v0.2 (PNG and JPEG embedding). The right tool depends on your input and your environment — the [comparisons doc](docs/comparisons.md) has the full picture.
 
@@ -66,7 +66,7 @@ For the longer, honest version of how inkmd compares against every realistic alt
 
 ## Status
 
-**v0.2, MIT-licensed.** 788 tests across 33 files. Stdlib-only, Python 3.9+. Byte-deterministic output.
+**v0.2, MIT-licensed.** 808 tests across 34 files. Stdlib-only, Python 3.9+. Byte-deterministic output.
 
 Conformance against the public spec suites: CommonMark 0.31.2 at 554/652 (85.0%); GFM extensions at 20/28 (71.4%). The full per-section breakdown, the v0.3-tier and v0.4-tier classification of remaining failures, and the real-world-impact framing are in [`docs/conformance.md`](docs/conformance.md). Threat model in [`docs/security.md`](docs/security.md). Spec-edge render samples in [`docs/gallery/`](docs/gallery/), and a real-world rendering gallery (the Ruff README, a Rust Book chapter, a Simon Willison TIL, and inkmd's own README) in [`docs/gallery/real-world/`](docs/gallery/real-world/).
 
@@ -80,7 +80,7 @@ From PyPI:
 pip install inkmd
 ```
 
-Or grab the single-file zipapp (no `pip` install required). Each tagged release attaches an `inkmd.pyz` of around 300 KB that you can drop anywhere Python 3.9+ is available:
+Or grab the single-file zipapp (no `pip` install required). Each tagged release attaches an `inkmd.pyz` of around 170 KB that you can drop anywhere Python 3.9+ is available:
 
 ```sh
 curl -L -o inkmd.pyz https://github.com/eagredev/inkmd/releases/latest/download/inkmd.pyz
