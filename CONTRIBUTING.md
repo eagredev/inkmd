@@ -15,8 +15,9 @@ ambiguous work is best discussed in an issue first.
   python tests/conformance/run_gfm.py --extensions-only
   ```
 - Output is still deterministic: the gallery PDFs in `docs/gallery/`
-  re-render byte-identically. The session-handoff snippet at the
-  bottom of `docs/internals.md` has the re-render command.
+  re-render byte-identically. The re-render commands are in
+  [`docs/gallery/README.md`](docs/gallery/README.md) (spec-edge set) and
+  `scripts/render_gallery.py` (real-world set).
 
 ## Project shape
 

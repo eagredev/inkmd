@@ -1,10 +1,9 @@
 # inkmd render gallery
 
-These are *adversarial* sample inputs — markdown chosen to probe
+These are *adversarial* sample inputs: markdown chosen to probe
 the edges of the parser and layout engine, not to demonstrate
-typical use. Each one exists because someone on Hacker News or
-a similar venue is likely to type something like it into our
-tool and screenshot the result.
+typical use. Each one is the kind of input people throw at a
+markdown tool to try to break it.
 
 For each input, the source markdown lives in `sources/`, and
 the rendered PDF is committed at the top level of this directory

@@ -38,6 +38,7 @@ from inkmd.ast import (
     Emphasis,
     HardBreak,
     Heading,
+    HtmlBlock,
     HtmlInline,
     Image,
     Inline,
@@ -206,9 +207,44 @@ def filter_document(doc: Document, *, html: bool = True) -> Document:
     return Document(blocks=tuple(_filter_block(b) for b in doc.blocks))
 
 
+# Block-level HTML (CommonMark §4.6) tags that inkmd's PDF allow-list
+# interprets as a paragraph of inline content rather than leaving as an
+# opaque passthrough region. ``<img>`` (hero/badge images) and ``<p>``
+# (alignment wrappers, figure idiom) carry the same PDF semantics as the
+# inline-HTML promotion path; everything else (div, table, script, ...)
+# stays an HtmlBlock and degrades to extracted text at render time.
+_PROMOTABLE_HTML_BLOCK_TAGS = ("img", "p")
+
+
+def _html_block_first_tag(raw: str) -> str | None:
+    """Lowercase name of the first open tag in a raw HTML block, or None."""
+    s = raw.lstrip()
+    if not s.startswith("<") or s.startswith("</") or s.startswith("<!") \
+            or s.startswith("<?"):
+        return None
+    j = 1
+    name = []
+    while j < len(s) and (s[j].isalnum() or s[j] == "-"):
+        name.append(s[j])
+        j += 1
+    return "".join(name).lower() if name else None
+
+
 def _filter_block(block):
     if isinstance(block, Paragraph):
         return Paragraph(inlines=_filter_inlines(block.inlines))
+    if isinstance(block, HtmlBlock):
+        # PDF-only promotion: a block-level <img>/<p> region carries the
+        # same allow-list semantics as inline HTML. Re-parse its raw as
+        # inline content and run the allow-list, yielding a Paragraph the
+        # downstream image/figure recognisers can act on. Non-promotable
+        # blocks (div/table/script/comments) stay HtmlBlock and degrade
+        # to extracted text in render._render_html_block.
+        if _html_block_first_tag(block.raw) in _PROMOTABLE_HTML_BLOCK_TAGS:
+            from inkmd.parser import _parse_inlines
+            inlines = _filter_inlines(_parse_inlines(block.raw.rstrip("\n")))
+            return Paragraph(inlines=inlines)
+        return block
     if isinstance(block, Heading):
         return Heading(level=block.level, inlines=_filter_inlines(block.inlines))
     if isinstance(block, BlockQuote):

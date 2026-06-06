@@ -12,6 +12,7 @@ library default stays Helvetica.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
 
 from inkmd.ast import (
@@ -23,6 +24,7 @@ from inkmd.ast import (
     Emphasis,
     HardBreak,
     Heading,
+    HtmlBlock,
     HtmlInline,
     Image,
     Inline,
@@ -359,7 +361,66 @@ def _render_block(
         return [_render_table(block, family, content_width)]
     if isinstance(block, ThematicBreak):
         return [_render_thematic_break()]
+    if isinstance(block, HtmlBlock):
+        return _render_html_block(block, family)
     raise NotImplementedError(f"render: unsupported block {type(block).__name__}")
+
+
+# HTML block tags whose ENTIRE content is non-document (scripts, styles,
+# comments, etc.): their bodies are dropped, not text-extracted.
+_HTML_BLOCK_DROP_TAGS = ("script", "style", "textarea")
+
+
+def _html_block_to_text(raw: str) -> str:
+    """Extract readable text from a block-level raw HTML region.
+
+    PDF output has no HTML engine, so block HTML degrades to its text
+    content (matching the inline-HTML allow-list philosophy in
+    html_filter): comments / CDATA / processing instructions / DOCTYPE
+    declarations and the bodies of <script>/<style>/<textarea> are
+    dropped entirely (they are not document content); every other tag's
+    syntax is stripped and its enclosed text kept. Whitespace runs are
+    collapsed so the result reads as a single flowing paragraph.
+    """
+    s = raw
+    # Drop comments, CDATA, PIs, and declarations (incl. <!DOCTYPE>).
+    s = re.sub(r"<!--.*?-->", " ", s, flags=re.DOTALL)
+    s = re.sub(r"<!\[CDATA\[.*?\]\]>", " ", s, flags=re.DOTALL)
+    s = re.sub(r"<\?.*?\?>", " ", s, flags=re.DOTALL)
+    s = re.sub(r"<![^>]*>", " ", s, flags=re.DOTALL)
+    # Drop the bodies of script/style/textarea entirely.
+    for tag in _HTML_BLOCK_DROP_TAGS:
+        s = re.sub(
+            rf"<{tag}\b[^>]*>.*?</{tag}\s*>",
+            " ",
+            s,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        # An unclosed drop-tag (rare, EOF) drops to end-of-region.
+        s = re.sub(
+            rf"<{tag}\b[^>]*>.*\Z",
+            " ",
+            s,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+    # Strip any remaining tags, keep their text content.
+    s = re.sub(r"</?[A-Za-z][^>]*>", " ", s, flags=re.DOTALL)
+    # Collapse whitespace.
+    s = " ".join(s.split())
+    return s
+
+
+def _render_html_block(block: HtmlBlock, family: FontFamily) -> list[RenderedBlock]:
+    """Render a block-level raw HTML region as extracted readable text.
+
+    Emits nothing when the region carries no document text (a pure
+    <!-- comment -->, a <script> block, a bare <table> skeleton, etc.).
+    """
+    text = _html_block_to_text(block.raw)
+    if not text:
+        return []
+    para = Paragraph(inlines=(Text(content=text),))
+    return [RenderedBlock(runs=tuple(_render_paragraph(para, family)))]
 
 
 def _paragraph_as_image(p: Paragraph) -> "Image | None":
@@ -894,7 +955,13 @@ def _render_code_block(cb: CodeBlock, family: FontFamily) -> RenderedBlock:
     # through the emoji splitter (emoji become atomic image runs / fallback
     # labels) and re-join the lines with newline-bearing text runs so the
     # preserve-lines splitter still sees the line structure.
-    line_texts = cb.content.split("\n")
+    # CodeBlock.content carries one trailing newline as each line's
+    # terminator (the spec convention; both fenced and indented code use it).
+    # Drop exactly that single trailing newline before splitting so it does
+    # not render as a phantom empty final line; genuine interior/trailing
+    # blank lines (content ending in two-or-more newlines) are preserved.
+    body = cb.content[:-1] if cb.content.endswith("\n") else cb.content
+    line_texts = body.split("\n")
     run_list: list[Run] = []
     for idx, line_text in enumerate(line_texts):
         if idx > 0:

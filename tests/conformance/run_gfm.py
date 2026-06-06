@@ -51,9 +51,13 @@ def load_spec() -> list[dict]:
 
 
 def run_one(md: str) -> str:
-    """Parse markdown with GFM extensions (autolinks=True)."""
+    """Parse markdown with GFM extensions (autolinks=True).
+
+    GFM mode also enables the disallowed-raw-html output filter, which
+    escapes the leading '<' of select tags (script/style/title/...).
+    """
     doc = parse(md, autolinks=True)
-    return render_document(doc)
+    return render_document(doc, disallow_raw_html=True)
 
 
 def main() -> int:

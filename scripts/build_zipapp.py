@@ -1,7 +1,7 @@
 """Build a single-file inkmd.pyz zipapp.
 
 Run from the repo root: `python scripts/build_zipapp.py`. Produces
-`dist/inkmd.pyz` — a self-contained executable Python archive that
+`dist/inkmd.pyz`, a self-contained executable Python archive that
 can be invoked as `python inkmd.pyz in.md -o out.pdf` (or directly
 on systems where the shebang resolves).
 
@@ -40,10 +40,10 @@ def build(output: Path) -> None:
 
     with tempfile.TemporaryDirectory() as staging:
         staging_path = Path(staging)
-        # The zipapp is the "single small file, runs anywhere" distribution
-        # — inkmd's featherweight tier. It omits the bundled color-emoji
-        # font (~10 MB); emoji fall back to text in the zipapp, exactly like
-        # the inkmd[lite] install. Everything else is identical.
+        # The zipapp is the "single small file, runs anywhere" distribution.
+        # It omits the bundled color-emoji font (~10 MB); emoji fall back to
+        # text in the zipapp, exactly like the inkmd[lite] install. Everything
+        # else is identical.
         # Also exclude compiled bytecode (`__pycache__` / `*.pyc`): sweeping
         # in stray `.pyc` files left by a prior test run would both bloat the
         # archive and make its bytes depend on the build environment, breaking

@@ -25,6 +25,7 @@ from inkmd.ast import (
     Emphasis,
     HardBreak,
     Heading,
+    HtmlBlock,
     HtmlInline,
     Image,
     Kbd,
@@ -42,6 +43,57 @@ from inkmd.ast import (
     ThematicBreak,
     Underline,
 )
+
+
+# GFM "Disallowed Raw HTML" extension: these tag names (open or close)
+# have their leading '<' escaped to '&lt;' on output. Everything else in
+# the raw HTML is passed through unchanged.
+_DISALLOWED_RAW_HTML_TAGS = frozenset(
+    (
+        "title", "textarea", "style", "xmp", "iframe",
+        "noembed", "noframes", "script", "plaintext",
+    )
+)
+
+_TAG_NAME_REST = set(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-"
+)
+
+# Module-level flag toggled by render_document(disallow_raw_html=...).
+# The GFM conformance harness sets it; strict CommonMark leaves it off so
+# raw <script>/<style>/<textarea> blocks stay verbatim.
+_DISALLOW_RAW_HTML = False
+
+
+def _apply_disallowed_raw_html(raw: str) -> str:
+    """Escape the leading '<' of any disallowed tag in a raw HTML string.
+
+    GFM extension: a '<' that begins an open or close tag whose name is in
+    ``_DISALLOWED_RAW_HTML_TAGS`` (case-insensitive) is rewritten to
+    '&lt;'. Other markup is untouched. Operates on already-recognised raw
+    HTML, so it only needs to find ``<tag`` / ``</tag`` boundaries.
+    """
+    if not _DISALLOW_RAW_HTML:
+        return raw
+    out: list[str] = []
+    i = 0
+    n = len(raw)
+    while i < n:
+        if raw[i] == "<":
+            j = i + 1
+            if j < n and raw[j] == "/":
+                j += 1
+            k = j
+            while k < n and raw[k] in _TAG_NAME_REST:
+                k += 1
+            name = raw[j:k].lower()
+            if name in _DISALLOWED_RAW_HTML_TAGS:
+                out.append("&lt;")
+                i += 1
+                continue
+        out.append(raw[i])
+        i += 1
+    return "".join(out)
 
 
 def escape_html(text: str) -> str:
@@ -153,8 +205,9 @@ def render_inline(node) -> str:
         )
     if isinstance(node, HtmlInline):
         # CommonMark passes inline HTML through verbatim. Each
-        # recognised HTML construct emits the literal source bytes.
-        return node.raw
+        # recognised HTML construct emits the literal source bytes; the
+        # GFM disallowed-raw-html filter (if enabled) escapes select tags.
+        return _apply_disallowed_raw_html(node.raw)
     if isinstance(node, HardBreak):
         # CommonMark reference renderer emits "<br />\n" so the next
         # piece of content appears on its own source line. Conformance
@@ -209,6 +262,11 @@ def render_block(node) -> str:
         return f"<h{node.level}>{render_inlines(node.inlines)}</h{node.level}>\n"
     if isinstance(node, ThematicBreak):
         return "<hr />\n"
+    if isinstance(node, HtmlBlock):
+        # CommonMark §4.6: block-level raw HTML is emitted verbatim. The
+        # node already carries its trailing newline. The GFM disallowed-
+        # raw-html filter (if enabled) escapes select tags.
+        return _apply_disallowed_raw_html(node.raw)
     if isinstance(node, CodeBlock):
         if node.info:
             # Take only the first whitespace-separated token as the lang.
@@ -216,9 +274,11 @@ def render_block(node) -> str:
             class_attr = f' class="language-{escape_html(lang)}"' if lang else ""
         else:
             class_attr = ""
+        # CodeBlock.content carries each line's newline terminator already
+        # (parser convention), so emit it verbatim — no "add a newline if
+        # missing" guess, which would drop a trailing blank line or mis-handle
+        # the empty code block.
         body = escape_html(node.content)
-        if body and not body.endswith("\n"):
-            body += "\n"
         return f"<pre><code{class_attr}>{body}</code></pre>\n"
     if isinstance(node, BlockQuote):
         inner = "".join(render_block(b) for b in node.blocks)
@@ -260,10 +320,17 @@ def _render_list_item(item: ListItem, tight: bool) -> str:
                 parts.append(render_inlines(b.inlines))
             else:
                 # Nested non-paragraph block within a tight item.
-                # The CommonMark reference renders nested lists indented;
-                # we emit the block's full HTML on its own line, surrounded
-                # by newlines, to match the reference output shape.
-                parts.append("\n" + render_block(b).rstrip("\n") + "\n")
+                # The CommonMark reference renders nested lists / quotes /
+                # code blocks on their own line. A leading newline breaks
+                # from preceding inline (paragraph) content, but when the
+                # previous part already ends with a newline (i.e. it was
+                # itself a block), adding another would emit a spurious
+                # blank line between two consecutive blocks (Lists 321).
+                block_html = render_block(b).rstrip("\n") + "\n"
+                if parts and parts[-1].endswith("\n"):
+                    parts.append(block_html)
+                else:
+                    parts.append("\n" + block_html)
         body = "".join(parts)
         return f"<li>{checkbox}{body}</li>\n"
     else:
@@ -303,6 +370,17 @@ def _render_table(table: Table) -> str:
     return "\n".join(lines) + "\n"
 
 
-def render_document(doc: Document) -> str:
-    """Serialise a Document to HTML matching CommonMark reference style."""
-    return "".join(render_block(b) for b in doc.blocks)
+def render_document(doc: Document, disallow_raw_html: bool = False) -> str:
+    """Serialise a Document to HTML matching CommonMark reference style.
+
+    ``disallow_raw_html`` enables the GFM "Disallowed Raw HTML" extension:
+    select tag names have their leading '<' escaped on output. Strict
+    CommonMark leaves it off so raw HTML passes through verbatim.
+    """
+    global _DISALLOW_RAW_HTML
+    prev = _DISALLOW_RAW_HTML
+    _DISALLOW_RAW_HTML = disallow_raw_html
+    try:
+        return "".join(render_block(b) for b in doc.blocks)
+    finally:
+        _DISALLOW_RAW_HTML = prev

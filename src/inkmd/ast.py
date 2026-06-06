@@ -276,6 +276,17 @@ class ThematicBreak:
     pass
 
 
+@dataclass(frozen=True)
+class HtmlBlock:
+    """A block-level raw HTML passthrough region (CommonMark §4.6).
+
+    Holds the literal source lines verbatim; no inline processing. For
+    HTML output the bytes are emitted unchanged. For PDF output the
+    render layer extracts readable text (see render._render_block).
+    """
+    raw: str
+
+
 # Column alignment for tables. None means "no explicit alignment".
 Alignment = str  # one of "left", "center", "right", or None
 
@@ -301,7 +312,9 @@ class Table:
     rows: tuple[tuple[TableCell, ...], ...]
 
 
-Block = Union[Paragraph, Heading, List, BlockQuote, CodeBlock, Table, ThematicBreak]
+Block = Union[
+    Paragraph, Heading, List, BlockQuote, CodeBlock, Table, ThematicBreak, HtmlBlock
+]
 
 
 # --- Document root --------------------------------------------------------

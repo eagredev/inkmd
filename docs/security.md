@@ -2,7 +2,7 @@
 
 > This document describes inkmd's threat model, what it does and
 > does not execute, known issues, and the responsibilities of
-> callers who feed it untrusted input. Current as of v0.2.0.
+> callers who feed it untrusted input. Current as of v0.3.0.
 
 ## Summary
 
@@ -27,10 +27,10 @@ The current security-relevant findings:
    is no HTML executor anywhere in inkmd. v0.2 adds a curated
    safe-subset HTML passthrough (see `docs/design/html-passthrough.md`)
    with a fixed allow-list of tags that have defined, statically-
-   resolved PDF rendering — no script interpretation, no CSS, no
+   resolved PDF rendering: no script interpretation, no CSS, no
    resource fetching, no JavaScript form fields.
 
-The known *non-issues* — things people might expect to be problems
+The known *non-issues*, things people might expect to be problems
 that are not:
 
 - inkmd does not fetch any URLs at parse or render time, unless the
@@ -119,7 +119,7 @@ In Scenario B, what can an adversarial author do?
 **Scenario C: untrusted operator.** Not a scenario we defend
 against. If the operator can call `inkmd.compile()` with arbitrary
 arguments, they can already write arbitrary bytes to any path
-their process can write to (via the PDF stdin path) — the file
+their process can write to (via the PDF stdin path). The file
 system permissions are the operator's perimeter, not ours.
 
 ## Resource exhaustion
@@ -186,16 +186,16 @@ schemes on the allow-list produce clickable link annotations:
 | `tel:` | Allowed |
 | `ftp:` | Allowed |
 | `xmpp:` | Allowed |
-| `javascript:` | **Filtered** — link text survives, annotation dropped |
+| `javascript:` | **Filtered**: link text survives, annotation dropped |
 | `data:` | **Filtered** |
 | `vbscript:` | **Filtered** |
 | `file:` | **Filtered** |
 | Anything else (custom app schemes, unknown URIs) | **Filtered** |
 
 Relative URLs and fragment-only URLs (no scheme) pass through
-unchanged — they cannot navigate out of the document.
+unchanged; they cannot navigate out of the document.
 
-**v0.1.0 shipped without this filter** — `javascript:alert(1)` and
+**v0.1.0 shipped without this filter.** `javascript:alert(1)` and
 similar schemes produced clickable annotations. The historical
 behaviour can be restored via `safe=False` on `compile()` /
 `render_file()`, or `--allow-unsafe-urls` on the CLI. The opt-out
@@ -206,14 +206,14 @@ compiling content from a vetted repository).
 **For untrusted input, leave the default in place.** Filtered
 links render as plain text with no visual indicator that filtering
 occurred. We deliberately do not advertise "a suspicious URL was
-here" in the rendered output — that would leak source information
+here" in the rendered output; that would leak source information
 to anyone viewing the PDF.
 
 ## Image handling
 
 inkmd embeds raster images as PDF Image XObjects. The same three
 sources are recognised in a markdown `![alt](src)` **and** in an HTML
-`<img src=...>` — the HTML tag is promoted to the identical image node
+`<img src=...>`. The HTML tag is promoted to the identical image node
 during filtering (before resolution), so it inherits exactly the gating
 below and is *not* a separate or wider surface than markdown images:
 
@@ -267,7 +267,7 @@ annotations, which are subject to the limitation above.
 Same markdown input always produces same PDF bytes. No clocks, no
 random IDs, no platform-dependent iteration order. This is
 documented in the README as a feature; it is also a security
-property — it lets callers:
+property. It lets callers:
 
 - Hash inputs and outputs and store the relationship as a trust
   binding (e.g. signed PDFs in audit pipelines).

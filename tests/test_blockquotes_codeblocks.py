@@ -103,8 +103,11 @@ def test_nested_blockquote():
 
 
 def test_simple_code_block():
+    # CodeBlock.content terminates each line (incl. the last) with a newline,
+    # the same convention indented code uses; the render path strips the final
+    # terminator so PDF output is unaffected.
     doc = parse("```\nhello\n```")
-    assert doc.blocks == (CodeBlock(content="hello", info=""),)
+    assert doc.blocks == (CodeBlock(content="hello\n", info=""),)
 
 
 def test_code_block_with_info_string():
@@ -112,7 +115,7 @@ def test_code_block_with_info_string():
     block = doc.blocks[0]
     assert isinstance(block, CodeBlock)
     assert block.info == "python"
-    assert block.content == "print(1)"
+    assert block.content == "print(1)\n"
 
 
 def test_code_block_preserves_indentation():
@@ -120,44 +123,44 @@ def test_code_block_preserves_indentation():
     doc = parse("```\n    indented line\n   three-space\n```")
     block = doc.blocks[0]
     assert isinstance(block, CodeBlock)
-    assert block.content == "    indented line\n   three-space"
+    assert block.content == "    indented line\n   three-space\n"
 
 
 def test_code_block_preserves_blank_lines():
     doc = parse("```\nline one\n\nline three\n```")
-    assert doc.blocks[0].content == "line one\n\nline three"
+    assert doc.blocks[0].content == "line one\n\nline three\n"
 
 
 def test_code_block_with_tildes():
     """`~~~` works as a fence character too."""
     doc = parse("~~~\nx = 1\n~~~")
-    assert doc.blocks == (CodeBlock(content="x = 1", info=""),)
+    assert doc.blocks == (CodeBlock(content="x = 1\n", info=""),)
 
 
 def test_code_block_close_fence_must_match_char():
     """Backtick-opened fence is NOT closed by tildes."""
     doc = parse("```\ncode\n~~~\nstill code\n```")
-    assert doc.blocks[0].content == "code\n~~~\nstill code"
+    assert doc.blocks[0].content == "code\n~~~\nstill code\n"
 
 
 def test_code_block_close_fence_must_be_at_least_as_long():
     """Close fence needs >= opening fence's number of marker chars."""
     doc = parse("````\ncode with ``` inside\n````")
     block = doc.blocks[0]
-    assert block.content == "code with ``` inside"
+    assert block.content == "code with ``` inside\n"
 
 
 def test_code_block_unclosed_at_eof():
     """An unclosed code block ends at end-of-file."""
     doc = parse("```\nopen forever")
-    assert doc.blocks[0].content == "open forever"
+    assert doc.blocks[0].content == "open forever\n"
 
 
 def test_code_block_does_not_parse_inline_markdown():
     """Asterisks and backticks inside a code block stay literal."""
     doc = parse("```\n**not bold** `not code`\n```")
     block = doc.blocks[0]
-    assert block.content == "**not bold** `not code`"
+    assert block.content == "**not bold** `not code`\n"
 
 
 def test_indented_fence_strips_matching_indent():
@@ -167,7 +170,7 @@ def test_indented_fence_strips_matching_indent():
     block = doc.blocks[0]
     assert isinstance(block, CodeBlock)
     # First content line had 2 spaces → 0; second had 6 → 4.
-    assert block.content == "content\n    deeper"
+    assert block.content == "content\n    deeper\n"
 
 
 def test_fence_after_list_at_column_zero():
@@ -195,7 +198,7 @@ def test_fence_after_list_at_column_zero():
     kinds = [type(b).__name__ for b in doc.blocks]
     assert kinds == ["List", "CodeBlock", "Paragraph"]
     code = doc.blocks[1]
-    assert code.content == "x = 1"
+    assert code.content == "x = 1\n"
     assert code.info == "python"
 
 

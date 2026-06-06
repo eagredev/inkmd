@@ -117,12 +117,29 @@ def test_table_ends_at_blank_line():
     assert isinstance(doc.blocks[1], Paragraph)
 
 
-def test_table_ends_at_non_row_line():
-    """A non-pipe line ends the table; that line is then parsed normally."""
-    doc = parse("| A |\n| --- |\n| 1 |\nNot a row.")
+def test_table_ends_at_block_construct():
+    """A block-level construct (here a blank line) ends the table.
+
+    Per GFM §4.10 a table is broken only by a blank line or the start of
+    another block-level structure — NOT by a plain paragraph line, which is
+    absorbed as a continuation row (see test_table_absorbs_lazy_row_line).
+    """
+    doc = parse("| A |\n| --- |\n| 1 |\n\nNot a row.")
     assert len(doc.blocks) == 2
     assert isinstance(doc.blocks[0], Table)
     assert isinstance(doc.blocks[1], Paragraph)
+
+
+def test_table_absorbs_lazy_row_line():
+    """A non-pipe paragraph line immediately after table rows continues the
+    table as a row whose text fills the first cell (GFM §4.10, example 202)."""
+    doc = parse("| A | B |\n| --- | --- |\n| 1 | 2 |\nlazy")
+    assert len(doc.blocks) == 1
+    t = doc.blocks[0]
+    assert isinstance(t, Table)
+    assert len(t.rows) == 2
+    assert t.rows[1][0] == TableCell(inlines=(Text("lazy"),))
+    assert t.rows[1][1] == TableCell(inlines=())
 
 
 def test_lone_paragraph_with_pipe_is_not_a_table():

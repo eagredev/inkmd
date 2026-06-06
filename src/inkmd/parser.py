@@ -29,6 +29,7 @@ from inkmd.ast import (
     Emphasis,
     HardBreak,
     Heading,
+    HtmlBlock,
     HtmlInline,
     Image,
     Inline,
@@ -196,7 +197,14 @@ def _try_parse_link_ref_def(
     while i < n:
         ch = text[i]
         if ch == "\\" and i + 1 < n:
-            label_buf += text[i + 1]
+            # Keep the backslash escape verbatim in the matching key.
+            # CommonMark label matching (§6.3) normalises by case-fold +
+            # whitespace-collapse only; it does NOT decode backslash
+            # escapes. So ``foo\!`` must NOT match a ``foo!`` definition
+            # (example 545), while ``foo\]`` matches another ``foo\]``
+            # (examples 194, 549, 550). The resolution side keeps the
+            # backslash too, so the two compare consistently.
+            label_buf += text[i:i + 2]
             i += 2
             continue
         if ch == "[":
@@ -235,19 +243,25 @@ def _try_parse_link_ref_def(
     if url is None:
         return None
     # Try to find an optional title. Title must start after whitespace,
-    # with at most one newline between URL and title.
+    # with at most one newline between URL and title. CommonMark requires
+    # at least one whitespace character between the URL and the title; a
+    # title glued directly to the URL (e.g. ``<bar>(baz)``) is NOT a title
+    # and makes the whole construct an invalid definition (example 201).
     title = ""
     after_url = i
     nl = 0
     j = i
+    saw_ws = False
     while j < n and text[j] in " \t":
         j += 1
+        saw_ws = True
     if j < n and text[j] == "\n":
         nl += 1
         j += 1
+        saw_ws = True
         while j < n and text[j] in " \t":
             j += 1
-    if j < n and text[j] in '"\'(':
+    if saw_ws and j < n and text[j] in '"\'(':
         quote = text[j]
         close = ")" if quote == "(" else quote
         k = j + 1
@@ -368,6 +382,31 @@ def _scan_link_references(
         if not can_start:
             i += 1
             continue
+        # A link-reference definition INSIDE a blockquote is still collected
+        # document-wide (CommonMark §4.7, example 218: ``[foo]`` then
+        # ``> [foo]: /url`` — the def resolves and the blockquote renders
+        # empty). Strip the blockquote prefix, parse the def on the stripped
+        # content, and on success replace the def lines with bare ``>`` so the
+        # (now empty) blockquote structure survives. Only single-line defs
+        # inside a quote are handled (multi-line wrapped defs in a quote are
+        # vanishingly rare); fall through otherwise.
+        if line.lstrip(" ").startswith(">"):
+            bq_stripped = _try_blockquote_prefix(line)
+            if bq_stripped is not None:
+                bq_result = _try_parse_link_ref_def(bq_stripped + "\n", 0)
+                if bq_result is not None:
+                    label, url, title, _ = bq_result
+                    out.append((label, url, title))
+                    # Keep the line as a bare blockquote marker so the empty
+                    # blockquote still renders; the def text is consumed.
+                    lines[i] = ">"
+                    i += 1
+                    can_start = True
+                    continue
+            # Blockquote line that is not a def: re-arm and move on.
+            can_start = True
+            i += 1
+            continue
         # Lines at 4+ columns of indent are indented code blocks; skip.
         if _leading_indent_cols(line) >= 4:
             can_start = False
@@ -478,6 +517,31 @@ def _strip_leading_cols(line: str, want: int) -> str:
     return line[i:]
 
 
+def _expand_leading_ws(s: str, start_col: int) -> str:
+    """Expand the leading whitespace run of ``s`` to spaces at absolute cols.
+
+    Tabs advance to the next multiple-of-4 column counted from ``start_col``,
+    becoming the equivalent number of spaces; the first non-whitespace char
+    and everything after it is appended unchanged. Used where a tab spans a
+    container content boundary (after ``>`` or a list marker) and its residual
+    columns must survive as spaces for later indented-code detection
+    (CommonMark §2.2 tab expansion; Tabs examples 6, 7).
+    """
+    col = start_col
+    out: list[str] = []
+    i = 0
+    while i < len(s) and s[i] in " \t":
+        if s[i] == " ":
+            out.append(" ")
+            col += 1
+        else:
+            width = 4 - (col % 4)
+            out.append(" " * width)
+            col += width
+        i += 1
+    return "".join(out) + s[i:]
+
+
 _ATX_MAX_INDENT = 3
 
 
@@ -489,6 +553,14 @@ class _ItemCtx:
     """Open list item: accumulates child blocks and an in-progress paragraph."""
     blocks: list[Block] = field(default_factory=list)
     paragraph_lines: list[str] = field(default_factory=list)
+    # Absolute column (from line start) where THIS item's content begins,
+    # i.e. this item's own marker column plus its marker width. Distinct
+    # from the list's ``content_indent``, which is frozen at the first
+    # item's value: a later sibling whose marker sits at a different column
+    # (e.g. ``- a`` then `` - b``) has its own content column, and
+    # continuation/child decisions must use the OPEN item's column, not the
+    # list's first-item column (CommonMark examples 310, 312; List items 295).
+    content_col: int = 0
     # Set when a blank line is seen inside this item — used to detect
     # loose lists (a blank line inside an item forces the parent list loose).
     had_blank_inside: bool = False
@@ -500,6 +572,20 @@ class _ItemCtx:
     # dropped as inter-block padding before flushing the block).
     indented_code_lines: list[str] = field(default_factory=list)
     indented_code_blank_buffer: list[str] = field(default_factory=list)
+    # Blockquote inside this item (CommonMark §5.2 + §5.1). When a `>`
+    # appears at the item's content column, lines are buffered here
+    # (prefix stripped) and flushed as a recursively-parsed BlockQuote
+    # into ``blocks`` when a non-quote line or the item closes. Mirrors
+    # the document-level _quote_lines/_in_quote machinery, scoped per item.
+    quote_lines: list[str] = field(default_factory=list)
+    in_quote: bool = False
+    # Block-level raw HTML inside this item (CommonMark §4.6). When an HTML
+    # block opens as item content, its verbatim lines accumulate here and the
+    # active start-condition type is held in ``html_block_type``; flushed as
+    # an HtmlBlock into ``blocks`` on the end condition or item close. Mirrors
+    # the document-level _html_block_lines/_html_block_type machinery.
+    html_block_lines: list[str] = field(default_factory=list)
+    html_block_type: "int | None" = None
 
 
 @dataclass
@@ -522,15 +608,24 @@ class _ListCtx:
     force_loose: bool = False  # set if any item had a blank inside it
 
 
-def _parse_blocks(text: str) -> list[Block]:
+def _parse_blocks(text: str, lazy_lines: "set[int] | None" = None) -> list[Block]:
     """Parse ``text`` into a list of block AST nodes.
 
     Container-aware: maintains a stack of open list containers. Each line
     walks down the stack to determine which containers it continues; the
     remainder is interpreted as a block-level construct (heading, list
     marker, paragraph content, or blank).
+
+    ``lazy_lines`` is a set of 0-based line indices that arrived as LAZY
+    paragraph continuations of a parent container (CommonMark §5.1). Such a
+    line must NOT be re-promoted to a block (list / setext heading / etc.)
+    when the container's content is re-parsed here — it stays part of the
+    open paragraph. This carries that provenance across the reparse boundary
+    (examples 238, 93, 292).
     """
     parser = _BlockParser()
+    if lazy_lines:
+        parser._lazy_line_nums = lazy_lines
     for line in text.split("\n"):
         parser.feed(line)
     return parser.finish()
@@ -548,6 +643,11 @@ class _BlockParser:
         self.doc_blocks: list[Block] = []
         self.list_stack: list[_ListCtx] = []
         self._doc_paragraph_lines: list[str] = []
+        # Lazy-continuation provenance (see _parse_blocks): 0-based indices of
+        # fed lines that must stay paragraph content, never re-promoted to a
+        # block. ``_line_num`` counts lines as feed() consumes them.
+        self._lazy_line_nums: set[int] = set()
+        self._line_num: int = -1
         # Fenced code block state — when active, lines are collected
         # verbatim until the close fence.
         self._code_fence_char: str | None = None
@@ -567,17 +667,44 @@ class _BlockParser:
         # accumulated, then parsed recursively into child blocks on close.
         self._in_quote: bool = False
         self._quote_lines: list[str] = []
+        # Indices into _quote_lines that were LAZY paragraph continuations
+        # (no `>` prefix); passed to the recursive parse so they are not
+        # re-promoted to blocks (examples 238, 93).
+        self._quote_lazy: set[int] = set()
         # Table state — when active at the document level, body rows are
         # accumulated until a blank or non-row line closes the table.
         self._in_table: bool = False
         self._table_headers: tuple[TableCell, ...] = ()
         self._table_alignments: tuple[str | None, ...] = ()
         self._table_rows: list[tuple[TableCell, ...]] = []
+        # Block-level raw HTML state (CommonMark §4.6). When active, lines
+        # are collected verbatim until the start condition's matching end
+        # condition is met (types 1-5 include the closer line; types 6-7
+        # end at the next blank line, which is NOT included).
+        self._html_block_type: int | None = None
+        self._html_block_lines: list[str] = []
 
     # --- Public driver ---------------------------------------------------
 
     def feed(self, line: str) -> None:
         """Process one input line."""
+        self._line_num += 1
+        # A line flagged as a lazy paragraph continuation (carried across a
+        # container reparse boundary) that would otherwise open a new block
+        # is forced to be paragraph content instead — it continues the open
+        # paragraph rather than interrupting it (CommonMark §5.1; examples
+        # 238, 93, 292). Only applies when there is actually an open
+        # paragraph for it to continue and the line isn't blank/fence/etc.
+        if (
+            self._line_num in self._lazy_line_nums
+            and self._code_fence_char is None
+            and not self.list_stack
+            and self._doc_paragraph_lines
+            and line.strip() != ""
+        ):
+            self._doc_paragraph_lines.append(_strip_for_hardbreak(line))
+            return
+
         # Inside a fenced code block, lines are taken verbatim until the
         # matching close fence. Nothing else interrupts.
         if self._code_fence_char is not None:
@@ -602,6 +729,58 @@ class _BlockParser:
             else:
                 self._code_lines.append(_strip_code_indent(line, self._code_indent))
             return
+
+        # Block-level raw HTML (CommonMark §4.6) — document level. When a
+        # block is open, lines are taken verbatim until the end condition.
+        if self._html_block_type is not None:
+            if self._html_block_type in (6, 7):
+                # End condition is a blank line, which is NOT included.
+                if line.strip() == "":
+                    self._close_html_block()
+                    return
+                self._html_block_lines.append(line)
+                return
+            # Types 1-5: the line containing the closer IS part of the
+            # block; trailing content after the closer stays in the block.
+            self._html_block_lines.append(line)
+            if _html_block_end_matches(line, self._html_block_type):
+                self._close_html_block()
+            return
+
+        # Block-level raw HTML inside the innermost open list item. Mirrors
+        # the document-level handling but scoped to the item, with each line
+        # dedented to the item's content column first (CommonMark §4.6 +
+        # §5.2, example 175: ``- <div>``). A line that no longer continues
+        # the item (blank for type 6/7, or a dedent / sibling marker) ends
+        # the block — handled by closing it before normal routing below.
+        if self.list_stack and self.list_stack[-1].items[-1].html_block_type is not None:
+            item = self.list_stack[-1].items[-1]
+            content_col = (
+                self.list_stack[-1].marker_indent
+                + self.list_stack[-1].content_indent
+            )
+            dedented = (
+                _strip_leading_cols(line, content_col)
+                if _leading_indent_cols(line) >= content_col
+                else line.lstrip(" \t")
+            )
+            if item.html_block_type in (6, 7):
+                if line.strip() == "":
+                    self._close_item_html_block(item)
+                    return
+                # A dedent below the item content column or a sibling marker
+                # ends the item's HTML block; re-route the line normally.
+                if _leading_indent_cols(line) < content_col and _try_marker(line) is not None:
+                    self._close_item_html_block(item)
+                    # fall through to normal handling
+                else:
+                    item.html_block_lines.append(dedented)
+                    return
+            else:
+                item.html_block_lines.append(dedented)
+                if _html_block_end_matches(dedented, item.html_block_type):
+                    self._close_item_html_block(item)
+                return
 
         # Indented code block (CommonMark section 4.4) — document level
         # only. Active when at least 4 leading spaces AND no open
@@ -639,14 +818,34 @@ class _BlockParser:
             self._close_indented_code()
 
         # Inside a table at the document level, every non-blank pipe line
-        # is a body row; blank or non-row closes the table.
+        # is a body row; blank or a block-level construct closes the table.
         if self._in_table:
             if line.strip() == "":
                 self._close_table()
                 return
             cells = _try_table_row(line, len(self._table_headers))
             if cells is None:
-                # Not a valid row → close the table and re-feed the line.
+                # GFM §4.10: the table is broken only by a blank line or the
+                # start of another block-level structure. A plain paragraph
+                # line (no pipes, not a block opener) continues the table as
+                # a row whose text fills the first cell (example 202:
+                # ``...table...\nbar`` → ``bar`` becomes a final row).
+                if (
+                    _leading_indent_cols(line) < 4
+                    and _try_atx_heading(line) is None
+                    and _try_fence_open(line) is None
+                    and _try_marker(line) is None
+                    and _try_blockquote_prefix(line) is None
+                    and not _is_thematic_break(line)
+                    and _html_block_start_type(line, in_paragraph=False) is None
+                ):
+                    first = TableCell(inlines=_parse_inlines(line.strip()))
+                    pad = (len(self._table_headers) - 1)
+                    self._table_rows.append(
+                        (first,) + tuple(TableCell(inlines=()) for _ in range(pad))
+                    )
+                    return
+                # Otherwise a block-level construct → close and re-handle.
                 self._close_table()
                 # Fall through to normal handling below.
             else:
@@ -670,14 +869,14 @@ class _BlockParser:
                 # also be paragraph-content shaped (not a new block
                 # opener, not a blank).
                 prev_line = self._quote_lines[-1] if self._quote_lines else ""
-                prev_is_para_shape = (
-                    prev_line.strip() != ""
-                    and not prev_line.startswith("    ")
-                    and _try_atx_heading(prev_line) is None
-                    and _try_fence_open(prev_line) is None
-                    and _try_marker(prev_line) is None
-                    and not _is_thematic_break(prev_line)
-                )
+                # The previous quoted line can be lazily continued if, after
+                # peeling any container prefixes it carries (list markers,
+                # nested ``>``), it ends in paragraph-shaped content — i.e.
+                # there is an open paragraph somewhere in its nesting for the
+                # continuation to attach to (CommonMark §5.1; example 292:
+                # ``> 1. > Blockquote`` then ``continued here.`` — the prev
+                # line nests down to the paragraph ``Blockquote``).
+                prev_is_para_shape = _line_ends_in_open_paragraph(prev_line)
                 if (
                     line.strip() != ""
                     and prev_is_para_shape
@@ -690,10 +889,15 @@ class _BlockParser:
                     # continuation into a blockquote: the spec says
                     # `===` arriving as a lazy continuation becomes
                     # paragraph text, not a heading promotion
-                    # (example 93). The quote's inner block parser
-                    # will see it as part of the paragraph because
-                    # only the FIRST setext-underline within a single
-                    # paragraph's accumulated lines promotes.
+                    # (example 93). Record this line's index as lazy so the
+                    # recursive reparse keeps it as paragraph content rather
+                    # than re-promoting it to a setext heading or a list
+                    # (examples 93, 238). The condition above already
+                    # excludes ATX/fence/thematic, but a setext underline or
+                    # an OVER-indented marker (4+ spaces, so _try_marker
+                    # returned None) can still slip through and would be
+                    # re-promoted on reparse without this flag.
+                    self._quote_lazy.add(len(self._quote_lines))
                     self._quote_lines.append(line.lstrip(" "))
                     return
                 # Non-quote line ends the blockquote.
@@ -730,6 +934,32 @@ class _BlockParser:
             self._indented_code_lines.append(_strip_leading_cols(line, 4))
             return
 
+        # Block-level raw HTML opener (CommonMark §4.6). Document level
+        # only (blockquote content is recursively re-parsed, so this fires
+        # there too via a fresh parser). Start tag must sit at <4 columns
+        # of indent; 4+ is indented code, handled above. Types 1-6 may
+        # interrupt an open paragraph; type 7 may not.
+        if (
+            _HTML_PASSTHROUGH_ENABLED
+            and not self.list_stack
+            and not self._in_quote
+            and not self._in_table
+            and line_indent_cols < 4
+        ):
+            start_type = _html_block_start_type(
+                line, in_paragraph=bool(self._doc_paragraph_lines)
+            )
+            if start_type is not None:
+                self._flush_doc_paragraph()
+                self._html_block_type = start_type
+                self._html_block_lines = [line]
+                # Types 1-5 can close on the very same line they open.
+                if start_type in (1, 2, 3, 4, 5) and _html_block_end_matches(
+                    line, start_type
+                ):
+                    self._close_html_block()
+                return
+
         # Fence open at column 0 (no list active) — short-circuit before
         # list-stack walking. Fence-opens inside list items are handled
         # later in _handle_content_line after the list-stack matching has
@@ -751,11 +981,16 @@ class _BlockParser:
             header_candidate = self._doc_paragraph_lines[0]
             alignments = _try_table_delimiter(line)
             if alignments is not None:
-                headers = _try_table_row(header_candidate, len(alignments))
-                if headers is not None:
-                    self._doc_paragraph_lines.clear()
-                    self._open_table(headers, alignments)
-                    return
+                # GFM tables: the header row and delimiter row must have the
+                # SAME number of cells, else it is not a table and stays a
+                # paragraph (GFM example 203: 2-col header, 1-col delimiter).
+                header_cells = _split_table_row(header_candidate)
+                if header_cells is not None and len(header_cells) == len(alignments):
+                    headers = _try_table_row(header_candidate, len(alignments))
+                    if headers is not None:
+                        self._doc_paragraph_lines.clear()
+                        self._open_table(headers, alignments)
+                        return
 
         # Walk the open list stack outermost-to-innermost. For each list,
         # determine whether this line:
@@ -766,7 +1001,37 @@ class _BlockParser:
         kept = 0
         sibling: tuple[int, _MarkerInfo] | None = None
         for idx, ctx in enumerate(self.list_stack):
-            item_indent = ctx.marker_indent + ctx.content_indent
+            # The continuation column is the OPEN item's own content column,
+            # not the list's frozen first-item column. ``- a`` then `` - b``
+            # gives item ``b`` content column 3 even though the list's
+            # content_indent is 2, so ``  - c`` (col 2) is a sibling of the
+            # list, not a child of ``b`` (examples 310, 312; List items 295).
+            open_item = ctx.items[-1]
+            item_indent = open_item.content_col
+            # CommonMark §5.2: an item that begins with a blank line cannot
+            # contain further content after another blank — "a list item can
+            # begin with at most one blank line". So an EMPTY item (no blocks,
+            # no open paragraph) followed by a blank cannot absorb subsequent
+            # indented content; the content starts a new top-level block
+            # (example 280: ``-\n\n  foo`` → empty item, then ``foo`` para).
+            item_is_empty = (
+                not open_item.blocks
+                and not open_item.paragraph_lines
+                and not open_item.indented_code_lines
+                and not open_item.in_quote
+            )
+            if item_is_empty and ctx.blank_before_next_item:
+                # A sibling marker still continues the list normally — only
+                # bare content is barred from joining the empty item (example
+                # 315: ``* a\n*\n\n* c`` keeps ``* c`` as a third sibling).
+                this_line_marker = _try_marker(line[ctx.marker_indent:]) if (
+                    ctx.marker_indent <= line_indent < item_indent
+                ) else None
+                if this_line_marker is None or not _marker_matches_list(
+                    this_line_marker, ctx
+                ):
+                    kept = idx
+                    break
             # Use tab-aware column count so a leading \t is recognised
             # against the item content column (CommonMark example 4).
             if line_indent_cols >= item_indent:
@@ -778,8 +1043,18 @@ class _BlockParser:
             # anywhere from this list's marker column up to (but not
             # reaching) the item content column — so off-by-one
             # indents in a flat bullet list stay siblings, not nested
-            # lists (examples 310, 311, 312).
-            if ctx.marker_indent <= line_indent < item_indent:
+            # lists (examples 310, 311, 312). BUT a marker indented 4+
+            # columns beyond the list's parent content column is too deep to
+            # be a marker at all (the 4-space-is-code rule), so it becomes
+            # lazy text of the open item instead (example 312:
+            # ``- a\n - b\n  - c\n   - d\n    - e`` → ``- e`` is text in d).
+            parent_content_col = (
+                self.list_stack[idx - 1].items[-1].content_col if idx > 0 else 0
+            )
+            if (
+                ctx.marker_indent <= line_indent < item_indent
+                and line_indent - parent_content_col <= 3
+            ):
                 # CommonMark §4.1: a thematic break wins over a list
                 # marker when the bytes are ambiguous. ``* * *`` at the
                 # outer-list's marker column is a thematic break, not a
@@ -800,6 +1075,90 @@ class _BlockParser:
             kept = idx
             break
 
+        # Lazy continuation INTO a nested item-blockquote (CommonMark §5.1
+        # + §5.2, examples 292/293). Before breaking out of the list, if the
+        # innermost open item has an open blockquote whose last line is
+        # paragraph-shaped, and this bare line is itself paragraph-shaped
+        # (no marker / fence / heading / thematic / blank), it lazily
+        # continues that nested quote's paragraph rather than ending the
+        # list. The line carries no container markers, so it attaches to the
+        # deepest open paragraph.
+        if (
+            sibling is None
+            and kept < len(self.list_stack)
+            and self.list_stack
+            and line.strip() != ""
+        ):
+            innermost_item = self.list_stack[-1].items[-1]
+            cur = line.lstrip(" ")
+            cur_para_shape = (
+                _try_atx_heading(cur) is None
+                and _try_fence_open(cur) is None
+                and _try_marker(cur) is None
+                and not _is_thematic_break(cur)
+                and _try_blockquote_prefix(cur) is None
+            )
+            if innermost_item.in_quote and innermost_item.quote_lines:
+                prev = innermost_item.quote_lines[-1]
+                prev_para_shape = (
+                    prev.strip() != ""
+                    and not prev.startswith("    ")
+                    and _try_atx_heading(prev) is None
+                    and _try_fence_open(prev) is None
+                    and _try_marker(prev) is None
+                    and not _is_thematic_break(prev)
+                )
+                if prev_para_shape and cur_para_shape:
+                    innermost_item.quote_lines.append(cur)
+                    return
+            elif innermost_item.paragraph_lines:
+                # Lazy continuation of the ITEM's own open paragraph
+                # (CommonMark §5.1). A plain paragraph-shaped line continues
+                # the paragraph (examples 290/291). A MARKER-shaped line also
+                # continues it when it is too deeply indented to be a valid
+                # marker here — i.e. 4+ columns past the deepest list's
+                # parent content column (example 312: ``    - e`` under item
+                # ``d`` is the text ``- e``, not a new list). Other block
+                # openers (fence/heading/thematic/quote) still break out.
+                deepest = self.list_stack[-1]
+                deepest_parent_col = (
+                    self.list_stack[-2].items[-1].content_col
+                    if len(self.list_stack) > 1 else 0
+                )
+                over_indented_marker = (
+                    _try_marker(cur) is not None
+                    and line_indent - deepest_parent_col >= 4
+                )
+                if cur_para_shape or over_indented_marker:
+                    self._add_paragraph_line(cur)
+                    return
+
+        # A blank line recorded on a DEEPER (about-to-close) list still
+        # separates the items of the OUTER list the next sibling belongs to,
+        # so the outer list is loose too (CommonMark §5.3, example 326:
+        # ``- a\n  - b\n  - c\n\n- d`` — the blank before ``- d`` makes the
+        # OUTER list loose even though it was recorded while the inner list
+        # was open). Propagate any pending blank from the closing lists down
+        # to the sibling's list before they are discarded.
+        if sibling is not None:
+            sibling_idx = sibling[0]
+            if any(
+                c.blank_before_next_item
+                for c in self.list_stack[sibling_idx:]
+            ):
+                self.list_stack[sibling_idx].blank_before_next_item = True
+        elif kept > 0 and kept < len(self.list_stack):
+            # Continuation into an OUTER item after a blank that closed a
+            # deeper nested list (CommonMark §5.3, example 325:
+            # ``* foo\n  * bar\n\n  baz`` — the blank after the nested list
+            # makes the OUTER item loose, and ``baz`` is a new paragraph in
+            # it). Propagate the pending blank to the kept (outer) list.
+            if any(
+                c.blank_before_next_item
+                for c in self.list_stack[kept:]
+            ):
+                self.list_stack[kept - 1].force_loose = True
+
         # Close all lists deeper than the kept depth.
         while len(self.list_stack) > kept:
             self._close_top_list()
@@ -812,7 +1171,11 @@ class _BlockParser:
             if list_ctx.blank_before_next_item:
                 list_ctx.force_loose = True
                 list_ctx.blank_before_next_item = False
-            list_ctx.items.append(_ItemCtx())
+            # This sibling's content begins at its own marker column
+            # (line_indent) plus its marker width — not the list's frozen
+            # first-item content column. A following line must be indented
+            # to THIS column to continue the item rather than be a sibling.
+            list_ctx.items.append(_ItemCtx(content_col=line_indent + marker.marker_width))
             if marker.content:
                 self._add_content_line(marker.content)
             return
@@ -825,7 +1188,18 @@ class _BlockParser:
             inner = self.list_stack[kept - 1]
             absolute_inner_content_col = inner.marker_indent + inner.content_indent
             if line_indent_cols >= absolute_inner_content_col:
-                remaining = _strip_leading_cols(line, absolute_inner_content_col)
+                # Expand the line's leading whitespace to absolute-column
+                # spaces BEFORE stripping, so a tab that spans the content
+                # boundary contributes its true column count and a later
+                # strip-4 for an indented code block is measured correctly
+                # (CommonMark Tabs example 5: ``- foo\n\n\t\tbar`` → ``  bar``;
+                # stripping the raw tabs in two passes mis-locates the 2nd
+                # tab). Only matters when the leading run contains a tab.
+                src = line
+                lead = src[:len(src) - len(src.lstrip(" \t"))]
+                if "\t" in lead:
+                    src = _expand_leading_ws(src, 0)
+                remaining = _strip_leading_cols(src, absolute_inner_content_col)
             else:
                 remaining = line.lstrip(" \t")
         else:
@@ -863,15 +1237,60 @@ class _BlockParser:
                 # through to normal content handling.
                 self._close_item_indented_code(item)
 
+        # If the list-stack walk closed all lists and we are back at the
+        # document level, re-check for a block-level HTML start (CommonMark
+        # §4.6). The early check in feed() is gated on an empty list stack,
+        # so a `<!-- -->` (or other HTML block) immediately after a list
+        # would otherwise be mis-parsed as a paragraph (Lists 308/309).
+        if (
+            kept == 0
+            and not self.list_stack
+            and _HTML_PASSTHROUGH_ENABLED
+            and not self._in_quote
+            and not self._in_table
+            and _leading_indent_cols(remaining) < 4
+        ):
+            start_type = _html_block_start_type(
+                remaining, in_paragraph=bool(self._doc_paragraph_lines)
+            )
+            if start_type is not None:
+                self._flush_doc_paragraph()
+                self._html_block_type = start_type
+                self._html_block_lines = [remaining]
+                if start_type in (1, 2, 3, 4, 5) and _html_block_end_matches(
+                    remaining, start_type
+                ):
+                    self._close_html_block()
+                return
+
+        # Likewise re-check for a document-level indented code block when the
+        # list-stack walk closed all lists. The early indented-code check in
+        # feed() is gated on an empty list stack, so a 4+-indented line that
+        # closes a list (no open paragraph to lazily continue) would otherwise
+        # be mis-parsed as a paragraph instead of indented code (CommonMark
+        # Lists example 313: ``1. a\n\n  2. b\n\n    3. c`` → ``3. c`` is code).
+        if (
+            kept == 0
+            and not self.list_stack
+            and not self._in_quote
+            and not self._in_table
+            and not self._doc_paragraph_lines
+            and _leading_indent_cols(line) >= 4
+        ):
+            self._indented_code_lines.append(_strip_leading_cols(line, 4))
+            return
+
         self._handle_content_line(remaining)
 
     def finish(self) -> list[Block]:
         """Flush any in-progress state and return the top-level blocks."""
         # A fence that's never closed still emits a CodeBlock (EOF closes it).
         if self._code_fence_char is not None:
-            self._close_code_fence()
+            self._close_code_fence(eof=True)
         if self._indented_code_lines:
             self._close_indented_code()
+        if self._html_block_type is not None:
+            self._close_html_block()
         while self.list_stack:
             self._close_top_list()
         if self._in_quote:
@@ -896,6 +1315,48 @@ class _BlockParser:
         self._indented_code_lines.clear()
         self._indented_code_blank_buffer.clear()
 
+    def _close_html_block(self) -> None:
+        """Emit the accumulated HTML block (CommonMark §4.6) and reset.
+
+        The raw content is the collected source lines joined by newlines
+        with a single trailing newline, matching the spec reference
+        output shape (the block's bytes verbatim, no inline processing).
+        """
+        if self._html_block_type is None:
+            return
+        lines = self._html_block_lines
+        # A type 1-5 block closed by EOF (not by its closer line) absorbs
+        # the document's final-newline artifact as a phantom empty line
+        # from the line split. Drop a single trailing empty line so the
+        # raw content matches the source verbatim.
+        if (
+            self._html_block_type in (1, 2, 3, 4, 5)
+            and lines
+            and lines[-1] == ""
+            and not _html_block_end_matches(lines[-1], self._html_block_type)
+        ):
+            lines = lines[:-1]
+        raw = "\n".join(lines) + "\n"
+        self.doc_blocks.append(HtmlBlock(raw=raw))
+        self._html_block_type = None
+        self._html_block_lines = []
+
+    def _close_item_html_block(self, item: "_ItemCtx") -> None:
+        """Emit an item-scoped HTML block (CommonMark §4.6 inside §5.2)."""
+        if item.html_block_type is None:
+            return
+        lines = item.html_block_lines
+        if (
+            item.html_block_type in (1, 2, 3, 4, 5)
+            and lines
+            and lines[-1] == ""
+            and not _html_block_end_matches(lines[-1], item.html_block_type)
+        ):
+            lines = lines[:-1]
+        item.blocks.append(HtmlBlock(raw="\n".join(lines) + "\n"))
+        item.html_block_type = None
+        item.html_block_lines = []
+
     # --- Container matching ----------------------------------------------
 
     # --- Content handling ------------------------------------------------
@@ -907,6 +1368,20 @@ class _BlockParser:
             top = self.list_stack[-1]
             if top.items:
                 item = top.items[-1]
+                if item.in_quote:
+                    # Blank inside an open item-blockquote: a blank that is
+                    # NOT followed by another `>` ends the quote (the spec's
+                    # blockquote does not extend across a blank line that
+                    # lacks a `>` marker). We can't see the next line yet, so
+                    # close now; a subsequent `>` opens a fresh quote, which
+                    # the inner re-parse already keeps as one paragraph break
+                    # only when the marker continues. Closing here matches
+                    # CommonMark §5.2 (example 320: `>` then bare `>` then a
+                    # new item — the trailing `>` line keeps the quote open
+                    # because it carries the marker, handled before this).
+                    self._close_item_quote(item)
+                    top.blank_before_next_item = True
+                    return
                 if item.paragraph_lines:
                     self._flush_item_paragraph(item)
                 elif item.indented_code_lines:
@@ -927,6 +1402,41 @@ class _BlockParser:
 
     def _handle_content_line(self, remaining: str) -> None:
         """Process a non-blank line after list-stack matching."""
+        # 0. Blockquote inside a list item (CommonMark §5.2). A `>` at the
+        #    item's content column opens or continues an item-scoped
+        #    blockquote; lines are buffered and recursively re-parsed on
+        #    close. Mirrors the document-level path (feed() at not-list).
+        if self.list_stack:
+            item = self.list_stack[-1].items[-1]
+            quote_stripped = _try_blockquote_prefix(remaining)
+            if quote_stripped is not None:
+                self._handle_item_quote_line(item, quote_stripped)
+                return
+            if item.in_quote:
+                # Lazy continuation: an unprefixed paragraph-shaped line
+                # continues an open paragraph inside the item's blockquote
+                # (CommonMark §5.1). Same shape-test as the document path.
+                prev_line = item.quote_lines[-1] if item.quote_lines else ""
+                prev_is_para_shape = (
+                    prev_line.strip() != ""
+                    and not prev_line.startswith("    ")
+                    and _try_atx_heading(prev_line) is None
+                    and _try_fence_open(prev_line) is None
+                    and _try_marker(prev_line) is None
+                    and not _is_thematic_break(prev_line)
+                )
+                if (
+                    prev_is_para_shape
+                    and _try_atx_heading(remaining) is None
+                    and _try_fence_open(remaining) is None
+                    and _try_marker(remaining) is None
+                    and not _is_thematic_break(remaining)
+                ):
+                    item.quote_lines.append(remaining.lstrip(" "))
+                    return
+                # Non-quote, non-lazy line ends the item's blockquote.
+                self._close_item_quote(item)
+
         # 1. ATX heading wins always.
         atx = _try_atx_heading(remaining)
         if atx is not None:
@@ -973,10 +1483,13 @@ class _BlockParser:
             ):
                 self._add_paragraph_line(remaining)
                 return
-            # CommonMark also forbids list markers (any kind) from
-            # interrupting a paragraph when the item content is
-            # blank — but that's an unusual edge case; we don't gate
-            # on it for v0.2.
+            # CommonMark §5.2: a list marker with EMPTY content cannot
+            # interrupt a paragraph (example 285: ``foo\n*`` is a two-line
+            # paragraph, not a paragraph followed by an empty bullet). The
+            # marker only opens a list when it starts a fresh block.
+            if interrupts_para and marker.content.strip() == "":
+                self._add_paragraph_line(remaining)
+                return
             self._handle_marker(remaining, marker)
             return
 
@@ -997,6 +1510,14 @@ class _BlockParser:
         # starting the new list.
         self._flush_current_paragraph()
 
+        # A blank line between the current item's earlier content and this
+        # nested list is an interior blank → the parent item's list is loose
+        # (CommonMark §5.3, example 109: ``1.  foo\n\n    - bar`` makes the
+        # OUTER item loose so ``foo`` is ``<p>``-wrapped).
+        if self.list_stack and self.list_stack[-1].blank_before_next_item:
+            self.list_stack[-1].force_loose = True
+            self.list_stack[-1].blank_before_next_item = False
+
         # Marker indent for the new list, in absolute (line-start) terms,
         # equals the outer-content-column plus the local indent inside it.
         outer_content_col = sum(
@@ -1011,13 +1532,19 @@ class _BlockParser:
         else:
             outer_content_col = 0
 
+        # CommonMark §5.2: when a list item starts empty (blank after the
+        # marker), the content column is the marker width plus one space —
+        # the marker char plus the single implicit following space (example
+        # 278: ``-\n      baz`` → content column 2, so ``      baz`` is
+        # indented code at col 2+4=6, stripping flush to ``baz``).
+        effective_width = marker.marker_width + (1 if marker.content == "" else 0)
         new_list = _ListCtx(
             ordered=marker.ordered,
             start=marker.start,
             marker_char=marker.marker_char,
             marker_indent=outer_content_col + local_indent,
-            content_indent=marker.marker_width - local_indent,
-            items=[_ItemCtx()],
+            content_indent=effective_width - local_indent,
+            items=[_ItemCtx(content_col=outer_content_col + effective_width)],
         )
         self.list_stack.append(new_list)
         if marker.content:
@@ -1038,6 +1565,58 @@ class _BlockParser:
             level, body = atx
             self._add_block(Heading(level=level, inlines=_parse_inlines(body)))
             return
+        # A fenced code block as the marker's first content line: ``1. ``` ``
+        # (CommonMark §5.2, examples 318/324). The fence opens a code block
+        # scoped to the item; without this the opening fence is mis-read as
+        # paragraph text and the *closing* fence opens the block instead.
+        if self.list_stack and _leading_indent_cols(content) < 4:
+            fence_open = _try_fence_open(content)
+            if fence_open is not None:
+                self._open_code_fence(fence_open)
+                return
+        # A blockquote as the marker's first content line: ``1. > quote``
+        # (CommonMark §5.2, examples 292/293). Route to the item-scoped
+        # blockquote buffer so it parses as a nested BlockQuote, not text.
+        if self.list_stack:
+            quote_stripped = _try_blockquote_prefix(content)
+            if quote_stripped is not None:
+                item = self.list_stack[-1].items[-1]
+                self._handle_item_quote_line(item, quote_stripped)
+                return
+        # A thematic break as the marker's first content line: ``- * * *``
+        # (CommonMark §4.1 + §5.2, example 61). Thematic break wins over a
+        # list marker for the same ambiguous bytes, so check it BEFORE the
+        # nested-marker branch (else ``* * *`` is eaten as nested bullets).
+        if self.list_stack and _is_thematic_break(content):
+            self._add_block(ThematicBreak())
+            return
+        # A block-level HTML start as the marker's first content line:
+        # ``- <div>`` (CommonMark §4.6 + §5.2, example 175). Open an
+        # item-scoped HTML block; subsequent verbatim lines are collected in
+        # feed() until the end condition or item close. Types 1-5 may close
+        # on the same line.
+        if self.list_stack and _HTML_PASSTHROUGH_ENABLED and _leading_indent_cols(content) < 4:
+            start_type = _html_block_start_type(content, in_paragraph=False)
+            if start_type is not None:
+                item = self.list_stack[-1].items[-1]
+                self._flush_item_paragraph(item)
+                item.html_block_type = start_type
+                item.html_block_lines = [content]
+                if start_type in (1, 2, 3, 4, 5) and _html_block_end_matches(
+                    content, start_type
+                ):
+                    self._close_item_html_block(item)
+                return
+        # A list marker as the marker's first content line: ``- - foo`` or
+        # ``1. - 2. foo`` (CommonMark §5.2, examples 298/299). The content
+        # opens a nested list inside the just-opened item. Guard on <4
+        # leading cols so ``-     foo`` (5+ spaces → indented code) is not
+        # misread as a marker.
+        if self.list_stack and _leading_indent_cols(content) < 4:
+            nested_marker = _try_marker(content)
+            if nested_marker is not None:
+                self._handle_marker(content, nested_marker)
+                return
         if (
             self.list_stack
             and _leading_indent_cols(content) >= 4
@@ -1154,10 +1733,32 @@ class _BlockParser:
         if not self._in_quote:
             return
         inner_text = "\n".join(self._quote_lines)
+        lazy = self._quote_lazy
         self._in_quote = False
         self._quote_lines = []
-        inner_blocks = _parse_blocks(inner_text)
+        self._quote_lazy = set()
+        inner_blocks = _parse_blocks(inner_text, lazy_lines=lazy)
         self.doc_blocks.append(BlockQuote(blocks=tuple(inner_blocks)))
+
+    def _handle_item_quote_line(self, item: "_ItemCtx", stripped: str) -> None:
+        """Append a `>`-prefixed line to the open item's blockquote buffer."""
+        # A blockquote starts a new block in the item; flush any open
+        # paragraph / indented code first so they don't bleed into it.
+        if not item.in_quote:
+            self._flush_item_paragraph(item)
+            if item.indented_code_lines:
+                self._close_item_indented_code(item)
+            item.in_quote = True
+        item.quote_lines.append(stripped)
+
+    def _close_item_quote(self, item: "_ItemCtx") -> None:
+        """Recursively parse the item's quote buffer and append a BlockQuote."""
+        if not item.in_quote:
+            return
+        inner_text = "\n".join(item.quote_lines)
+        item.in_quote = False
+        item.quote_lines = []
+        item.blocks.append(BlockQuote(blocks=tuple(_parse_blocks(inner_text))))
 
     # --- Table handling --------------------------------------------------
 
@@ -1217,9 +1818,27 @@ class _BlockParser:
         self._code_info = fence.info
         self._code_lines = []
 
-    def _close_code_fence(self) -> None:
-        """Emit the accumulated code lines as a CodeBlock."""
-        content = "\n".join(self._code_lines)
+    def _close_code_fence(self, eof: bool = False) -> None:
+        """Emit the accumulated code lines as a CodeBlock.
+
+        Content convention (shared with ``_close_indented_code``): each code
+        line — including the last and any trailing blank lines — carries its
+        own newline terminator; an empty code block is the empty string. This
+        keeps trailing blank lines inside a fence (CommonMark Lists example
+        318: ``['b', '', '']`` → ``'b\\n\\n\\n'``). The render path drops the
+        single final terminator before splitting, so PDF output is unchanged.
+
+        ``eof`` is True when the fence was closed by end-of-input rather than a
+        closing fence. In that case the final ``''`` in ``_code_lines`` is the
+        artifact of the source's trailing newline (the document text is
+        newline-terminated, so the split yields a phantom empty last element),
+        NOT a real trailing blank line — drop it so ``\\`\\`\\`\\n`` is an empty
+        code block, not a one-blank-line one.
+        """
+        lines = self._code_lines
+        if eof and lines and lines[-1] == "":
+            lines = lines[:-1]
+        content = "".join(ln + "\n" for ln in lines)
         block = CodeBlock(content=content, info=self._code_info)
         self._code_fence_char = None
         self._code_fence_len = 0
@@ -1245,6 +1864,10 @@ class _BlockParser:
         self._flush_item_paragraph(item)
         if item.indented_code_lines:
             self._close_item_indented_code(item)
+        if item.in_quote:
+            self._close_item_quote(item)
+        if item.html_block_type is not None:
+            self._close_item_html_block(item)
         if item.had_blank_inside:
             top.force_loose = True
 
@@ -1397,7 +2020,14 @@ def _try_marker(line: str) -> _MarkerInfo | None:
             content = ""
         elif ws_cols >= 5:
             marker_width = indent + 2  # marker + 1 space
-            content = rest[1:]
+            # The whitespace run is consumed down to one column; the surplus
+            # carries into content. If it contains tabs, expand them to
+            # spaces at ABSOLUTE columns first (CommonMark Tabs example 7:
+            # ``-\t\tfoo`` → content ``      foo`` so indented-code detection
+            # sees the right virtual indent), then drop the single consumed
+            # column. The marker char sits at column ``indent``; the ws run
+            # begins at column ``indent + 1``.
+            content = _expand_leading_ws(rest, indent + 1)[1:]
         else:
             marker_width = indent + 1 + ws_cols
             content = rest[j:]
@@ -1477,7 +2107,10 @@ def _try_atx_heading(line: str) -> tuple[int, str] | None:
     if i == 0 or i > 6:
         return None
     rest = stripped[i:]
-    if rest and rest[0] != " ":
+    # CommonMark §4.2: the `#` run must be followed by a space, a tab, or
+    # end of line (example 10: ``#\tFoo`` is a heading — a tab counts as
+    # the required whitespace, same as a space).
+    if rest and rest[0] not in " \t":
         return None
     body = rest.strip()
     # Strip optional trailing closing hashes (must be space-separated).
@@ -1537,6 +2170,39 @@ def _try_setext_underline(line: str) -> int | None:
 # --- Blockquote + fenced code recognition --------------------------------
 
 
+def _line_ends_in_open_paragraph(line: str) -> bool:
+    """True if ``line`` ends in paragraph-shaped content after peeling any
+    leading container prefixes (list markers, nested ``>`` blockquotes).
+
+    Used to decide blockquote lazy continuation when the previous quoted line
+    is itself nested (CommonMark §5.1; example 292: ``1. > Blockquote`` peels
+    to the open paragraph ``Blockquote``). A line whose innermost content is a
+    heading / fence / thematic break / blank has no open paragraph to continue.
+    """
+    cur = line
+    # Peel container prefixes (list markers and blockquotes) until we reach
+    # the innermost content. Bound the loop defensively.
+    for _ in range(64):
+        if cur.strip() == "" or cur.startswith("    "):
+            return False
+        bq = _try_blockquote_prefix(cur)
+        if bq is not None:
+            cur = bq
+            continue
+        marker = _try_marker(cur)
+        if marker is not None:
+            cur = marker.content
+            continue
+        break
+    return (
+        cur.strip() != ""
+        and not cur.startswith("    ")
+        and _try_atx_heading(cur) is None
+        and _try_fence_open(cur) is None
+        and not _is_thematic_break(cur)
+    )
+
+
 def _try_blockquote_prefix(line: str) -> str | None:
     """Return the line with the ``>`` blockquote prefix stripped, else None.
 
@@ -1555,15 +2221,14 @@ def _try_blockquote_prefix(line: str) -> str | None:
     if rest.startswith(" "):
         rest = rest[1:]
     elif rest.startswith("\t"):
-        # A tab immediately after `>` is treated as if expanded with
-        # the `>` at column 0: one column goes to the prefix's
-        # optional-space slot, the remaining tab columns become
-        # content. Full handling needs virtual-column accounting that
-        # propagates through subsequent indented-code-block detection;
-        # the simple substitution here suffices for paragraph content
-        # but not for nested code blocks (CommonMark example 6
-        # stays failing; queued for v0.3 list/quote indent refactor).
-        rest = "  " + rest[1:]
+        # A tab immediately after `>` (CommonMark §5.1, example 6:
+        # ``>\t\tfoo`` → ``<pre><code>  foo``). Expand tabs to spaces at
+        # ABSOLUTE columns (the `>` sits at column ``indent`` and consumes
+        # it; content begins at column ``indent + 1``), then drop the single
+        # optional-padding column the `>` prefix allows. Without absolute-
+        # column expansion a later tab is measured from the wrong column and
+        # the code content loses its leading spaces.
+        rest = _expand_leading_ws(rest, indent + 1)[1:]
     return rest
 
 
@@ -2200,6 +2865,36 @@ def _is_autolink_boundary(text: str, i: int, buf: str) -> bool:
 _BARE_URL_SCHEMES = ("https://", "http://", "ftp://")
 _BARE_URL_PREFIX = "www."
 
+# GFM extended-protocol autolink schemes (§6.9): the scheme is recognised
+# in a text node, the address that follows obeys the email rules, and the
+# scheme is kept in both the link text and the href.
+_PROTOCOL_SCHEMES = ("mailto:", "xmpp:")
+
+# Characters allowed in an xmpp ``/resource`` suffix (GFM example 634).
+_XMPP_RESOURCE_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@."
+)
+
+
+def _scan_xmpp_resource(text: str, start: int) -> int:
+    """Scan an optional xmpp ``/resource`` suffix at ``text[start:]``.
+
+    Per GFM §6.9 (examples 634-635), an xmpp autolink may carry a single
+    ``/`` followed by a resource of alphanumeric / ``@`` / ``.`` chars.
+    A further ``/`` is not part of the autolink, so we stop at it.
+    Returns the end index (unchanged when there is no resource).
+    """
+    n = len(text)
+    if start >= n or text[start] != "/":
+        return start
+    i = start + 1
+    while i < n and text[i] in _XMPP_RESOURCE_CHARS:
+        i += 1
+    # A bare trailing '/' with no resource chars is not consumed.
+    if i == start + 1:
+        return start
+    return i
+
 # Trailing punctuation stripped from a bare URL match (GFM § "extended
 # autolinks"). Semicolons aren't in GFM's official list but I find they
 # almost always belong to surrounding text not the URL itself.
@@ -2219,17 +2914,18 @@ _EMAIL_LOCAL_CHARS = frozenset(
 )
 _EMAIL_DOMAIN_CHARS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    "0123456789.-"
+    "0123456789.-_"
 )
 
 
 def _try_bare_autolink(text: str, start: int) -> tuple["AutoLink", int] | None:
     """Detect a GFM autolink at ``text[start:]``.
 
-    Returns ``(AutoLink, end_pos)`` or None. Handles three cases:
+    Returns ``(AutoLink, end_pos)`` or None. Handles these cases:
       1. Scheme-prefixed URL (``https://``, ``http://``, ``ftp://``)
       2. ``www.``-prefixed URL (auto-prefixed with ``http://``)
-      3. Bare email address (auto-prefixed with ``mailto:``)
+      3. Protocol autolink (``mailto:`` / ``xmpp:``) per GFM §6.9
+      4. Bare email address (auto-prefixed with ``mailto:``)
     """
     # 1. Scheme-prefixed.
     for scheme in _BARE_URL_SCHEMES:
@@ -2237,6 +2933,21 @@ def _try_bare_autolink(text: str, start: int) -> tuple["AutoLink", int] | None:
             end = _scan_url_body(text, start + len(scheme))
             if end is None:
                 return None
+            literal = text[start:end]
+            return AutoLink(url=literal, text=literal), end
+
+    # 1b. Protocol autolink: ``mailto:``/``xmpp:`` followed by an email
+    # (GFM extended protocol autolink, examples 633-635). The scheme is
+    # kept in BOTH the visible text and the href. ``xmpp:`` additionally
+    # allows a ``/resource`` suffix.
+    for proto in _PROTOCOL_SCHEMES:
+        if text.startswith(proto, start):
+            addr_start = start + len(proto)
+            end = _scan_email(text, addr_start)
+            if end is None:
+                return None
+            if proto == "xmpp:":
+                end = _scan_xmpp_resource(text, end)
             literal = text[start:end]
             return AutoLink(url=literal, text=literal), end
 
@@ -2316,6 +3027,27 @@ def _scan_bare_host_with_path(text: str, start: int) -> int | None:
     return _scan_url_body_after_host(text, i)
 
 
+def _trim_entity_suffix(text: str, start: int, end: int) -> int:
+    """Apply the GFM entity-suffix rule to a URL match ``text[start:end]``.
+
+    GFM §6.9 (example 627): if an autolink ends in ``;``, and that
+    semicolon is preceded by ``&`` followed by one or more alphanumeric
+    characters (i.e. it resembles an entity reference), the whole
+    ``&name;`` run is excluded from the autolink. Returns the adjusted
+    end index (the position of the ``&``), or ``end`` unchanged.
+    """
+    if end <= start or text[end - 1] != ";":
+        return end
+    j = end - 1  # at the ';'
+    k = j - 1
+    while k >= start and text[k].isalnum():
+        k -= 1
+    # k now points at the char before the alphanumeric run.
+    if k >= start and text[k] == "&" and k + 1 < j:
+        return k
+    return end
+
+
 def _scan_url_body_after_host(text: str, start: int) -> int:
     """Scan path/query/fragment portion of a URL starting at ``start``
     (which points at the first '/' after the host).
@@ -2330,6 +3062,10 @@ def _scan_url_body_after_host(text: str, start: int) -> int:
     i = start
     while i < n and text[i] in _URL_BODY_CHARS:
         i += 1
+    # Entity-like ``&name;`` suffix is excluded (example 627). Applied
+    # before the generic punctuation trim, which would otherwise strip
+    # only the ';' and leave the entity name behind.
+    i = _trim_entity_suffix(text, start, i)
     while i > start + 1 and text[i - 1] in _BARE_URL_TRAILING_PUNCT:
         i -= 1
     # Trim trailing unbalanced ')' — only at the very end after the
@@ -2372,6 +3108,9 @@ def _scan_url_body(text: str, start: int) -> int | None:
     i = host_end
     while i < n and text[i] in _URL_BODY_CHARS:
         i += 1
+    # Entity-like ``&name;`` suffix is excluded (example 627), before
+    # the generic punctuation trim that would only strip the ';'.
+    i = _trim_entity_suffix(text, start, i)
     # Trim trailing punctuation per GFM (period, comma, etc).
     while i > start + 1 and text[i - 1] in _BARE_URL_TRAILING_PUNCT:
         i -= 1
@@ -2385,12 +3124,22 @@ def _scan_url_body(text: str, start: int) -> int | None:
 
 
 def _scan_email(text: str, start: int) -> int | None:
-    """Scan a bare email address starting at ``start``.
+    """Scan a GFM extended email autolink starting at ``start``.
 
-    Returns the end index, or None if not an email. Requires
-    local-part chars, an @, domain chars containing at least one dot,
-    and a TLD of 2+ alpha chars. Trailing `.` etc. (sentence punctuation
-    after the email) is stripped, mirroring _scan_url_body.
+    Returns the end index, or None if not an email. Implements the GFM
+    §6.9 "extended email autolink" rule (examples 630-632):
+
+      * local part: one or more of alphanumeric / ``.`` / ``-`` / ``_`` /
+        ``+``;
+      * an ``@``;
+      * domain: one or more labels of alphanumeric / ``-`` / ``_``
+        separated by ``.``; at least one ``.`` is required;
+      * a trailing ``.`` is trimmed (not part of the address);
+      * the last character must not be ``-`` or ``_`` (the whole match
+        then fails — examples ``a.b-`` / ``a.b_``).
+
+    Note there is NO 2+-alpha-TLD requirement here: ``a.b-c_d@a.b`` is a
+    valid GFM email autolink even though ``b`` is a single-letter label.
     """
     n = len(text)
     # Local-part.
@@ -2403,24 +3152,47 @@ def _scan_email(text: str, start: int) -> int | None:
     local = text[start:local_end]
     if local.startswith(".") or local.endswith(".") or ".." in local:
         return None
-    # Domain — eat greedily, then trim trailing punctuation.
+    # Domain — eat greedily across the GFM domain char set.
     i += 1  # past @
     domain_start = i
     while i < n and text[i] in _EMAIL_DOMAIN_CHARS:
         i += 1
-    # Strip trailing '.' and ',' etc. (sentence punctuation).
-    while i > domain_start and text[i - 1] in ".,;:!?":
+    # A trailing '.' is excluded from the address (example 632 line 2).
+    while i > domain_start and text[i - 1] == ".":
         i -= 1
     domain = text[domain_start:i]
     if "." not in domain or domain.startswith("."):
         return None
-    tld = domain.rsplit(".", 1)[-1]
-    if len(tld) < 2 or not tld.isalpha():
+    # The last character must not be '-' or '_' (example 632 lines 3-4).
+    if domain.endswith("-") or domain.endswith("_"):
         return None
     return i
 
 
 # --- Link recognition ----------------------------------------------------
+
+
+def _inlines_contain_link(inlines: "tuple[Inline, ...]") -> bool:
+    """True if any descendant inline is a Link or AutoLink.
+
+    CommonMark §6.3: "a link can not contain another link". When a
+    candidate link's text already contains a (higher-precedence) inner
+    link, the outer brackets do not form a link — they stay literal and
+    the inner link wins (examples 518, 519, 532, 533). Images are NOT
+    links, so a link inside an image's alt text is fine and an image
+    inside link text is fine; only Link/AutoLink descendants inhibit.
+
+    We recurse through emphasis/strong/strikethrough children (which can
+    wrap a link) but stop at Image boundaries — a link nested inside an
+    image's alt does not make the enclosing text a "link container".
+    """
+    for node in inlines:
+        if isinstance(node, (Link, AutoLink)):
+            return True
+        if isinstance(node, (Emphasis, Strong, Strikethrough)):
+            if _inlines_contain_link(node.inlines):
+                return True
+    return False
 
 
 def _try_inline_link(text: str, start: int) -> tuple[Link, int] | None:
@@ -2446,6 +3218,10 @@ def _try_inline_link(text: str, start: int) -> tuple[Link, int] | None:
         inner_inlines = _parse_inlines(link_text)
     finally:
         _AUTOLINKS_ENABLED = prev
+    # CommonMark: a link can not contain another link. If the text holds
+    # an inner link, the outer brackets do not form a link.
+    if _inlines_contain_link(inner_inlines):
+        return None
     return Link(inlines=inner_inlines, url=url, title=title), end_pos
 
 
@@ -2469,33 +3245,100 @@ def _try_inline_image(text: str, start: int) -> tuple[Image, int] | None:
     return Image(inlines=inner_inlines, url=url, title=title), end_pos
 
 
-def _parse_bracketed_text(text: str, start: int) -> tuple[int, int, int] | None:
-    """Parse a ``[...]`` span starting at ``text[start]``.
+def _skip_tighter_inline(text: str, i: int) -> int | None:
+    """If an inline construct that binds tighter than a link bracket
+    starts at ``text[i]``, return the index just past it; else None.
 
-    Returns ``(text_start, text_end, end_pos)`` where ``text_start`` is
-    just past the ``[`` and ``end_pos`` is just past the closing ``]``,
-    or None if no matching ``]`` is found. Backslash escapes pass
-    through; nested ``[`` is rejected (the spec disallows nested
-    references and matched-bracket counting is simpler than the
-    full CommonMark "find matching ] across nested brackets" rule —
-    a v0.3 refinement if real-world cases demand it).
+    Per CommonMark §6.3, code spans, autolinks, and raw HTML tags bind
+    more tightly than the brackets of a link/image label. When scanning
+    a ``[...]`` label for its matching ``]``, any ``[`` or ``]`` that
+    falls *inside* one of these constructs must be skipped over rather
+    than counted as a bracket. This lets examples like
+    ``[foo`](/uri)``` and ``[foo <bar attr="](baz)">`` resolve the way
+    the spec requires (the inner bytes are opaque to bracket matching).
+
+    HTML-tag skipping is independent of ``_HTML_PASSTHROUGH_ENABLED``:
+    even when the tag is later rendered as literal text, it still inhibits
+    bracket matching here.
     """
-    if start >= len(text) or text[start] != "[":
+    n = len(text)
+    ch = text[i]
+    # Code span: a run of N backticks closed by exactly N backticks.
+    if ch == "`":
+        run_end = i
+        while run_end < n and text[run_end] == "`":
+            run_end += 1
+        close_start = _find_matching_backticks(text, run_end, run_end - i)
+        if close_start is not None:
+            return close_start + (run_end - i)
+        return None
+    # Autolink (<scheme:...> / <email>) then raw HTML tag.
+    if ch == "<":
+        auto = _try_autolink(text, i)
+        if auto is not None:
+            return auto[1]
+        html = _try_html_tag(text, i)
+        if html is not None:
+            return html[1]
+    return None
+
+
+def _scan_link_label_end(text: str, start: int) -> int | None:
+    """Find the ``]`` that closes the link/image label opening at ``start``.
+
+    ``text[start]`` must be ``[``. Returns the index of the matching
+    ``]`` (depth 0), or None if there is none. Implements the CommonMark
+    §6.3 rules for what may appear inside a label:
+
+      * Backslash-escaped brackets do not count.
+      * Brackets nest: an unescaped ``[`` increases depth, ``]``
+        decreases it; the label ends at the ``]`` that returns depth to 0.
+      * Code spans, autolinks, and raw HTML tags bind tighter — brackets
+        inside them are skipped (see ``_skip_tighter_inline``).
+    """
+    n = len(text)
+    if start >= n or text[start] != "[":
         return None
     i = start + 1
-    n = len(text)
-    text_start = i
+    depth = 0
     while i < n:
         ch = text[i]
         if ch == "\\" and i + 1 < n:
             i += 2
             continue
+        skip = _skip_tighter_inline(text, i)
+        if skip is not None:
+            i = skip
+            continue
         if ch == "]":
-            return text_start, i, i + 1
+            if depth == 0:
+                return i
+            depth -= 1
+            i += 1
+            continue
         if ch == "[":
-            return None
+            depth += 1
+            i += 1
+            continue
         i += 1
     return None
+
+
+def _parse_bracketed_text(text: str, start: int) -> tuple[int, int, int] | None:
+    """Parse a ``[...]`` span starting at ``text[start]``.
+
+    Returns ``(text_start, text_end, end_pos)`` where ``text_start`` is
+    just past the ``[`` and ``end_pos`` is just past the closing ``]``,
+    or None if no matching ``]`` is found. Bracket matching follows the
+    CommonMark §6.3 label rules (nested brackets allowed; code spans /
+    autolinks / raw HTML tags bind tighter), via ``_scan_link_label_end``.
+    """
+    if start >= len(text) or text[start] != "[":
+        return None
+    close = _scan_link_label_end(text, start)
+    if close is None:
+        return None
+    return start + 1, close, close + 1
 
 
 def _resolve_reference(
@@ -2504,20 +3347,20 @@ def _resolve_reference(
     """Look up ``label`` in the global ``_LINK_REFS`` table.
 
     Returns ``(url, title)`` on hit, or None on miss. Backslash escapes
-    inside the reference label are decoded (so ``[foo\\]bar]`` resolves
-    against the same key as ``[foo]: ...`` would store under
-    ``foo]bar``), then the result is normalised the same way as on the
-    storing side.
+    inside the reference label are kept verbatim (NOT decoded) so the
+    key matches the storing side, which also keeps them. Per CommonMark
+    §6.3 label matching is case-fold + whitespace-collapse only — a
+    ``foo\\!`` reference must not match a ``foo!`` definition (example
+    545), while ``foo\\]`` matches another ``foo\\]`` (examples 194/549).
     """
-    decoded = _decode_inline_escapes(label)
-    key = _normalise_link_label(decoded)
+    key = _normalise_link_label(label)
     if not key:
         return None
     return _LINK_REFS.get(key)
 
 
 def _try_reference_link(
-    text: str, start: int
+    text: str, start: int, forbid_inner_link: bool = True
 ) -> tuple[Link, int] | None:
     """Try to parse a reference-style link at ``text[start:]``.
 
@@ -2556,20 +3399,29 @@ def _try_reference_link(
             if resolved is None:
                 return None
             url, title = resolved
-            return _build_reference_link(first_label, url, title), end_second
+            link = _build_reference_link(
+                first_label, url, title, forbid_inner_link
+            )
+            return (link, end_second) if link is not None else None
         # Full: ``[text][label]`` — lookup uses second label; visible
         # text is the first bracket content.
         resolved = _resolve_reference(second_label)
         if resolved is None:
             return None
         url, title = resolved
-        return _build_reference_link(first_label, url, title), end_second
+        link = _build_reference_link(
+            first_label, url, title, forbid_inner_link
+        )
+        return (link, end_second) if link is not None else None
     # Shortcut form: ``[label]`` — lookup uses the bracketed text.
     resolved = _resolve_reference(first_label)
     if resolved is None:
         return None
     url, title = resolved
-    return _build_reference_link(first_label, url, title), end_first
+    link = _build_reference_link(
+        first_label, url, title, forbid_inner_link
+    )
+    return (link, end_first) if link is not None else None
 
 
 def _try_reference_image(
@@ -2585,19 +3437,25 @@ def _try_reference_image(
         return None
     if start + 1 >= len(text) or text[start + 1] != "[":
         return None
-    inner = _try_reference_link(text, start + 1)
+    # Image alt text MAY contain a link, so don't forbid inner links here.
+    inner = _try_reference_link(text, start + 1, forbid_inner_link=False)
     if inner is None:
         return None
     link, end_pos = inner
     return Image(inlines=link.inlines, url=link.url, title=link.title), end_pos
 
 
-def _build_reference_link(visible_label: str, url: str, title: str) -> Link:
+def _build_reference_link(
+    visible_label: str, url: str, title: str, forbid_inner_link: bool = True
+) -> Link | None:
     """Build a Link node for a reference, parsing visible text as inline.
 
     Reference resolution disables inner autolinks (per the same rule
     inline links use) so a bare URL appearing inside reference text
     doesn't become a nested AutoLink overlapping the outer Link.
+
+    Returns None when ``forbid_inner_link`` and the parsed text already
+    contains a link (CommonMark: links can't nest — examples 532, 533).
     """
     global _AUTOLINKS_ENABLED
     prev = _AUTOLINKS_ENABLED
@@ -2606,6 +3464,8 @@ def _build_reference_link(visible_label: str, url: str, title: str) -> Link:
         inner_inlines = _parse_inlines(visible_label)
     finally:
         _AUTOLINKS_ENABLED = prev
+    if forbid_inner_link and _inlines_contain_link(inner_inlines):
+        return None
     return Link(inlines=inner_inlines, url=url, title=title)
 
 
@@ -2621,38 +3481,16 @@ def _try_link_body(
     """
     if text[start] != "[":
         return None
-    i = start + 1
     n = len(text)
-    text_start = i
-    # 1. Find the matching ']'. Backslash escapes pass; nested links
-    # are forbidden by spec (a ``[`` inside the link text rejects the
-    # parse), BUT an image-inside-link is allowed: an embedded
-    # ``![alt](url)`` or ``![alt][ref]`` inside link text is part of
-    # the link's content, not a parse failure (CommonMark example 517).
-    # We handle this by recognising a leading ``!`` followed by ``[``
-    # and skipping over the matching bracket pair.
-    depth = 0
-    while i < n:
-        if text[i] == "\\" and i + 1 < n:
-            i += 2
-            continue
-        if text[i] == "]":
-            if depth == 0:
-                break
-            depth -= 1
-            i += 1
-            continue
-        if text[i] == "[":
-            # Plain ``[`` inside link text is allowed only as the
-            # start of an inline image (``![``); the bare bracket
-            # case still rejects per spec.
-            if i > start + 1 and text[i - 1] == "!":
-                depth += 1
-                i += 1
-                continue
-            return None
-        i += 1
-    if i >= n or text[i] != "]":
+    text_start = start + 1
+    # 1. Find the matching ']' for the link/image label. Nested brackets
+    # are allowed (CommonMark §6.3 label rules): a ``[`` inside the label
+    # increases depth and is matched by a later ``]``, which covers both
+    # nested-bracket link text (example 512) and image-inside-link
+    # (example 517). Code spans / autolinks / raw HTML inside the label
+    # bind tighter and inhibit bracket matching (examples 524-526).
+    i = _scan_link_label_end(text, start)
+    if i is None:
         return None
     text_end = i
     # 2. Must be followed by '('.
@@ -2794,6 +3632,130 @@ _HTML_ATTR_NAME_REST = set(
 )
 
 
+# CommonMark §4.6 type-6 block tag names (case-insensitive). A line
+# beginning with `<` or `</` then one of these names, followed by a
+# space/tab, end-of-line, `>`, or `/>`, starts an HTML block whose end
+# condition is a blank line.
+_HTML_BLOCK_TYPE6_TAGS = frozenset(
+    s.lower()
+    for s in (
+        "address", "article", "aside", "base", "basefont", "blockquote",
+        "body", "caption", "center", "col", "colgroup", "dd", "details",
+        "dialog", "dir", "div", "dl", "dt", "fieldset", "figcaption",
+        "figure", "footer", "form", "frame", "frameset", "h1", "h2", "h3",
+        "h4", "h5", "h6", "head", "header", "hr", "html", "iframe", "legend",
+        "li", "link", "main", "menu", "menuitem", "nav", "noframes", "ol",
+        "optgroup", "option", "p", "param", "search", "section", "summary",
+        "table", "tbody", "td", "tfoot", "th", "thead", "title", "tr",
+        "track", "ul",
+    )
+)
+
+# Type-1 raw-text tags: content runs verbatim until the matching close
+# marker appears (the close-marker comparison is case-insensitive).
+_HTML_BLOCK_TYPE1_STARTS = ("script", "pre", "style", "textarea")
+_HTML_BLOCK_TYPE1_ENDS = ("</script>", "</pre>", "</style>", "</textarea>")
+
+
+def _html_block_start_type(line: str, in_paragraph: bool) -> int | None:
+    """Return the CommonMark §4.6 HTML-block start condition (1..7) that
+    ``line`` opens, or None if it opens no HTML block.
+
+    Up to 3 leading spaces of indent are permitted before the start tag;
+    4+ spaces make the line indented code, handled by the caller before
+    this is consulted. ``in_paragraph`` is True when an open paragraph
+    could absorb the line — type 7 cannot interrupt a paragraph, so it
+    is suppressed in that case (types 1-6 still interrupt).
+    """
+    # Strip up to 3 leading spaces only (caller guarantees <4 indent).
+    stripped = line.lstrip(" ")
+    if not stripped.startswith("<"):
+        return None
+
+    rest = stripped  # begins with '<'
+    low = rest.lower()
+
+    # Type 2: comment `<!--`
+    if rest.startswith("<!--"):
+        return 2
+    # Type 5: CDATA `<![CDATA[`
+    if rest.startswith("<![CDATA["):
+        return 5
+    # Type 4: `<!` followed by an ASCII letter (declaration / DOCTYPE)
+    if rest.startswith("<!") and len(rest) > 2 and rest[2] in _HTML_TAG_NAME_FIRST:
+        return 4
+    # Type 3: processing instruction `<?`
+    if rest.startswith("<?"):
+        return 3
+
+    # Type 1: `<script`/`<pre`/`<style`/`<textarea` then space/tab/>/EOL
+    for tag in _HTML_BLOCK_TYPE1_STARTS:
+        prefix = "<" + tag
+        if low.startswith(prefix):
+            after = rest[len(prefix):len(prefix) + 1]
+            if after == "" or after in " \t>":
+                return 1
+
+    # Type 6: `<` or `</` then a block tag name then ws/EOL/>/`/>`
+    body = rest[2:] if rest.startswith("</") else rest[1:]
+    j = 0
+    while j < len(body) and body[j] in _HTML_TAG_NAME_REST:
+        j += 1
+    name = body[:j].lower()
+    if name in _HTML_BLOCK_TYPE6_TAGS:
+        after = body[j:]
+        if after == "" or after[0] in " \t>" or after.startswith("/>"):
+            return 6
+
+    # Type 7: a complete open or close tag filling the whole line
+    # (tag name not script/style/pre/textarea), then only whitespace to
+    # EOL. Cannot interrupt a paragraph.
+    if not in_paragraph:
+        match = _try_html_tag(rest, 0)
+        if match is not None:
+            raw, end = match
+            # Must be an open or close TAG (not comment/CDATA/PI/decl),
+            # and the rest of the line must be whitespace only.
+            if rest[1] not in "!?" and rest[end:].strip() == "":
+                # Exclude the type-1 raw-text tags from type 7.
+                tname = _parse_html_close_or_open_tag_name(raw)
+                if tname is None or tname not in _HTML_BLOCK_TYPE1_STARTS:
+                    return 7
+
+    return None
+
+
+def _html_block_end_matches(line: str, start_type: int) -> bool:
+    """True if ``line`` satisfies the end condition for ``start_type``.
+
+    Only meaningful for types 1-5 (types 6-7 end on a blank line, which
+    the caller detects directly).
+    """
+    if start_type == 1:
+        low = line.lower()
+        return any(end in low for end in _HTML_BLOCK_TYPE1_ENDS)
+    if start_type == 2:
+        return "-->" in line
+    if start_type == 3:
+        return "?>" in line
+    if start_type == 4:
+        return ">" in line
+    if start_type == 5:
+        return "]]>" in line
+    return False
+
+
+def _parse_html_close_or_open_tag_name(raw: str) -> str | None:
+    """Lowercase tag name from `<tag ...>` or `</tag>`; None otherwise."""
+    if not raw.startswith("<") or len(raw) < 2:
+        return None
+    body = raw[2:] if raw.startswith("</") else raw[1:]
+    j = 0
+    while j < len(body) and body[j] in _HTML_TAG_NAME_REST:
+        j += 1
+    return body[:j].lower() if j else None
+
+
 def _parse_html_open_tag_name(raw: str) -> str | None:
     """Return the lowercase tag name from ``<tag ...>`` / ``<tag/>``.
 
@@ -2856,26 +3818,20 @@ def _try_html_tag(text: str, start: int) -> tuple[str, int] | None:
             if end != -1:
                 return text[start:end + 3], end + 3
             return None
-        # Comment: `<!--text-->` where text:
-        #   * does not start with ``>`` or ``->``
-        #   * does not contain ``--``
-        #   * does not end with ``-``
+        # Comment (CommonMark 0.31.2, following the HTML living standard):
+        #   * ``<!-->`` and ``<!--->`` are valid empty comments (example 626)
+        #   * otherwise ``<!--`` then text NOT containing ``-->``, then ``-->``
+        # The older 0.29 restrictions (no interior ``--``, no leading ``->``)
+        # were dropped in 0.31.2 (example 625: ``<!-- a -- b -->`` is valid).
         if text.startswith("<!--", start):
-            # Walk forward looking for ``-->``.
-            i = start + 4
-            # Forbidden start patterns per CommonMark.
-            if text[i:i + 1] == ">":
-                return None
-            if text[i:i + 2] == "->":
-                return None
-            while i < n - 2:
-                if text[i:i + 3] == "-->":
-                    return text[start:i + 3], i + 3
-                if text[i:i + 2] == "--":
-                    # Two consecutive hyphens not part of the closing
-                    # marker disqualifies the comment.
-                    return None
-                i += 1
+            # Empty-comment special cases first.
+            if text.startswith("<!-->", start):
+                return text[start:start + 5], start + 5
+            if text.startswith("<!--->", start):
+                return text[start:start + 6], start + 6
+            end = text.find("-->", start + 4)
+            if end != -1:
+                return text[start:end + 3], end + 3
             return None
         # Declaration: `<!ALPHA ... >` (must have an ASCII letter after `<!`).
         if start + 2 < n and text[start + 2] in _HTML_TAG_NAME_FIRST:

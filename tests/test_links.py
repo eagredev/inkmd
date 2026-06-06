@@ -95,12 +95,18 @@ def test_unmatched_opening_bracket_is_literal():
     assert p.inlines == (Text("Open [bracket forever."),)
 
 
-def test_link_with_nested_bracket_in_text_bails():
-    """v0.1 doesn't support nested brackets in link text."""
+def test_link_with_nested_bracket_in_text_forms_link():
+    """Nested (balanced) brackets in link text are part of the text.
+
+    CommonMark §6.3 allows balanced nested brackets inside link text
+    (spec example 512: ``[link [foo [bar]]](/uri)``). The link forms and
+    the inner brackets render as literal text inside it.
+    """
     doc = parse("[outer [inner] text](https://example.com)")
-    # We expect this to fall back to literal — no Link node.
     p = doc.blocks[0]
-    assert not any(isinstance(i, Link) for i in p.inlines)
+    links = [i for i in p.inlines if isinstance(i, Link)]
+    assert len(links) == 1
+    assert links[0].url == "https://example.com"
 
 
 # --- Parser: autolinks ----------------------------------------------------
@@ -134,10 +140,26 @@ def test_autolink_with_internal_space_is_not_a_link():
 
 
 def test_autolink_without_scheme_is_not_a_link():
-    """Plain text inside angle brackets without a scheme is not an autolink."""
+    """Angle-bracketed text without a scheme is not an autolink.
+
+    ``<just text>`` is a complete open tag filling its own line, so per
+    CommonMark §4.6 (type 7) it is a block-level HTML region, not a
+    paragraph — and certainly not an autolink. The point of this test is
+    that no AutoLink is produced; the raw bytes pass through verbatim.
+    """
+    from inkmd.ast import AutoLink as _AutoLink, HtmlBlock, Paragraph
+
     doc = parse("<just text>")
-    p = doc.blocks[0]
-    assert not any(isinstance(i, AutoLink) for i in p.inlines)
+    block = doc.blocks[0]
+    assert isinstance(block, HtmlBlock)
+    assert "<just text>" in block.raw
+
+    def _no_autolink(b) -> bool:
+        if isinstance(b, Paragraph):
+            return not any(isinstance(i, _AutoLink) for i in b.inlines)
+        return not isinstance(b, _AutoLink)
+
+    assert all(_no_autolink(b) for b in doc.blocks)
 
 
 # --- Render ---------------------------------------------------------------

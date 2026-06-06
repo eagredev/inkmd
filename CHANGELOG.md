@@ -6,7 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-Nothing yet. v0.3 will target visually-identical rendering for the spec-test edges where the current AST shape differs but the rendered PDF is correct (blockquote-inside-list, mixed-indent siblings), plus block-level raw HTML passthrough, headers/footers/page numbers, horizontal fitting for very wide tables (tall tables already split across pages in v0.2), text-font embedding for non-Latin scripts (CJK, Cyrillic), full RGBA PNG, and GIF. See the [roadmap](README.md#roadmap).
+## [0.3.0] - 2026-06-06
+
+The v0.3 conformance milestone. **Full spec conformance: CommonMark 0.31.2 at 652/652 (100%) and GFM extensions at 28/28 (100%), with zero documented exceptions** - up from 85.0% / 71.4% in 0.2.x. The whole effort lives in the parser; the four-layer pipeline, public API, and determinism property are unchanged. Live breakdown in [`docs/conformance.md`](docs/conformance.md).
+
+### Added
+
+- **Block-level raw HTML passthrough** (CommonMark §4.6): all seven start-condition types with their matching end conditions, as a new `HtmlBlock` AST node, including HTML blocks inside list items. HTML blocks 2/44 -> 44/44. GFM Disallowed-Raw-HTML 0/1 -> 1/1.
+- **GFM tables to 8/8**: header/delimiter column-count validation (a mismatch falls back to a paragraph) and lazy row continuation.
+- **The block container model**: blockquote-inside-list-item, mixed-indent siblings via per-item content columns, nested and empty markers, loose-list detection across nested-list boundaries, fenced code as a list item's first content, and link-reference definitions collected from inside blockquotes.
+
+### Fixed
+
+- **Tab virtual-columns**: tabs after a `>` or list marker now expand at absolute column positions, so a tab spanning a container content boundary leaves the correct residual spaces for indented-code detection (CommonMark Tabs 5/6/7).
+- **Lazy continuation across the recursive-reparse boundary**: a paragraph continuation line absorbed into a container is no longer re-promoted to a block when the container's content is re-parsed (Block quotes 238, Setext 93, List items 292).
+- **The 4-space marker rule** and **indented-code-after-list** handling for deep mixed-indent ladders (Lists 312/313, List items 257).
+- **Unified code-block content-newline convention**: fenced and indented code now use the same terminator convention, recovering trailing blank lines inside fenced code (Lists 318). The render path strips the final terminator, so PDF output is unchanged.
+- **HTML comment parsing** updated to the CommonMark 0.31.2 rule (`<!-->` / `<!--->` valid; interior `--` allowed). Raw HTML 18/20 -> 20/20.
+
+Still ahead, unchanged from the prior roadmap: headers/footers/page numbers, horizontal fitting for very wide tables (tall tables already split across pages), text-font embedding for non-Latin scripts (CJK, Cyrillic), full RGBA PNG, and GIF. See the [roadmap](README.md#roadmap).
 
 ## [0.2.1] - 2026-06-02
 
@@ -16,14 +34,14 @@ A correctness release: re-verified every published benchmark and size claim, fix
 
 The benchmark numbers published with 0.2.0 were measured on 2026-05-14, *before* color emoji was bundled into the package. Bundling the ~10 MB Noto Color Emoji font changed the install footprint, so the install-size claims were stale. They have been re-measured on 2026-06-02 and corrected:
 
-- **Install size: was stated as 10.5 MB / "7.1x smaller" than WeasyPrint; actually 22.2 MB / 3.4x smaller.** The speed and memory advantages are unchanged (the font is disk weight, not runtime cost — it's only read when an emoji is present): ~6–7x faster cold-start, ~6x lower peak RSS.
+- **Install size: was stated as 10.5 MB / "7.1x smaller" than WeasyPrint; actually 22.2 MB / 3.4x smaller.** The speed and memory advantages are unchanged (the font is disk weight, not runtime cost - it's only read when an emoji is present): ~6-7x faster cold-start, ~6x lower peak RSS.
 - **Zipapp: was stated as ~300 KB; actually ~170 KB** after the build fix below.
 - Test count updated to the real **808 tests across 34 files** (was variously stated as 649 or 788).
-- CommonMark (85.0%) and GFM-extension (71.4%) conformance re-confirmed — unchanged.
+- CommonMark (85.0%) and GFM-extension (71.4%) conformance re-confirmed - unchanged.
 
 ### Fixed
 
-- **Zipapp build swept in `__pycache__` / `.pyc` files**, making `inkmd.pyz` both bloated (up to ~1.3 MB depending on the build interpreter) and **non-deterministic** — two builds could differ byte-for-byte, contradicting the determinism guarantee. The build now excludes compiled bytecode; the zipapp is a deterministic ~170 KB on every supported Python.
+- **Zipapp build swept in `__pycache__` / `.pyc` files**, making `inkmd.pyz` both bloated (up to ~1.3 MB depending on the build interpreter) and **non-deterministic** - two builds could differ byte-for-byte, contradicting the determinism guarantee. The build now excludes compiled bytecode; the zipapp is a deterministic ~170 KB on every supported Python.
 
 ### Added
 
@@ -58,7 +76,7 @@ The headline visible-output change is **color emoji**: the emoji-as-`?` artefact
 #### GFM extensions
 
 - **Task list items** (`- [ ]` / `- [x]`): the prefix is recognised, stripped from the rendered content, and the PDF renders a coloured checkbox marker in place of the bullet.
-- **Tables split across pages.** A table taller than one page now breaks at a row boundary and continues on the next page with the header row repeated and each page-slice fully boxed, instead of overflowing off the bottom and silently losing rows. The renderer emits the table as per-row groups (row-local coordinates) and the layout places them top-to-bottom, paginating at row boundaries. Single-page tables are visually unchanged. (Very wide tables — too many columns to fit even at minimum width — still overflow the right edge; horizontal fitting is v0.3.)
+- **Tables split across pages.** A table taller than one page now breaks at a row boundary and continues on the next page with the header row repeated and each page-slice fully boxed, instead of overflowing off the bottom and silently losing rows. The renderer emits the table as per-row groups (row-local coordinates) and the layout places them top-to-bottom, paginating at row boundaries. Single-page tables are visually unchanged. (Very wide tables - too many columns to fit even at minimum width - still overflow the right edge; horizontal fitting is v0.4.)
 
 #### Color emoji
 
@@ -69,10 +87,10 @@ The headline visible-output change is **color emoji**: the emoji-as-`?` artefact
 
 #### Images
 
-- **PNG and JPEG embedding** via PDF XObjects (`/DCTDecode` for JPEG, `/FlateDecode` with `/Predictor 15` for PNG). PNG colour types 0 (grayscale), 2 (RGB), and 3 (**indexed/palette**) are supported. Indexed PNGs with a `tRNS` chunk get per-palette alpha decoded into a `/SMask` soft mask, so palette transparency renders correctly. Full RGBA (colour type 6) is queued for v0.3.
+- **PNG and JPEG embedding** via PDF XObjects (`/DCTDecode` for JPEG, `/FlateDecode` with `/Predictor 15` for PNG). PNG colour types 0 (grayscale), 2 (RGB), and 3 (**indexed/palette**) are supported. Indexed PNGs with a `tRNS` chunk get per-palette alpha decoded into a `/SMask` soft mask, so palette transparency renders correctly. Full RGBA (colour type 6) is queued for v0.4.
 - **Block-level image rendering** for image-only paragraphs (single image on a line renders with its natural aspect ratio, capped at page width).
 - **Inline image rendering** with alt-text fallback when the source is missing or unreadable.
-- **HTML `<img>` support**: the `<img>` tag is promoted to the same image pipeline as markdown `![alt](url)` (riding the identical `base_dir`/`allow_remote` security gating — not a new surface). The `width` attribute is honoured as a display-width hint (capped to the text column, aspect preserved), and a wrapping `align`/`<center>` or an `align` on the tag positions a block image left/centre/right. The `<p align="center"><img><br>caption</p>` figure idiom common in GitHub READMEs embeds the image and renders the caption beneath it — so inkmd now renders its own README in full, hero included.
+- **HTML `<img>` support**: the `<img>` tag is promoted to the same image pipeline as markdown `![alt](url)` (riding the identical `base_dir`/`allow_remote` security gating - not a new surface). The `width` attribute is honoured as a display-width hint (capped to the text column, aspect preserved), and a wrapping `align`/`<center>` or an `align` on the tag positions a block image left/centre/right. The `<p align="center"><img><br>caption</p>` figure idiom common in GitHub READMEs embeds the image and renders the caption beneath it - so inkmd now renders its own README in full, hero included.
 - **Local file paths** and **`data:` URIs** are loaded by default. **HTTP(S) URLs** require explicit opt-in via `--allow-remote-images` (CLI) or `allow_remote_images=True` (library), preserving inkmd's zero-network default.
 
 #### Security
@@ -98,7 +116,7 @@ The headline visible-output change is **color emoji**: the emoji-as-`?` artefact
 ### Fixed
 
 - **Bare-URL autolinks** with unbalanced parens (`www.example.com/path)+suffix`) now consume the trailing `)+suffix` per GFM section 6.9, trimming only at the end of the URL.
-- **Link URL parsing** for empty URLs (`[link]()`), paren-form titles (`[link](url (title))`), multi-line URL/title across one newline, URL-entity decoding (`[a](b&auml;c)` → `b%C3%A4c`), and backslash-escape ASCII-punct rule (so `foo\bar` in a URL preserves the literal `\`).
+- **Link URL parsing** for empty URLs (`[link]()`), paren-form titles (`[link](url (title))`), multi-line URL/title across one newline, URL-entity decoding (`[a](b&auml;c)` -> `b%C3%A4c`), and backslash-escape ASCII-punct rule (so `foo\bar` in a URL preserves the literal `\`).
 - **Email autolinks** (`<addr@host>`) now reject backslash and other non-RFC characters in the local-part.
 - **URL percent-encoding** at HTML serialise time encodes `[` and `]` as `%5B` / `%5D` to match the CommonMark reference renderer.
 - **Code spans** preserve a meaningful single trailing space at end-of-paragraph; soft-break whitespace stripping happens at serialise time per spec.
@@ -118,12 +136,12 @@ A multi-pass adversarial render audit surfaced and fixed a batch of layout edge 
 A second, focused audit run just before release swept the new emoji and indexed-PNG surface and fixed:
 
 - **Malformed PNGs that crashed compilation.** An indexed PNG missing its `IDAT` image data or its `PLTE` palette passed the dimension check but raised an uncaught error at emission. Such images now fall back to their alt text like any other unloadable image, so a single bad embed can never abort the whole document.
-- **Emoji inside code spans and code blocks** now render as color images (or their textual fallback in the font-less build) instead of leaking a literal `?` from the WinAnsi encoder — emoji are the documented exception to the WinAnsi rule and now hold everywhere, monospace included.
+- **Emoji inside code spans and code blocks** now render as color images (or their textual fallback in the font-less build) instead of leaking a literal `?` from the WinAnsi encoder - emoji are the documented exception to the WinAnsi rule and now hold everywhere, monospace included.
 - **Orphaned zero-width joiners.** A ZWJ emoji cluster the bundled font can't fully ligature decomposes into its component emoji; the joiners between them are now dropped rather than surfacing as `?`.
 - **Soft hyphens** (U+00AD) are treated as the invisible optional-break hints they are and dropped, instead of printing a visible hyphen and stealing its width.
 - **Bold-italic in table headers** composes correctly (`***x***` in a header keeps its italic), matching body cells.
 
-### Known limitations (carried to v0.3)
+### Known limitations (carried to v0.4)
 
 - **Raw HTML blocks** (`<table>...</table>` as a top-level construct) render as inline text rather than passing through verbatim. CommonMark HTML-blocks section is 2/44 = 4.5%.
 - **Blockquote inside a list item**: a `> note` line inside a list item still renders as paragraph text rather than opening a blockquote.
@@ -207,6 +225,8 @@ These are documented v0.1 constraints, not bugs. See the [roadmap](README.md#roa
 
 501 tests across 24 files, all passing. End-to-end PDF validity verified via `qpdf --check`.
 
-[Unreleased]: https://github.com/eagredev/inkmd/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/eagredev/inkmd/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/eagredev/inkmd/compare/v0.2.1...v0.3.0
+[0.2.1]: https://github.com/eagredev/inkmd/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/eagredev/inkmd/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/eagredev/inkmd/releases/tag/v0.1.0

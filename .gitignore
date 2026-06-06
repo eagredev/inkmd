@@ -36,3 +36,5 @@ htmlcov/
 !docs/gallery/*.pdf
 !docs/gallery/real-world/*/output.pdf
 bench-venvs/
+
+RESUME-0.3.0-release-prep.md

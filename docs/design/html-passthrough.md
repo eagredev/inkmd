@@ -1,17 +1,16 @@
-# HTML passthrough — v0.2 scope decision
+# HTML passthrough: v0.2 scope decision
 
-> Design document, drafted 2026-05-13 during Phase 3 of the pre-HN
-> hardening pass. Captures the reasoning behind whether and how
-> inkmd v0.2 should accept HTML inside markdown.
+> Design document, drafted 2026-05-13. Captures the reasoning behind
+> whether and how inkmd v0.2 should accept HTML inside markdown.
 
 ## The question
 
 CommonMark 0.31.2 allocates 64 of its 652 spec tests to HTML
 behaviour:
 
-- §4.6 **HTML blocks** (44 tests, currently 0/44) — top-level HTML
+- §4.6 **HTML blocks** (44 tests, currently 0/44). Top-level HTML
   fragments like `<div>...</div>`, `<table>`, `<pre>`, `<!--...-->`.
-- §6.6 **Raw HTML** (20 tests, currently 7/20) — inline HTML mid-
+- §6.6 **Raw HTML** (20 tests, currently 7/20). Inline HTML mid-
   paragraph like `<sub>`, `<kbd>`, `<a name="anchor">`, comments,
   CDATA, processing instructions.
 
@@ -30,7 +29,7 @@ which subset, with what PDF semantics, under what security model?
 CommonMark passthrough means "preserve the literal characters in the
 output HTML". The downstream browser interprets the HTML when it
 renders the page. Markdown-to-HTML tools don't have to know what
-`<details>` means — they just have to not mangle it.
+`<details>` means; they just have to not mangle it.
 
 inkmd's output is PDF, not HTML. There is no downstream renderer
 that will later "interpret" the HTML. If a user writes:
@@ -48,8 +47,8 @@ tag is a design decision and a renderer-feature commitment, not just
 a parser change. This is a *much* bigger constraint than for an
 HTML-output tool.
 
-The alternative — "parse the HTML and render only its text content,
-dropping the tags entirely" — would technically pass some
+The alternative ("parse the HTML and render only its text content,
+dropping the tags entirely") would technically pass some
 passthrough tests (the parser would no longer escape `<` to `&lt;`)
 but the result would be functionally useless: `<details><summary>X
 </summary>Y</details>` would render as `XY` with no indication of
@@ -58,7 +57,7 @@ users would expect *something* to happen.
 
 ## Three options
 
-### Option A — Stay closed (no HTML passthrough)
+### Option A: stay closed (no HTML passthrough)
 
 Reject every `<tag>` as literal text, as today. Document the choice
 in the README as a feature, not a bug:
@@ -84,7 +83,7 @@ in the README as a feature, not a bug:
 - "We don't do that" is a defensible position but it costs users who
   expected markdown-renderer-of-the-month behaviour.
 
-### Option B — Curated safe subset with PDF semantics
+### Option B: curated safe subset with PDF semantics
 
 Accept a fixed allow-list of tags with defined PDF rendering.
 Everything outside the list is silently dropped (text content
@@ -105,8 +104,8 @@ preserved, tags removed). The allow-list:
 
 Attributes:
 
-- `href`, `title`, `id`, `name` — preserved for `<a>` only.
-- `style`, `class`, `onclick`, anything else — dropped, ignored.
+- `href`, `title`, `id`, `name`: preserved for `<a>` only.
+- `style`, `class`, `onclick`, anything else: dropped, ignored.
 
 Tags not on the list:
 
@@ -115,7 +114,7 @@ Tags not on the list:
   just `hello` in the output. This handles 90% of real-world
   README content where users use spans for styling we can't honour.
 - Block-level unknown tags: `<table>`, `<iframe>`, `<script>`,
-  `<style>`, `<object>`, `<embed>`, `<form>`, `<input>` — silently
+  `<style>`, `<object>`, `<embed>`, `<form>`, `<input>` are silently
   dropped including their content.
 
 **Pros:**
@@ -125,9 +124,8 @@ Tags not on the list:
   evaluate CSS, never load external resources)
 - inkmd's own README would render correctly through itself
 - Adds maybe 10-15 conformance tests we can credibly claim
-- Differentiates inkmd from WeasyPrint/Chrome on a security axis:
-  "we accept a defined safe subset with defined PDF semantics; the
-  others accept arbitrary HTML with browser-engine attack surface"
+- The accepted set is static and has defined PDF semantics, with no
+  HTML interpreter, script evaluator, or resource fetcher behind it
 
 **Cons:**
 
@@ -141,7 +139,7 @@ Tags not on the list:
   errors on unknown tags
 - Adds a flag and a config decision to the public API surface
 
-### Option C — Permissive parse, drop everything
+### Option C: permissive parse, drop everything
 
 Recognise HTML constructs structurally so we don't escape them in
 the output, but render only the text content (no tag semantics).
@@ -174,9 +172,9 @@ B is the right architectural choice for the long term:
   static set of tags with statically-defined PDF rendering.
 - It maximises the surface where users get what they expected from
   GitHub-flavoured markdown.
-- It tells a clear story on Hacker News: "we accept a curated safe
-  subset; here is the list; here is the rationale." That's
-  defensible against the "but my edge case" objections.
+- It gives a clear public answer: a curated safe subset, with the
+  list and the rationale stated. That holds up against "but my edge
+  case" objections without expanding the attack surface.
 - The conformance gain is bounded but real: maybe 15-20 tests as a
   side effect, plus the qualitative win of "rendering a real-world
   README through inkmd produces the same visual semantics."
@@ -201,8 +199,8 @@ The v0.2 work to ship Option B:
 **AST:**
 
 - New inline node `HtmlInline(tag: str, content: tuple[Inline, ...],
-  attrs: dict[str, str])` — used only for our allow-listed tags.
-- New block node `HtmlBlock(kind: str, content: str)` — placeholder
+  attrs: dict[str, str])`, used only for our allow-listed tags.
+- New block node `HtmlBlock(kind: str, content: str)`, a placeholder
   for the v0.2 details/summary block-level form.
 
 **Render + PDF:**
@@ -212,8 +210,8 @@ The v0.2 work to ship Option B:
 - Kbd: monospace + a thin grey border rectangle. New layout
   primitive (similar to code-block background but tighter).
 - Mark: yellow background tint per text run.
-- Br: hard line break — coordinate with the separate v0.2 hard-line-
-  break work, share the same internal primitive.
+- Br: hard line break. Coordinate with the separate v0.2 hard-line-
+  break work and share the same internal primitive.
 - Details/summary: box with the summary rendered as a small heading
   followed by the content in normal flow. No collapsibility (PDF
   doesn't have it without JavaScript form fields, which we don't
@@ -238,7 +236,7 @@ The v0.2 work to ship Option B:
   explicit non-interpretation of style/script/onclick attributes.
 - The threat model already covers Scenario B (untrusted content);
   Option B fits cleanly because there is no new untrusted-execution
-  surface — every supported tag has a fixed, statically-defined PDF
+  surface; every supported tag has a fixed, statically-defined PDF
   rendering.
 
 ## What this means for the v0.2 plan
@@ -268,13 +266,13 @@ pace that is ~3-5 focused sessions to implement and test.
 These were initial open questions; all resolved before
 implementation.
 
-1. **`<details>` rendering** — render expanded by default. The
+1. **`<details>` rendering.** Render expanded by default. The
    summary line is styled as a small heading; the body content
    renders below in normal flow. No `[+]` indicator; no attempt to
    simulate collapsibility. PDF readers cannot toggle visibility
    without form-field JavaScript, which inkmd does not emit.
 
-2. **`<picture>` and `<source>`** — accepted in passthrough. The
+2. **`<picture>` and `<source>`.** Accepted in passthrough. The
    v0.2 image pipeline picks the first `<source>` with a media
    query that matches print-flavoured constraints (or the first
    `srcset` candidate at a sensible default density); falls back
@@ -282,12 +280,12 @@ implementation.
    handling surface but the cost is bounded because the parser
    need only pick *one* of the candidates.
 
-3. **HTML `<a href>` vs markdown `[text](url)`** — same AST node.
+3. **HTML `<a href>` vs markdown `[text](url)`.** Same AST node.
    The HTML form becomes syntactic sugar for the markdown form at
    parse time; both produce a `Link` node, both route through the
    same URL scheme filter (task 36), both render identically.
 
-4. **HTML comments `<!-- ... -->`** — stripped silently. Comments
+4. **HTML comments `<!-- ... -->`.** Stripped silently. Comments
    are authoring artefacts; users do not expect them in printed
    output. Round-tripping is not a goal; markdown is the source of
    truth.

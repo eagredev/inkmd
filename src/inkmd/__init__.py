@@ -35,7 +35,7 @@ from inkmd.render import FAMILIES, render_document
 from inkmd.url_filter import filter_document
 
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = ["compile", "render_file", "__version__"]
 
