@@ -176,7 +176,7 @@ def test_two_separate_strikes_emit_two_shapes():
 
 def test_compile_strike_produces_valid_pdf():
     out = inkmd.compile("a ~~struck~~ word")
-    assert out.startswith(b"%PDF-1.4\n")
+    assert out.startswith(b"%PDF-1.5\n")
     assert out.rstrip(b"\n").endswith(b"%%EOF")
 
 
@@ -203,5 +203,5 @@ def test_strike_renders_in_table_cell():
     out = inkmd.compile(md)
     # Table emits grid `re f` shapes, so a precise count is awkward.
     # Just confirm it doesn't blow up and the PDF is valid.
-    assert out.startswith(b"%PDF-1.4\n")
+    assert out.startswith(b"%PDF-1.5\n")
     assert b" re f" in out

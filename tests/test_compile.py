@@ -25,7 +25,7 @@ def test_compile_returns_bytes():
 
 
 def test_compile_produces_valid_pdf_header():
-    assert inkmd.compile("Hello.").startswith(b"%PDF-1.4\n")
+    assert inkmd.compile("Hello.").startswith(b"%PDF-1.5\n")
 
 
 def test_compile_produces_valid_pdf_eof():
@@ -35,7 +35,7 @@ def test_compile_produces_valid_pdf_eof():
 def test_compile_empty_string_is_valid_pdf():
     """Edge case: empty input still produces a parseable PDF."""
     out = inkmd.compile("")
-    assert out.startswith(b"%PDF-1.4\n")
+    assert out.startswith(b"%PDF-1.5\n")
     assert out.rstrip(b"\n").endswith(b"%%EOF")
 
 
@@ -86,7 +86,7 @@ def test_render_file_writes_pdf(tmp_path: Path):
     md_path.write_text("Hello, world.\n\nSecond paragraph.")
     inkmd.render_file(md_path, pdf_path)
     assert pdf_path.exists()
-    assert pdf_path.read_bytes().startswith(b"%PDF-1.4\n")
+    assert pdf_path.read_bytes().startswith(b"%PDF-1.5\n")
 
 
 def test_render_file_accepts_pathlib_and_str(tmp_path: Path):

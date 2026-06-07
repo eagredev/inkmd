@@ -127,7 +127,7 @@ def test_consecutive_thematic_breaks():
 
 def test_compile_thematic_break_produces_valid_pdf():
     out = inkmd.compile("Before.\n\n---\n\nAfter.")
-    assert out.startswith(b"%PDF-1.4\n")
+    assert out.startswith(b"%PDF-1.5\n")
     assert out.rstrip(b"\n").endswith(b"%%EOF")
 
 

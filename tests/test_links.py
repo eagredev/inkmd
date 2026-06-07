@@ -209,7 +209,7 @@ def test_render_link_with_inner_emphasis_keeps_link_url():
 
 def test_compile_link_produces_valid_pdf():
     out = inkmd.compile("[click](https://example.com)")
-    assert out.startswith(b"%PDF-1.4\n")
+    assert out.startswith(b"%PDF-1.5\n")
     assert out.rstrip(b"\n").endswith(b"%%EOF")
 
 

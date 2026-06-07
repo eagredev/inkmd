@@ -26,7 +26,7 @@ from inkmd.pdf import hello_world_pdf, _escape_pdf_string
 
 def test_starts_with_pdf_header():
     data = hello_world_pdf()
-    assert data.startswith(b"%PDF-1.4\n")
+    assert data.startswith(b"%PDF-1.5\n")
 
 
 def test_has_binary_marker_after_header():
@@ -36,7 +36,7 @@ def test_has_binary_marker_after_header():
     way through. Adobe's PDF Reference recommends emitting them.
     """
     data = hello_world_pdf()
-    # Header is 9 bytes ('%PDF-1.4\n'); next line should be '%' followed
+    # Header is 9 bytes ('%PDF-1.5\n'); next line should be '%' followed
     # by four bytes all > 0x7f, then '\n'.
     assert data[9:10] == b"%"
     assert all(b > 0x7F for b in data[10:14])

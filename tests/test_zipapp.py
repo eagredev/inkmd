@@ -75,7 +75,7 @@ def test_zipapp_emoji_falls_back_to_text(built_zipapp: Path, tmp_path: Path) -> 
         check=True,
     )
     out = dst.read_bytes()
-    assert out.startswith(b"%PDF-1.4\n")
+    assert out.startswith(b"%PDF-1.5\n")
     assert b"/Subtype /Image" not in out  # no emoji image XObject
 
 
@@ -100,7 +100,7 @@ def test_zipapp_compiles_pdf(built_zipapp: Path, tmp_path: Path) -> None:
         check=True,
     )
     out = dst.read_bytes()
-    assert out.startswith(b"%PDF-1.4\n")
+    assert out.startswith(b"%PDF-1.5\n")
     assert out.rstrip(b"\n").endswith(b"%%EOF")
 
 

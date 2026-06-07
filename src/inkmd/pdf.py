@@ -78,7 +78,7 @@ class PDFWriter:
         """Emit the complete PDF byte sequence.
 
         Layout:
-          1. ``%PDF-1.4`` header + four high-bit bytes (so file(1) and
+          1. ``%PDF-1.5`` header + four high-bit bytes (so file(1) and
              transfer tools treat it as binary, not text).
           2. Every object, in order, with ``N 0 obj`` / ``endobj`` wrappers.
              We record each object's start offset in ``xref_offsets``.
@@ -90,7 +90,10 @@ class PDFWriter:
         out = bytearray()
         # Header: PDF version + binary marker. The four >0x7f bytes are
         # an Adobe convention so tools auto-detect binary handling.
-        out += b"%PDF-1.4\n"
+        # PDF 1.5: the emitter uses /Predictor 15 (Flate predictor) and
+        # /SMask soft masks, both of which are 1.5 features, so the header must
+        # declare at least 1.5. Nothing here needs 1.6/1.7.
+        out += b"%PDF-1.5\n"
         out += b"%\xe2\xe3\xcf\xd3\n"
 
         # Body: emit each object and remember its byte offset.
@@ -706,7 +709,14 @@ def _smask_xobject_body(data) -> bytes:
     pieces = _png_xobject_pieces(data)
     if pieces.alpha is None:
         raise ValueError("image has no alpha channel for an SMask")
-    payload = zlib.compress(pieces.alpha)
+    # Pin the deflate level explicitly: zlib.compress with no level uses
+    # Z_DEFAULT_COMPRESSION (-1), whose mapping is a property of the linked
+    # zlib build, so the emitted SMask bytes could differ across platforms and
+    # break the byte-determinism guarantee. Level 6 is the value standard zlib
+    # maps the default to, so pinning it keeps output stable across builds
+    # without changing the bytes on a standard zlib. (Deterministic per zlib
+    # version, matching the 0.7 opt-in-compression decision.)
+    payload = zlib.compress(pieces.alpha, level=6)
     dict_pairs = [
         "/Type /XObject",
         "/Subtype /Image",

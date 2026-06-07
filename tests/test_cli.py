@@ -24,7 +24,7 @@ def test_file_in_file_out(tmp_path: Path) -> None:
     rc = main([str(src), "-o", str(dst)])
     assert rc == 0
     out = _read_pdf(dst)
-    assert out.startswith(b"%PDF-1.4\n")
+    assert out.startswith(b"%PDF-1.5\n")
     assert out.rstrip(b"\n").endswith(b"%%EOF")
 
 
@@ -33,7 +33,7 @@ def test_stdin_to_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     dst = tmp_path / "out.pdf"
     rc = main(["-", "-o", str(dst)])
     assert rc == 0
-    assert dst.read_bytes().startswith(b"%PDF-1.4\n")
+    assert dst.read_bytes().startswith(b"%PDF-1.5\n")
 
 
 def test_default_input_is_stdin(
@@ -43,7 +43,7 @@ def test_default_input_is_stdin(
     dst = tmp_path / "out.pdf"
     rc = main(["-o", str(dst)])
     assert rc == 0
-    assert dst.read_bytes().startswith(b"%PDF-1.4\n")
+    assert dst.read_bytes().startswith(b"%PDF-1.5\n")
 
 
 def test_file_to_stdout(
@@ -54,7 +54,7 @@ def test_file_to_stdout(
     rc = main([str(src)])
     assert rc == 0
     out = capsysbinary.readouterr().out
-    assert out.startswith(b"%PDF-1.4\n")
+    assert out.startswith(b"%PDF-1.5\n")
     assert out.rstrip(b"\n").endswith(b"%%EOF")
 
 
@@ -142,4 +142,4 @@ def test_subprocess_module_invocation(tmp_path: Path) -> None:
         check=True,
     )
     assert result.returncode == 0
-    assert dst.read_bytes().startswith(b"%PDF-1.4\n")
+    assert dst.read_bytes().startswith(b"%PDF-1.5\n")

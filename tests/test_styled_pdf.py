@@ -74,7 +74,7 @@ def test_encode_pdf_literal_handles_unicode_and_parens():
 
 def test_styled_pdf_starts_with_pdf_header():
     data = styled_pdf([[Run("hello", "Helvetica", 12)]])
-    assert data.startswith(b"%PDF-1.4\n")
+    assert data.startswith(b"%PDF-1.5\n")
 
 
 def test_styled_pdf_ends_with_eof():
@@ -136,7 +136,7 @@ def test_styled_pdf_byte_identical_across_runs():
 
 def test_styled_pdf_empty_input():
     data = styled_pdf([])
-    assert data.startswith(b"%PDF-1.4\n")
+    assert data.startswith(b"%PDF-1.5\n")
     assert data.rstrip(b"\n").endswith(b"%%EOF")
 
 

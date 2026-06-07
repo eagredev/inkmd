@@ -158,4 +158,4 @@ def test_compile_performs_no_network_io(monkeypatch: pytest.MonkeyPatch) -> None
         "[link](https://example.com)\n"
     )
     pdf = inkmd.compile(hostile)  # must not raise
-    assert pdf.startswith(b"%PDF-1.4")
+    assert pdf.startswith(b"%PDF-1.5")

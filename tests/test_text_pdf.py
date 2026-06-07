@@ -16,7 +16,7 @@ from inkmd.pdf import text_pdf
 
 def test_short_text_produces_valid_pdf():
     data = text_pdf("Hello, world!")
-    assert data.startswith(b"%PDF-1.4\n")
+    assert data.startswith(b"%PDF-1.5\n")
     assert data.rstrip(b"\n").endswith(b"%%EOF")
 
 
@@ -81,7 +81,7 @@ def test_text_appears_in_output():
 def test_handles_empty_input():
     """Empty input should still produce a valid (empty) PDF."""
     data = text_pdf("")
-    assert data.startswith(b"%PDF-1.4\n")
+    assert data.startswith(b"%PDF-1.5\n")
     assert data.rstrip(b"\n").endswith(b"%%EOF")
 
 

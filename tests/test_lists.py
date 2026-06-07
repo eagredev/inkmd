@@ -321,7 +321,7 @@ def test_compile_with_list_produces_valid_pdf():
     import inkmd
 
     out = inkmd.compile("- one\n- two\n- three")
-    assert out.startswith(b"%PDF-1.4\n")
+    assert out.startswith(b"%PDF-1.5\n")
     assert out.rstrip(b"\n").endswith(b"%%EOF")
 
 

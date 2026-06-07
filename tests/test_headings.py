@@ -251,7 +251,7 @@ def test_paragraph_has_no_extra_spacing():
 def test_compile_with_heading_produces_valid_pdf():
     import inkmd
     out = inkmd.compile("# Title\n\nBody.")
-    assert out.startswith(b"%PDF-1.4\n")
+    assert out.startswith(b"%PDF-1.5\n")
     assert out.rstrip(b"\n").endswith(b"%%EOF")
 
 

@@ -297,7 +297,7 @@ def test_compile_blockquote_produces_valid_pdf():
     import inkmd
 
     out = inkmd.compile("> quoted")
-    assert out.startswith(b"%PDF-1.4\n")
+    assert out.startswith(b"%PDF-1.5\n")
     assert out.rstrip(b"\n").endswith(b"%%EOF")
 
 
@@ -305,7 +305,7 @@ def test_compile_code_block_produces_valid_pdf():
     import inkmd
 
     out = inkmd.compile("```\ncode\n```")
-    assert out.startswith(b"%PDF-1.4\n")
+    assert out.startswith(b"%PDF-1.5\n")
     assert out.rstrip(b"\n").endswith(b"%%EOF")
 
 

@@ -76,7 +76,7 @@ def test_compile_long_code_line_does_not_overflow():
     md = f"```\n{long_line}\n```"
     out = inkmd.compile(md)
     # The PDF should validate.
-    assert out.startswith(b"%PDF-1.4\n")
+    assert out.startswith(b"%PDF-1.5\n")
     assert out.rstrip(b"\n").endswith(b"%%EOF")
     # And it should have multiple Tm operators (one per wrapped line).
     assert out.count(b" Tm\n") >= 3  # original line + 2+ wraps
@@ -99,4 +99,4 @@ def test_compile_code_block_indentation_preserved_after_wrap():
     # (We don't enforce that wrapping continuations re-indent — they
     # currently align with the wrapped line's left edge, which is the
     # code block's body_indent, not the original indent within the line.)
-    assert out.startswith(b"%PDF-1.4\n")
+    assert out.startswith(b"%PDF-1.5\n")

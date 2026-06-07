@@ -264,7 +264,7 @@ def test_render_table_headers_use_bold_font():
 
 def test_compile_table_produces_valid_pdf():
     out = inkmd.compile(_simple_table_md())
-    assert out.startswith(b"%PDF-1.4\n")
+    assert out.startswith(b"%PDF-1.5\n")
     assert out.rstrip(b"\n").endswith(b"%%EOF")
 
 
@@ -324,7 +324,7 @@ def test_compile_narrow_topic_column_does_not_crush():
     # /tmp/inkmd-narrow-table-v2.pdf. The previous (broken) version
     # produced a crushed Topic column but the PDF was still structurally
     # valid, so this test is mostly a smoke check.
-    assert out.startswith(b"%PDF-1.4\n")
+    assert out.startswith(b"%PDF-1.5\n")
 
 
 def test_compile_alignment_affects_x_position():
