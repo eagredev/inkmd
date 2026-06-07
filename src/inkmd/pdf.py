@@ -443,8 +443,10 @@ def _styled_page_content_stream(page: Page, image_xobject_names: dict[str, str] 
 
     # 2. Text.
     parts.append(b"BT")
-    current_font = None
-    current_size = None
+    # The current-font key is the (slot, size) pair actually selected: an
+    # embedded run uses the /FEmb slot regardless of its base-14 ``font``
+    # name, so two runs at the same size but different lanes still emit a Tf.
+    current_font_key: tuple[str, float] | None = None
     current_text_rg: tuple[float, float, float] | None = None
     for line in page.lines:
         for run in line.runs:
@@ -453,11 +455,12 @@ def _styled_page_content_stream(page: Page, image_xobject_names: dict[str, str] 
             # here so we don't stamp their placeholder text.
             if getattr(run, "emoji", None) is not None:
                 continue
-            if run.font != current_font or run.size != current_size:
-                slot = FONT_SLOTS[run.font]
+            embedded = getattr(run, "embedded", None)
+            slot = "FEmb" if embedded is not None else FONT_SLOTS[run.font]
+            font_key = (slot, run.size)
+            if font_key != current_font_key:
                 parts.append(f"/{slot} {_fmt(run.size)} Tf".encode("ascii"))
-                current_font = run.font
-                current_size = run.size
+                current_font_key = font_key
             run_color = getattr(run, "color", None)
             target_rg = run_color if run_color is not None else (0.0, 0.0, 0.0)
             if target_rg != current_text_rg:
@@ -468,7 +471,13 @@ def _styled_page_content_stream(page: Page, image_xobject_names: dict[str, str] 
             parts.append(
                 f"1 0 0 1 {_fmt(run.x)} {_fmt(run_y)} Tm".encode("ascii")
             )
-            parts.append(_show_text_operator(run.text, run.font))
+            if embedded is not None:
+                # Identity-H CID hex (<HHHH...> Tj) over the embedded font's
+                # native GIDs — see cidfont.show_text_cid_hex.
+                from inkmd.cidfont import show_text_cid_hex
+                parts.append(show_text_cid_hex(embedded.font, run.text))
+            else:
+                parts.append(_show_text_operator(run.text, run.font))
     parts.append(b"ET")
     return b"\n".join(parts)
 
@@ -523,13 +532,39 @@ def styled_pdf(
         image_id: f"Im{idx}" for idx, image_id in enumerate(image_order)
     }
 
+    # Collect embedded-font usage across the whole document. All embedded
+    # runs share ONE EmbeddedFontRef (one font object per document), so the
+    # ref is taken from the first embedded run; the used codepoints are
+    # gathered in DOCUMENT order (pages -> lines -> runs -> chars), deduped
+    # while preserving first-appearance order, so emission never leaks a
+    # set-iteration order. emit_embedded_font sorts GIDs internally, so the
+    # set fed to it is order-independent regardless.
+    embedded_ref = None
+    embedded_codepoints: list[int] = []
+    _seen_cps: set[int] = set()
+    for page in pages:
+        for line in page.lines:
+            for run in line.runs:
+                ref = getattr(run, "embedded", None)
+                if ref is None:
+                    continue
+                if embedded_ref is None:
+                    embedded_ref = ref
+                for ch in run.text:
+                    cp = ord(ch)
+                    if cp not in _seen_cps:
+                        _seen_cps.add(cp)
+                        embedded_codepoints.append(cp)
+    has_embedded = embedded_ref is not None
+
     writer = PDFWriter()
 
     catalog_n = 1
     pages_tree_n = 2
 
     # Pre-compute object numbers: catalog, pages tree, fonts, XObjects,
-    # then per-page (page object, contents, annotations).
+    # the embedded font's object graph, then per-page (page object,
+    # contents, annotations).
     fixed_objects = 2  # catalog + pages tree
     n_fonts = len(FONT_SLOTS)
     n_images = len(image_order)
@@ -539,7 +574,11 @@ def styled_pdf(
         1 for image_id in image_order
         if _image_needs_smask(image_data_by_id[image_id])
     )
-    cursor = fixed_objects + n_fonts + n_images + n_smasks + 1
+    # The embedded font (Type0 + CIDFont + descriptor + FontFile2 +
+    # ToUnicode) is 5 objects, added right after the image XObjects and
+    # before the per-page objects, so the per-page numbering shifts cleanly.
+    n_embedded = 5 if has_embedded else 0
+    cursor = fixed_objects + n_fonts + n_images + n_smasks + n_embedded + 1
 
     n_pages = len(pages)
     page_obj_nums: list[int] = []
@@ -585,11 +624,29 @@ def styled_pdf(
         obj_n = writer.add_object(_image_xobject_body(data, smask_obj_num=smask_n))
         image_obj_nums[image_id] = obj_n
 
+    # Embedded font object graph (one per document). emit_embedded_font adds
+    # exactly the 5 objects reserved above (FontFile2, descriptor, ToUnicode,
+    # CIDFont, Type0) and returns their numbers; the Type0 is the slot a page
+    # references via /FEmb.
+    embedded_type0_n: int | None = None
+    if has_embedded:
+        from inkmd.cidfont import emit_embedded_font
+        objs = emit_embedded_font(
+            writer,
+            embedded_ref.font,
+            embedded_ref.font_bytes,
+            set(embedded_codepoints),
+            base_font="InkmdEmbedded",
+        )
+        embedded_type0_n = objs.type0
+
     # Resource fragments.
     font_resource = " ".join(
         f"/{slot} {font_obj_nums[name]} 0 R"
         for name, slot in FONT_SLOTS.items()
     )
+    if embedded_type0_n is not None:
+        font_resource += f" /FEmb {embedded_type0_n} 0 R"
 
     for page_idx, (page, page_n, contents_n, annot_nums) in enumerate(zip(
         pages, page_obj_nums, contents_obj_nums, page_annot_obj_nums

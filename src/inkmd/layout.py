@@ -21,6 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 
 from inkmd.fonts import text_width
+from inkmd.embedded_metrics import embedded_text_width
 
 
 # Default layout constants — fine-tuned in later milestones.
@@ -82,6 +83,26 @@ class EmojiImage:
 
 
 @dataclass(frozen=True)
+class EmbeddedFontRef:
+    """A reference to a document-shared embedded TrueType font.
+
+    Carried on a ``Run``/``PositionedRun`` whose ``text`` holds codepoints
+    the base-14 WinAnsi path can't represent (Cyrillic, Greek, Latin-Ext,
+    …). When set, the run measures via the embedded font's advances
+    (``embedded_text_width``) and emits as Identity-H CID hex
+    (``show_text_cid_hex``) instead of the WinAnsi ``?`` byte.
+
+    There is exactly ONE ref per document (the same ``font``/``font_bytes``
+    object shared across every embedded run), so emission dedupes to a
+    single Type0/FontFile2 object graph. ``font`` is the parsed
+    :class:`~inkmd.truetype.TrueTypeFont` (used to measure); ``font_bytes``
+    is the raw program embedded verbatim into ``/FontFile2``.
+    """
+    font: object  # inkmd.truetype.TrueTypeFont
+    font_bytes: bytes
+
+
+@dataclass(frozen=True)
 class Run:
     """A fragment of inline text with a single font/size.
 
@@ -122,6 +143,7 @@ class Run:
     border_fill: tuple[float, float, float] | None = None
     underline: bool = False
     emoji: EmojiImage | None = None  # set => render as an inline image, not text
+    embedded: EmbeddedFontRef | None = None  # set => render via the embedded font
 
 
 @dataclass(frozen=True)
@@ -140,6 +162,7 @@ class PositionedRun:
     border_fill: tuple[float, float, float] | None = None
     underline: bool = False
     emoji: EmojiImage | None = None  # set => render as an inline image, not text
+    embedded: EmbeddedFontRef | None = None  # set => render via the embedded font
 
 
 @dataclass(frozen=True)
@@ -320,8 +343,8 @@ def split_paragraphs(text: str) -> list[str]:
 
 
 def _runs_width(runs: list[Run]) -> float:
-    """Sum the rendered width of a list of runs."""
-    return sum(text_width(r.text, r.font, r.size) for r in runs)
+    """Sum the rendered width of a list of runs (base-14 or embedded)."""
+    return sum(run_text_width(r) for r in runs)
 
 
 def _tokenise_runs(runs: list[Run]) -> list[Run]:
@@ -352,25 +375,15 @@ def _tokenise_runs(runs: list[Run]) -> list[Run]:
             if text[i].isspace():
                 while j < len(text) and text[j].isspace():
                     j += 1
-                out.append(Run(
-                    text=" ", font=run.font, size=run.size,
-                    link_url=run.link_url, color=run.color, strike=run.strike,
-                    y_shift=run.y_shift,
-                    background_fill=run.background_fill,
-                    border_fill=run.border_fill,
-                    underline=run.underline,
-                ))
+                # ``replace`` carries every field (incl. ``embedded``); a
+                # whitespace token collapses to a single space but keeps its
+                # lane so an interior space inside an embedded span measures
+                # and emits on the same font.
+                out.append(replace(run, text=" "))
             else:
                 while j < len(text) and not text[j].isspace():
                     j += 1
-                out.append(Run(
-                    text=text[i:j], font=run.font, size=run.size,
-                    link_url=run.link_url, color=run.color, strike=run.strike,
-                    y_shift=run.y_shift,
-                    background_fill=run.background_fill,
-                    border_fill=run.border_fill,
-                    underline=run.underline,
-                ))
+                out.append(replace(run, text=text[i:j]))
             i = j
     return out
 
@@ -409,17 +422,16 @@ def _token_break_points(text: str) -> list[int]:
 
 def _split_run_at(run: Run, cut: int) -> tuple[Run, Run]:
     """Return two runs splitting ``run.text`` at offset ``cut`` (the
-    second run starts at ``cut``), preserving all styling."""
-    def clone(text: str) -> Run:
-        return Run(
-            text=text, font=run.font, size=run.size,
-            link_url=run.link_url, color=run.color, strike=run.strike,
-            y_shift=run.y_shift,
-            background_fill=run.background_fill,
-            border_fill=run.border_fill,
-            underline=run.underline,
-        )
-    return clone(run.text[:cut]), clone(run.text[cut:])
+    second run starts at ``cut``), preserving all styling.
+
+    ``replace`` carries every field forward (including ``embedded`` and
+    ``emoji``), so breaking a long embedded token keeps both halves on the
+    embedded font rather than silently dropping them to the WinAnsi path.
+    """
+    return (
+        replace(run, text=run.text[:cut]),
+        replace(run, text=run.text[cut:]),
+    )
 
 
 def _break_long_token(tok: Run, column_width: float) -> list[Run]:
@@ -433,14 +445,19 @@ def _break_long_token(tok: Run, column_width: float) -> list[Run]:
     """
     if column_width <= 0:
         return [tok]
-    if text_width(tok.text, tok.font, tok.size) <= column_width:
+    # Measure substrings through the run's own path so an over-wide embedded
+    # token (a long Cyrillic identifier) breaks against its embedded-font
+    # widths, not WinAnsi ``?`` widths.
+    def measure(text: str) -> float:
+        return run_text_width(replace(tok, text=text))
+    if measure(tok.text) <= column_width:
         return [tok]
 
     pieces: list[Run] = []
     remaining = tok
     # Guard against pathological non-termination; each iteration must
     # consume at least one character.
-    while text_width(remaining.text, remaining.font, remaining.size) > column_width:
+    while measure(remaining.text) > column_width:
         text = remaining.text
         # Find the largest prefix that fits, preferring a break point.
         breaks = _token_break_points(text)
@@ -449,7 +466,7 @@ def _break_long_token(tok: Run, column_width: float) -> list[Run]:
         # separator char) still fits.
         for bp in breaks:
             prefix_len = bp + 1
-            if text_width(text[:prefix_len], remaining.font, remaining.size) <= column_width:
+            if measure(text[:prefix_len]) <= column_width:
                 cut = prefix_len
             else:
                 break
@@ -459,7 +476,7 @@ def _break_long_token(tok: Run, column_width: float) -> list[Run]:
             lo, hi = 1, len(text)
             while lo < hi:
                 mid = (lo + hi + 1) // 2
-                if text_width(text[:mid], remaining.font, remaining.size) <= column_width:
+                if measure(text[:mid]) <= column_width:
                     lo = mid
                 else:
                     hi = mid - 1
@@ -555,12 +572,31 @@ def emoji_box(size: float, aspect: float) -> tuple[float, float]:
     return height * aspect, height
 
 
+def run_text_width(run) -> float:
+    """Measured glyph width of a run's text, routing embedded runs to S2.
+
+    The single decision point for "how wide is this run's text": a run
+    tagged with an :class:`EmbeddedFontRef` measures via the embedded
+    font's own advances (``embedded_text_width``); every other run uses
+    the base-14 WinAnsi ``text_width``. Accepts any object exposing
+    ``text``/``font``/``size`` and (optionally) ``embedded`` — both
+    ``Run`` and ``PositionedRun`` — so every run-text measurement site
+    (line accumulation, link/strike/background/border/underline extents)
+    shares one embedded/base-14 dispatch and no embedded run is ever
+    measured as a WinAnsi ``?``.
+    """
+    embedded = getattr(run, "embedded", None)
+    if embedded is not None:
+        return embedded_text_width(embedded.font, run.text, run.size)
+    return text_width(run.text, run.font, run.size)
+
+
 def _run_width(run: Run) -> float:
     """Advance width of a run: the emoji box width for emoji runs,
-    otherwise the measured text width."""
+    otherwise the measured text width (base-14 or embedded)."""
     if run.emoji is not None:
         return emoji_box(run.size, run.emoji.aspect)[0]
-    return text_width(run.text, run.font, run.size)
+    return run_text_width(run)
 
 
 def _line_max_size(line: list[Run]) -> float:
@@ -1032,7 +1068,7 @@ def paginate_runs(
                             size=mrun.size,
                         )
                     )
-                    mx += text_width(mrun.text, mrun.font, mrun.size)
+                    mx += run_text_width(mrun)
             for run in line:
                 positioned.append(
                     PositionedRun(
@@ -1049,6 +1085,7 @@ def paginate_runs(
                         border_fill=run.border_fill,
                         underline=run.underline,
                         emoji=run.emoji,
+                        embedded=run.embedded,
                     )
                 )
                 if run.emoji is not None:
@@ -1146,7 +1183,7 @@ def _link_decorations(
         while j < n and positioned[j].link_url == url:
             last_run = positioned[j]
             j += 1
-        end_x = last_run.x + text_width(last_run.text, last_run.font, last_run.size)
+        end_x = last_run.x + run_text_width(last_run)
         baseline_y = run.y
         size = run.size
         underline_thickness = max(0.5, size * 0.05)
@@ -1196,7 +1233,7 @@ def _background_decorations(positioned: list[PositionedRun]) -> list[Rect]:
         while j < n and positioned[j].background_fill == bg:
             last_run = positioned[j]
             j += 1
-        end_x = last_run.x + text_width(last_run.text, last_run.font, last_run.size)
+        end_x = last_run.x + run_text_width(last_run)
         size = run.size
         # Vertical extents: from a little below baseline to about the
         # glyph top, with small padding so glyph ascenders aren't clipped.
@@ -1236,7 +1273,7 @@ def _underline_decorations(positioned: list[PositionedRun]) -> list[Rect]:
         while j < n and positioned[j].underline:
             last_run = positioned[j]
             j += 1
-        end_x = last_run.x + text_width(last_run.text, last_run.font, last_run.size)
+        end_x = last_run.x + run_text_width(last_run)
         size = run.size
         thickness = max(0.5, size * 0.05)
         offset = size * 0.12
@@ -1277,7 +1314,7 @@ def _border_decorations(positioned: list[PositionedRun]) -> list[Rect]:
         while j < n and positioned[j].border_fill == border:
             last_run = positioned[j]
             j += 1
-        end_x = last_run.x + text_width(last_run.text, last_run.font, last_run.size)
+        end_x = last_run.x + run_text_width(last_run)
         size = run.size
         descender = size * 0.20
         ascender = size * 0.90
@@ -1317,7 +1354,7 @@ def _strike_decorations(positioned: list[PositionedRun]) -> list[Rect]:
         while j < n and positioned[j].strike:
             last_run = positioned[j]
             j += 1
-        end_x = last_run.x + text_width(last_run.text, last_run.font, last_run.size)
+        end_x = last_run.x + run_text_width(last_run)
         size = run.size
         thickness = max(0.5, size * 0.06)
         # Strike sits roughly at the visual x-height midline (~36% above
@@ -1405,9 +1442,10 @@ def _wrap_preserved_line(line: list[Run], column_width: float) -> list[list[Run]
             units.append((None, _run_width(r), r, False))
         else:
             for ch in r.text:
-                units.append(
-                    (ch, text_width(ch, r.font, r.size), r, ch == " ")
-                )
+                # Per-char width through the run's own path: a char in an
+                # embedded run measures on the embedded font, not WinAnsi.
+                w = run_text_width(replace(r, text=ch))
+                units.append((ch, w, r, ch == " "))
 
     def make_runs(start: int, end: int) -> list[Run]:
         out: list[Run] = []

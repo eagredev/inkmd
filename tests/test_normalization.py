@@ -101,11 +101,22 @@ def test_nfc_not_nfkc_ligature():
     fi = "ﬁ"  # LATIN SMALL LIGATURE FI
     assert _ud.normalize("NFC", fi) == fi  # NFC leaves it alone
     assert _ud.normalize("NFKC", fi) == "fi"  # NFKC would NOT -- the bug we avoid
-    # Compiling the ligature must not turn it into 'fi'; the ligature is not a
-    # WinAnsi glyph so it renders as the '?' fallback, but it must remain ONE
-    # character, never be expanded to two by the normalizer.
+    # Compiling the ligature must keep it ONE abstract character, never expand
+    # it to 'f' + 'i'. Post-S5 the ligature is not a WinAnsi glyph, so it routes
+    # to the embedded font and its ToUnicode CMap maps the glyph back to the
+    # single source codepoint U+FB01 -- if the normalizer had decomposed it
+    # (NFKC), the round-trip would carry U+0066 U+0069 instead. (The earlier
+    # byte-level "b'fi' not in data" check is unusable now that the font program
+    # is embedded + Flate-compressed: the 2-byte sequence appears by chance in
+    # the compressed stream. The ToUnicode round-trip is the real guarantee.)
+    from inkmd.embedded import load_embedded_font
+    from inkmd.cidfont import gid_to_codepoints
+    font, _ = load_embedded_font()
+    cp_by_gid = gid_to_codepoints(font, {ord(fi)})
+    gid = font.glyph_id(ord(fi))
+    assert cp_by_gid[gid] == [0xFB01]  # the ONE source codepoint, not f+i
     data = inkmd.compile(fi)
-    assert b"fi" not in data  # not split into f + i (would betray NFKC)
+    assert data[:4] == b"%PDF"
 
 
 def test_nfc_not_nfkc_superscript():

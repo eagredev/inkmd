@@ -318,6 +318,42 @@ def render_document(
     return blocks
 
 
+def apply_embedding(
+    blocks: list[RenderedBlock], embedded_ref
+) -> list[RenderedBlock]:
+    """Post-pass: split each block's runs at the WinAnsi boundary.
+
+    Non-WinAnsi spans (Cyrillic / Greek / Latin-Ext) gain ``embedded_ref``
+    so they measure + emit via the embedded font; base-14 spans are
+    untouched. Mirrors the emoji split, but runs AFTER the whole document is
+    rendered, so ``_render_inline`` stays a pure base-14 producer.
+
+    Splits ``runs`` and ``marker_runs`` (list markers are base-14, so a
+    split there is almost always a no-op, but routing them keeps a custom
+    embedded marker correct). Prepositioned table content is NOT split in
+    S5 — table column widths are computed pre-split, so embedding a table
+    cell needs the table layout itself to be embedding-aware; a non-WinAnsi
+    table cell still renders ``?`` here (logged for the manager). A
+    pure-base-14 block is returned unchanged (identity), so the all-Latin
+    corpus stays byte-identical.
+    """
+    from inkmd.embedded import split_runs_for_embedding
+
+    out: list[RenderedBlock] = []
+    for block in blocks:
+        new_runs = tuple(
+            split_runs_for_embedding(list(block.runs), embedded_ref)
+        )
+        new_markers = tuple(
+            split_runs_for_embedding(list(block.marker_runs), embedded_ref)
+        )
+        if new_runs == block.runs and new_markers == block.marker_runs:
+            out.append(block)
+        else:
+            out.append(replace(block, runs=new_runs, marker_runs=new_markers))
+    return out
+
+
 def _render_block(
     block, family: FontFamily, depth: int, content_width: float = DEFAULT_CONTENT_WIDTH
 ) -> list[RenderedBlock]:

@@ -52,6 +52,7 @@ def compile(
     base_dir: Path | None = None,
     allow_remote_images: bool = False,
     emoji_fallback: str = "name",
+    font_path: str | Path | None = None,
 ) -> bytes:
     """Compile markdown text into PDF bytes.
 
@@ -103,6 +104,13 @@ def compile(
             font-less single-file zipapp build. ``"name"`` (default)
             substitutes a short ``[rocket]``-style label so the meaning
             survives; ``"drop"`` omits the emoji entirely.
+        font_path: Path to a TrueType (``glyf``-flavoured) font to embed
+            for text the base-14 fonts can't represent (Cyrillic, Greek,
+            Latin-Extended, …). When None (default), inkmd embeds its
+            bundled DejaVuSans. The font is embedded whole; non-WinAnsi
+            text routes to it automatically while ASCII/Latin-1 stays on
+            the base-14 family. A bad or unsupported font raises a clear
+            ``TrueTypeFontError`` rather than a raw parse traceback.
 
     Returns:
         The compiled PDF as a ``bytes`` object. Byte-identical for the
@@ -157,6 +165,25 @@ def compile(
         )
     finally:
         reset_fallback_mode(token)
+    # Embedded-font wiring: if the document holds codepoints the base-14
+    # WinAnsi path can't represent (Cyrillic/Greek/Latin-Ext), split those
+    # runs onto an embedded font and emit it once. A pure-ASCII/Latin
+    # document triggers none of this and stays byte-identical to pre-S5.
+    from inkmd.embedded import (
+        EmbeddedFontRef,
+        document_uses_non_winansi,
+        load_embedded_font,
+    )
+    from inkmd.render import apply_embedding
+    if document_uses_non_winansi(p.runs for p in paragraphs):
+        loaded = load_embedded_font(font_path)
+        if loaded is not None:
+            font, font_bytes = loaded
+            ref = EmbeddedFontRef(font=font, font_bytes=font_bytes)
+            paragraphs = apply_embedding(paragraphs, ref)
+        # When loaded is None (font-less zipapp build with no bundled font),
+        # the non-WinAnsi text falls through to the WinAnsi `?` path, exactly
+        # as before this feature existed.
     return styled_pdf(paragraphs, page_size=page_size)
 
 
@@ -171,6 +198,7 @@ def render_file(
     html: bool = True,
     allow_remote_images: bool = False,
     emoji_fallback: str = "name",
+    font_path: str | Path | None = None,
 ) -> None:
     """Read markdown from a file and write the compiled PDF to another file.
 
@@ -194,6 +222,8 @@ def render_file(
             at compile time. See :func:`compile`.
         emoji_fallback: ``"name"`` or ``"drop"`` for emoji the font can't
             render (zipapp / INKMD_NO_EMOJI only). See :func:`compile`.
+        font_path: Override font to embed for non-WinAnsi text. See
+            :func:`compile`.
 
     Returns:
         None. The PDF is written to ``out_path`` as a side effect.
@@ -221,5 +251,6 @@ def render_file(
             base_dir=src.parent,
             allow_remote_images=allow_remote_images,
             emoji_fallback=emoji_fallback,
+            font_path=font_path,
         )
     )

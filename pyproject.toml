@@ -46,7 +46,13 @@ Issues = "https://github.com/eagredev/inkmd/issues"
 where = ["src"]
 
 [tool.setuptools.package-data]
-inkmd = ["py.typed", "assets/emoji/NotoColorEmoji.ttf", "assets/emoji/OFL.txt"]
+inkmd = [
+    "py.typed",
+    "assets/emoji/NotoColorEmoji.ttf",
+    "assets/emoji/OFL.txt",
+    "assets/fonts/DejaVuSans.ttf",
+    "assets/fonts/DejaVuSans-LICENSE.txt",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
