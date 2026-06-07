@@ -216,7 +216,7 @@ The public API is intentionally narrow: two functions, no classes to instantiate
 - Standard PDF letter and A4 page sizes.
 - WinAnsi character encoding: em-dash, en-dash, curly quotes, ellipsis, most Western European glyphs.
 - **Color emoji** render as inline images from a bundled font: single emoji, presentation selectors, regional-indicator flags, skin-tone modifiers, ZWJ sequences (families, the rainbow flag), and keycaps, inline and in table cells. (Bitmaps scaled to text size; they soften slightly at very large heading sizes.)
-- Other codepoints outside WinAnsi (CJK, Cyrillic, Greek, most non-Latin scripts) render as `?`. Full text-font embedding would lift this in a later release.
+- Non-Latin scripts (Cyrillic, Greek, Latin-Extended) render through an embedded font (the bundled DejaVuSans, or any TrueType font via `font_path=`). A codepoint no available font covers (e.g. CJK, which the bundled font lacks) renders a visible `[U+XXXX]` marker rather than a silent `?`, and inkmd emits a warning. CJK full rendering is a planned later font pack.
 
 ## Determinism
 
@@ -228,7 +228,7 @@ If you hash the markdown and the PDF, the relationship is stable forever. Useful
 
 | Feature | When | Why |
 |---------|------|-----|
-| Text-font embedding for non-Latin scripts (CJK, Cyrillic, etc.) | later | inkmd uses PDF's 14 base fonts for text (WinAnsi). Color **emoji** are embedded from a bundled font; other non-Latin scripts still render as `?` |
+| CJK text rendering | later | inkmd embeds a font for non-Latin text (v0.4): Cyrillic, Greek, and Latin-Extended render through the bundled DejaVuSans. CJK is not covered by the bundled font, so CJK codepoints show a visible `[U+XXXX]` marker; a CJK font pack is planned for a later release |
 | Headers, footers, page numbers | v0.4 | Needs a per-page chrome system |
 | Wide-table column fitting | v0.4 | A table **taller** than a page splits across pages, repeating the header. A table with too many **columns** to fit even at minimum legible width (roughly 25+) still overflows the right edge rather than crushing columns into unreadable slivers. Horizontal column fitting (auto-shrink / landscape) is queued |
 | RGBA PNG embedding | v0.4 | inkmd supports RGB, grayscale, and **indexed** PNG (with `tRNS` transparency); full RGBA alpha is queued |
@@ -274,7 +274,7 @@ The release tiers are about **what a real user sees**, not about chasing a perce
 - **v0.1:** Proof of concept: working basic PDFs. **Shipped.**
 - **v0.2:** Most sane use cases work; remaining failures are rare and defensible. CommonMark 85%, GFM extensions 71%. Adds reference links, images (PNG + JPEG + indexed PNG with transparency), **color emoji** (single, flags, skin tones, ZWJ sequences, keycaps, inline and in tables), task lists, inline HTML allow-list, hard line breaks, indented code blocks (including inside list items), URL scheme filter, tab preservation, image-inside-link.
 - **v0.3:** 100% CommonMark and 100% GFM extensions. The long-tail spec-corner cases, including block-level raw HTML pass-through and HTML blocks inside list items.
-- **v0.4:** Feature breadth on top of the CommonMark and GFM-extension conformance above. Headers/footers/page numbers, horizontal fitting for very wide tables (tall tables already split across pages), text-font embedding for non-Latin scripts (CJK, Cyrillic, etc.), full RGBA PNG, GIF.
+- **v0.4:** Text-font embedding for non-Latin scripts (Cyrillic, Greek, Latin-Extended) through a bundled embedded font, with a visible `[U+XXXX]` marker for codepoints no font covers (e.g. CJK, a planned later font pack).
 - **v1.0 and beyond:** Tagged PDF, accessibility, TOC generation, cross-references. PDF/A and similar under consideration.
 
 ## Licence

@@ -377,7 +377,7 @@ inside
 
 Typographic punctuation rendered via WinAnsi: em-dash —, en-dash –, single curly quotes 'one' and double curly "two", apostrophe in don't, ellipsis …, bullet character • (also used by lists).
 
-Non-WinAnsi codepoints will render as `?` — that's a v0.1 limitation: 日本語 résumé piñata naïve.
+Non-WinAnsi text routes to an embedded font: Cyrillic, Greek, and Latin-Extended render, while a codepoint no font covers (e.g. CJK like 日本語) shows a visible `[U+XXXX]` marker. WinAnsi accents like résumé piñata naïve render either way.
 
 A heading with curly quotes: "It's a test"
 ==========================================

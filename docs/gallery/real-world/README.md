@@ -1,7 +1,8 @@
 # Real-world rendering gallery
 
-Four real third-party documents, rendered through inkmd as-is, with
-honest notes about what worked and what did not.
+Four real third-party documents plus one constructed feature
+showcase, rendered through inkmd as-is, with honest notes about what
+worked and what did not.
 
 The [`docs/gallery/`](..) directory one level up contains
 spec-edge-case verification PDFs: documents specifically constructed
@@ -10,7 +11,7 @@ directory is the opposite: documents that real authors wrote for
 real audiences, rendered through inkmd to show what a visitor would
 get if they pointed the tool at a document from their own life.
 
-## The four documents
+## The documents
 
 | Document | Source | Pages | Notes |
 |----------|--------|-------|-------|
@@ -18,6 +19,7 @@ get if they pointed the tool at a document from their own life.
 | [Rust Book §1.3 "Hello, Cargo!"](rust-book-ch1-3-hello-cargo/) | `rust-lang/book` | 5 | Clean render; multi-page technical book chapter |
 | [inkmd's own README](inkmd-self-render/) | This repo | 12 | Dogfood; the centred `<p align><img>` hero renders, image embedded |
 | [Ruff README](ruff-readme/) | `astral-sh/ruff` | 11 | Mixed; color emoji render, SVG badges fall back to alt-text |
+| [Non-Latin scripts](nonlatin-scripts/) | Constructed showcase | 3 | Non-Latin scripts: Cyrillic, Greek, and Latin-Extended render via the embedded font; unsupported codepoints (e.g. CJK) show a visible `[U+XXXX]` marker. Table cells still render `?` (known limitation) |
 
 Each subdirectory contains:
 
@@ -28,7 +30,7 @@ Each subdirectory contains:
 
 ## How these were rendered
 
-All four were compiled with:
+All were compiled with:
 
 ```python
 inkmd.compile(
@@ -54,5 +56,7 @@ re-run.
 This gallery shows what inkmd produces on documents real authors
 wrote for real audiences, not a curated demo: the README of a
 known project, a chapter of a book, a blog post in a recognisable
-style. The four documents here cover those shapes. The README for
-each one is candid about what fell short.
+style. Those documents cover those shapes; the non-Latin showcase
+adds a direct look at the v0.4 font-embedding feature on text the
+base fonts cannot draw. The README for each one is candid about
+what fell short.

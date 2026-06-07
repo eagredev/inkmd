@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-08
+
+**Non-Latin text renders.** inkmd now embeds a font for text the 14 base PDF fonts cannot represent, so Cyrillic, Greek, and Latin-Extended scripts render as real glyphs instead of falling back to `?`. The 0.3.0 entry promised this ("Still ahead: text-font embedding for non-Latin scripts"); 0.4 delivers it. The four-layer pipeline, public API, and determinism property are unchanged: the same input still produces byte-identical output.
+
+### Added
+
+- **Embedded TrueType font support.** A TrueType (`glyf`-flavoured) font is embedded as a CID-keyed Type0/CIDFontType2 with Identity-H encoding, with a `/ToUnicode` map so the embedded text stays selectable and copyable. Non-WinAnsi text routes to the embedded font automatically while ASCII/Latin-1 stays on the base-14 family.
+- **A bundled DejaVuSans font**, shipped in the pip wheel, covering Cyrillic, Greek, and Latin-Extended. It loads with no system-font lookup, so output is reproducible wherever inkmd is installed.
+- **A `font_path=` option** on `compile` and `render_file` to embed a different TrueType font in place of the bundled one. A missing, unreadable, or unsupported font raises a clear `TrueTypeFontError` rather than a raw parse traceback.
+- **A visible `[U+XXXX]` marker** for any codepoint no available font can draw, replacing the old silent `?`. inkmd also raises one `MissingGlyphWarning` per compile naming the missing codepoints, so the condition is machine-detectable and filterable.
+- **Unicode NFC normalization at ingestion.** The markdown source is normalized to NFC before parsing, so a decomposed sequence (NFD `cafe` followed by a combining acute accent) composes to its single codepoint and renders, instead of dropping the combining mark.
+
+### Known limitations
+
+- **CJK is not rendered in this release.** The bundled DejaVuSans has no CJK glyphs, so CJK codepoints show the `[U+XXXX]` marker. A CJK font pack is planned for a later release.
+- **Non-Latin text inside table cells still renders `?`.** Table column widths are computed before the run split, so embedded-font routing does not yet reach table cells. The fix is pending; the same text in prose renders through the embedded font.
+
+This release is rendering, not parsing: conformance is unchanged at CommonMark 652/652 (100%) and the GFM extensions unchanged.
+
 ## [0.3.0] - 2026-06-06
 
 The v0.3 conformance milestone. **Full spec conformance: CommonMark 0.31.2 at 652/652 (100%) and GFM extensions at 28/28 (100%), with zero documented exceptions** - up from 85.0% / 71.4% in 0.2.x. The whole effort lives in the parser; the four-layer pipeline, public API, and determinism property are unchanged. Live breakdown in [`docs/conformance.md`](docs/conformance.md).
@@ -24,7 +43,7 @@ The v0.3 conformance milestone. **Full spec conformance: CommonMark 0.31.2 at 65
 - **Unified code-block content-newline convention**: fenced and indented code now use the same terminator convention, recovering trailing blank lines inside fenced code (Lists 318). The render path strips the final terminator, so PDF output is unchanged.
 - **HTML comment parsing** updated to the CommonMark 0.31.2 rule (`<!-->` / `<!--->` valid; interior `--` allowed). Raw HTML 18/20 -> 20/20.
 
-Still ahead, unchanged from the prior roadmap: headers/footers/page numbers, horizontal fitting for very wide tables (tall tables already split across pages), text-font embedding for non-Latin scripts (CJK, Cyrillic), full RGBA PNG, and GIF. See the [roadmap](README.md#roadmap).
+Still ahead: text-font embedding for non-Latin scripts (CJK, Cyrillic), page and layout control, multi-page document structure, and more. The roadmap has been re-sequenced into smaller releases since 0.3.0, so some items moved to later versions; see the current [roadmap](README.md#roadmap) for the per-version breakdown.
 
 ## [0.2.1] - 2026-06-02
 
@@ -225,7 +244,8 @@ These are documented v0.1 constraints, not bugs. See the [roadmap](README.md#roa
 
 501 tests across 24 files, all passing. End-to-end PDF validity verified via `qpdf --check`.
 
-[Unreleased]: https://github.com/eagredev/inkmd/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/eagredev/inkmd/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/eagredev/inkmd/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/eagredev/inkmd/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/eagredev/inkmd/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/eagredev/inkmd/compare/v0.1.0...v0.2.0

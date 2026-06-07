@@ -124,7 +124,7 @@ For documents under ~3 pages, the per-document overhead WeasyPrint pays for its 
 A reasonable reading of the data:
 
 - **inkmd is the right tool when** install footprint, cold-start latency, or memory matters. CI artefacts, serverless renderers, embedded systems, locked-down runners, anywhere a 200 MB browser or 74 MB Python venv is not acceptable.
-- **WeasyPrint is the right tool when** you need non-Latin scripts, CSS-style control over layout, page chrome, or any of the features inkmd doesn't have. WeasyPrint also produces slightly smaller PDFs for longer documents.
+- **WeasyPrint is the right tool when** you need CJK or other scripts the bundled font does not cover, complex-script shaping, CSS-style control over layout, page chrome, or any of the features inkmd doesn't have. (inkmd does render Cyrillic, Greek, and Latin-Extended through an embedded font.) WeasyPrint also produces slightly smaller PDFs for longer documents.
 
 Neither tool is strictly better. They sit at different points on the speed/footprint vs feature-richness trade-off.
 

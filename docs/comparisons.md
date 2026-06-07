@@ -130,9 +130,9 @@ If you're already using one of these parsers for markdown-to-HTML elsewhere in y
 ## Where inkmd is worse
 
 - **No CSS theming.** inkmd's typography is fixed (Helvetica or Times, two page sizes, set spacing rules). If you need custom fonts, colours, layouts, you're better off with WeasyPrint.
-- **No headers, footers, page numbers.** Tracked for v0.4.
-- **No full Unicode text.** inkmd supports WinAnsi (Western European) for text, plus **color emoji** from a bundled font. CJK, Cyrillic, Greek and other non-Latin scripts still render as `?` until a later release adds text-font embedding. WeasyPrint handles all of it out of the box.
-- **Partial table fitting.** A table **taller** than one page splits across pages, repeating the header. A table with too many **columns** to fit even at minimum legible width (~25+) still overflows the right edge rather than crushing columns into illegible slivers. Horizontal column fitting (auto-shrink / landscape) is v0.4.
+- **No headers, footers, page numbers.** Tracked for v0.6.
+- **No full Unicode text.** inkmd supports WinAnsi (Western European) for text, plus **color emoji** from a bundled font, plus Cyrillic, Greek, and Latin-Extended through an embedded font. CJK is not yet covered: the bundled font has no CJK glyphs, so CJK codepoints show a visible `[U+XXXX]` marker, and a CJK font pack is planned for a later release. WeasyPrint handles all of it out of the box.
+- **Partial table fitting.** A table **taller** than one page splits across pages, repeating the header. A table with too many **columns** to fit even at minimum legible width (~25+) still overflows the right edge rather than crushing columns into illegible slivers. Horizontal column fitting (auto-shrink / landscape) is v0.5.
 - **No accessibility / tagged PDF.** v1.0+.
 
 If any of these matter, use a different tool; that's what they're for.

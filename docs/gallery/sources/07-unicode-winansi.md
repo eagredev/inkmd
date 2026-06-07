@@ -1,6 +1,6 @@
 # Unicode, emoji, and the WinAnsi boundary
 
-The 14 base PDF fonts use WinAnsi encoding — a single-byte mapping covering Latin-1 plus extra symbols (em-dash, curly quotes, ellipsis, currency, etc.). Text outside WinAnsi has no glyph in those fonts. inkmd handles the edge in two ways: **emoji render as color images** (from a bundled font), while other non-Latin scripts (CJK, Cyrillic, Greek, …) currently fall back to `?`. This gallery shows what's in scope and what falls off the edge.
+The 14 base PDF fonts use WinAnsi encoding, a single-byte mapping covering Latin-1 plus extra symbols (em-dash, curly quotes, ellipsis, currency, etc.). Text outside WinAnsi has no glyph in those fonts, so inkmd routes it three ways: **emoji render as color images** (from a bundled font); **Cyrillic, Greek, and Latin-Extended render through an embedded font**; and a codepoint no available font covers (e.g. CJK, which the bundled font lacks) shows a visible `[U+XXXX]` marker rather than a silent `?`. This gallery shows what each path looks like.
 
 ## Always available
 
@@ -20,15 +20,15 @@ Single emoji: 🎉 🚀 ✅ ⚠️ 🔥 💡 📦. Skin tone: 👍🏽. Flags: �
 
 Emoji are drawn from a bundled color font as small inline images scaled to the surrounding text size. They look crisp inline; at very large heading sizes the bitmaps soften slightly (a documented trade-off of the bitmap approach). The single-file zipapp build omits the font and falls back to a textual label such as `[rocket]`.
 
-## Outside WinAnsi (still render as `?`)
+## Outside WinAnsi (embedded font or `[U+XXXX]` marker)
 
-Scripts other than emoji are documented limitations; full text-font embedding would lift them in a later release.
+Cyrillic, Greek, and Latin-Extended render through the embedded font. A codepoint no available font covers (CJK under the bundled font) shows a visible `[U+XXXX]` marker, and inkmd emits a `MissingGlyphWarning`. CJK full rendering is a planned later font pack.
 
 Cyrillic: Привет, мир.
 
-Greek: αβγδε ΑΒΓΔΕ — and a Δ (capital delta) by itself.
+Greek: αβγδε ΑΒΓΔΕ, and a Δ (capital delta) by itself.
 
-CJK: 你好世界 (Chinese), こんにちは世界 (Japanese hiragana), 안녕하세요 (Korean).
+CJK (shows `[U+XXXX]` markers, the bundled font has no CJK): 你好世界 (Chinese), こんにちは世界 (Japanese hiragana), 안녕하세요 (Korean).
 
 Mathematical: ∑ ∫ √ ∞ ≠ ≤ ≥ ∈ ∀ ∃.
 
@@ -36,7 +36,7 @@ Arrows: → ← ↑ ↓ ⇒ ⇐ ⇔ ↕.
 
 ## Mixed inline
 
-A paragraph that mixes Latin, emoji, and other scripts: "Hello — bonjour — guten Tag — 🌍 — Привет — 你好 — مرحبا". Expect the Latin parts and the emoji to render correctly, and the remaining non-Latin scripts to fall back to `?`.
+A paragraph that mixes Latin, emoji, and other scripts: "Hello, bonjour, guten Tag, 🌍, Привет, 你好". The Latin parts and the emoji render directly; the Cyrillic renders through the embedded font; and the CJK, which the bundled font does not cover, shows `[U+XXXX]` markers. inkmd splits the line per codepoint to route each one.
 
 ## In code blocks
 
@@ -44,7 +44,7 @@ A paragraph that mixes Latin, emoji, and other scripts: "Hello — bonjour — g
 ASCII only: works.
 Em dash —: works (WinAnsi).
 Emoji 🚀: renders as a color image.
-Delta Δ: shows as ?.
+Delta Δ: renders via the embedded font.
 ```
 
 ```
@@ -53,6 +53,8 @@ greeting = "Привет, мир"
 ```
 
 ## In tables
+
+Embedded-font routing does not yet reach table cells: the column widths are computed before the run split, so non-WinAnsi text inside a cell still renders `?` (a known limitation, fix pending). The same text in prose renders through the embedded font, as the Cyrillic line above shows.
 
 | Region | Greeting | Status |
 |--------|----------|--------|

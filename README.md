@@ -66,9 +66,9 @@ For the longer, honest version of how inkmd compares against every realistic alt
 
 ## Status
 
-**v0.3, MIT-licensed.** 823 tests across 35 files. Stdlib-only, Python 3.9+. Byte-deterministic output.
+**v0.4, MIT-licensed.** 955 tests across 42 files. Stdlib-only, Python 3.9+. Byte-deterministic output.
 
-Conformance against the public spec suites, as shipped in this release: CommonMark 0.31.2 at 652/652 (100%); GFM extensions at 28/28 (100%). The full per-section breakdown is in [`docs/conformance.md`](docs/conformance.md). Threat model in [`docs/security.md`](docs/security.md). Spec-edge render samples in [`docs/gallery/`](docs/gallery/), and a real-world rendering gallery (the Ruff README, a Rust Book chapter, a Simon Willison TIL, and inkmd's own README) in [`docs/gallery/real-world/`](docs/gallery/real-world/).
+Conformance against the public spec suites, as shipped in this release: CommonMark 0.31.2 at 652/652 (100%); GFM extensions at 28/28 (100%). The full per-section breakdown is in [`docs/conformance.md`](docs/conformance.md). Threat model in [`docs/security.md`](docs/security.md). Spec-edge render samples in [`docs/gallery/`](docs/gallery/), and a real-world rendering gallery (the Ruff README, a Rust Book chapter, a Simon Willison TIL, a non-Latin scripts showcase, and inkmd's own README) in [`docs/gallery/real-world/`](docs/gallery/real-world/).
 
 The design principle is **utter consistency**: for any markdown construct the CommonMark spec has a clear answer about, inkmd follows that answer. The conformance percentage is a proxy for "what GitHub showed you is what you get"; it isn't the goal in itself.
 
@@ -216,7 +216,7 @@ The public API is intentionally narrow: two functions, no classes to instantiate
 - Standard PDF letter and A4 page sizes.
 - WinAnsi character encoding: em-dash, en-dash, curly quotes, ellipsis, most Western European glyphs.
 - **Color emoji** render as inline images from a bundled font: single emoji, presentation selectors, regional-indicator flags, skin-tone modifiers, ZWJ sequences (families, the rainbow flag), and keycaps, inline and in table cells. (Bitmaps scaled to text size; they soften slightly at very large heading sizes.)
-- Other codepoints outside WinAnsi (CJK, Cyrillic, Greek, most non-Latin scripts) render as `?`. Full text-font embedding would lift this in a later release.
+- Non-Latin scripts (Cyrillic, Greek, Latin-Extended) render through an embedded font (the bundled DejaVuSans, or any TrueType font via `font_path=`). A codepoint no available font covers (e.g. CJK, which the bundled font lacks) renders a visible `[U+XXXX]` marker rather than a silent `?`, and inkmd emits a warning. CJK full rendering is a planned later font pack.
 
 ## Determinism
 
@@ -228,15 +228,21 @@ If you hash the markdown and the PDF, the relationship is stable forever. Useful
 
 | Feature | When | Why |
 |---------|------|-----|
-| Text-font embedding for non-Latin scripts (CJK, Cyrillic, etc.) | later | inkmd uses PDF's 14 base fonts for text (WinAnsi). Color **emoji** are embedded from a bundled font; other non-Latin scripts still render as `?` |
-| Headers, footers, page numbers | v0.4 | Needs a per-page chrome system |
-| Wide-table column fitting | v0.4 | A table **taller** than a page splits across pages, repeating the header. A table with too many **columns** to fit even at minimum legible width (roughly 25+) still overflows the right edge rather than crushing columns into unreadable slivers. Horizontal column fitting (auto-shrink / landscape) is queued |
-| RGBA PNG embedding | v0.4 | inkmd supports RGB, grayscale, and **indexed** PNG (with `tRNS` transparency); full RGBA alpha is queued |
-| GIF image support | v0.4 | LZW decoder + palette resolution |
-| Tagged PDF / PDF/UA accessibility | v1.0+ | Under consideration |
-| PDF/A archival format | n/a | Not planned |
-| Math (LaTeX-style) | n/a | Out of scope. Use Pandoc + LaTeX. |
-| Themes / CSS | n/a | Out of scope. Markdown's value is its constraints. |
+| Non-Latin text (Cyrillic, Greek, Latin-Extended) | v0.4 | inkmd uses PDF's 14 base fonts for text (WinAnsi), so characters outside that set used to render as `?`. v0.4 adds text-font embedding from a bundled font, which makes these scripts render. A codepoint the bundled font lacks (e.g. CJK) shows a visible `[U+XXXX]` marker; a CJK font pack is planned for a later release |
+| Right-to-left and complex scripts (Arabic, Hebrew, Indic) | v1.0 | Correct bidirectional layout and shaping. Shaping ships as an optional `inkmd[shaping]` add-on (the one part of inkmd that uses a dependency, because it needs one) |
+| Headers, footers, page numbers | v0.6 | Needs a per-page chrome system on top of a look-ahead paginator |
+| Table of contents, bookmarks, working internal links | v0.6 | Generated from heading structure once the paginator can resolve page positions |
+| Wide-table column fitting | v0.5 | A table **taller** than a page already splits across pages, repeating the header. A table with too many **columns** to fit even at minimum legible width still overflows the right edge. Horizontal fitting (auto-shrink / landscape) is queued |
+| Margin, font-size, line-spacing, page-size control | v0.5 | Currently fixed; being exposed through the API |
+| Syntax highlighting, footnotes, callouts, captions | v0.8 | Document constructs the docs and report use cases expect |
+| RGBA PNG embedding | v0.9 | inkmd supports RGB, grayscale, and **indexed** PNG (with `tRNS` transparency); full RGBA alpha is queued |
+| GIF image support | v0.9 | LZW decoder + palette resolution |
+| Justified text, hyphenation, ligatures | v0.9 | Typesetting polish |
+| Tagged PDF / PDF/UA accessibility | v1.0 | Structure tree, reading order, alt text |
+| PDF/A archival format | v1.0 | OutputIntent, embedded ICC profile, deterministic document ID |
+| Math (LaTeX-style) | not planned | Out of scope. Use Pandoc + LaTeX. |
+| Themes / CSS | not planned | Out of scope. Markdown's value is its constraints. |
+| Prepress (bleed/crop marks, CMYK), forms, EPUB | not planned | inkmd targets office and desktop documents, not print production or reflowable e-books |
 
 ## How it works
 
@@ -263,7 +269,7 @@ The trade-off is that the *actual rendering* depends on which Helvetica (or Time
 
 The advance widths are correct everywhere (PDF readers honour the AFM-published metrics), so layout (page breaks, line wrapping, paragraph flow) is identical across systems. What varies is the precise glyph shape *within* each advance-width box, which can produce slightly different visual spacing.
 
-For most use cases this is fine. If you need pixel-identical rendering across every system (signed or archival documents, for example), wait for **v0.4 TTF font embedding**, which will bundle font outlines inside each PDF.
+For most use cases this is fine. If you need pixel-identical rendering across every system (signed or archival documents, for example), use **`font_path=`** to embed a TrueType font, which bundles the font outlines inside each PDF. v0.4 embeds the bundled DejaVuSans for non-Latin text automatically.
 
 </details>
 
@@ -274,8 +280,13 @@ The release tiers are about **what a real user sees**, not about chasing a perce
 - **v0.1:** Proof of concept: working basic PDFs. **Shipped.**
 - **v0.2:** Most sane use cases work; remaining failures are rare and defensible. CommonMark 85%, GFM extensions 71%. Adds reference links, images (PNG + JPEG + indexed PNG with transparency), **color emoji** (single, flags, skin tones, ZWJ sequences, keycaps, inline and in tables), task lists, inline HTML allow-list, hard line breaks, indented code blocks (including inside list items), URL scheme filter, tab preservation, image-inside-link.
 - **v0.3:** 100% CommonMark and 100% GFM extensions. The long-tail spec-corner cases, including block-level raw HTML pass-through and HTML blocks inside list items.
-- **v0.4:** Feature breadth on top of the CommonMark and GFM-extension conformance above. Headers/footers/page numbers, horizontal fitting for very wide tables (tall tables already split across pages), text-font embedding for non-Latin scripts (CJK, Cyrillic, etc.), full RGBA PNG, GIF.
-- **v1.0 and beyond:** Tagged PDF, accessibility, TOC generation, cross-references. PDF/A and similar under consideration.
+- **v0.4:** Text-font embedding. Non-Latin scripts (Cyrillic, Greek, Latin-Extended) render through a bundled embedded font instead of falling back to `?`, and the embedded font makes a document look the same in every viewer. A codepoint the bundled font does not cover (e.g. CJK) shows a visible `[U+XXXX]` marker; CJK full rendering is a planned later font pack. **Shipped.**
+- **v0.5:** Page and layout control. Margins, font size, line spacing, page size and orientation, forced page breaks, and horizontal fitting for very wide tables.
+- **v0.6:** Multi-page document structure. Running headers, footers, and page numbers; a generated table of contents; PDF bookmarks; and working internal links.
+- **v0.7:** Pipeline features. Document metadata, basic frontmatter parsing, clear errors instead of tracebacks, a strict mode that reports failed images, configurable URL and HTML schemes, path and resource limits, and opt-in output compression.
+- **v0.8:** Document constructs. Syntax highlighting, footnotes, GitHub-style callouts, figure and table captions, and definition lists.
+- **v0.9:** Typesetting and images. Justified text, hyphenation, ligatures, full RGBA PNG and GIF, image resolution handling, watermarks, and title pages.
+- **v1.0:** Right-to-left and complex scripts (Arabic, Hebrew, Indic), PDF/A archival output, and tagged-PDF accessibility. The endpoint where inkmd renders any major language and produces archival-grade output.
 
 ## Licence
 

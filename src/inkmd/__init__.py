@@ -107,11 +107,15 @@ def compile(
             survives; ``"drop"`` omits the emoji entirely.
         font_path: Path to a TrueType (``glyf``-flavoured) font to embed
             for text the base-14 fonts can't represent (Cyrillic, Greek,
-            Latin-Extended, …). When None (default), inkmd embeds its
+            Latin-Extended, ...). When None (default), inkmd embeds its
             bundled DejaVuSans. The font is embedded whole; non-WinAnsi
             text routes to it automatically while ASCII/Latin-1 stays on
-            the base-14 family. A bad or unsupported font raises a clear
-            ``TrueTypeFontError`` rather than a raw parse traceback.
+            the base-14 family. A codepoint with no glyph in the chosen
+            font (e.g. CJK under the bundled DejaVuSans) renders as a
+            visible ``[U+XXXX]`` marker and inkmd raises one
+            ``MissingGlyphWarning``, instead of a silent ``?``. A bad or
+            unsupported font raises a clear ``TrueTypeFontError`` rather
+            than a raw parse traceback.
 
     Returns:
         The compiled PDF as a ``bytes`` object. Byte-identical for the
