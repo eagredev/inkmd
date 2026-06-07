@@ -1,5 +1,16 @@
 # Cyclomatic complexity audit, v0.3
 
+> **Update 2026-06-07:** `_BlockParser.feed` has since been refactored from CCN
+> 145 to CCN 2, split into a short driver plus named phase methods
+> (open-container consumption, document-level openers, list-stack walk, post-walk
+> routing). Behavior was preserved: the full test suite, both conformance suites,
+> and a byte-for-byte render check over a broad document corpus were identical
+> before and after. The `feed` outlier described below is therefore historical;
+> the secondary candidates (`paginate_runs`, `_render_table`) were assessed and
+> left as-is (their complexity is inherent to pagination / column-fitting and
+> they are already internally decomposed). The body below is kept as the
+> pre-refactor receipt.
+
 Run on `2026-06-05` with `lizard src/inkmd/ -x "*/_kerning_data.py" -C 15`,
 re-measured after the v0.3 conformance push (which took the parser from ~3,250 to
 4,207 lines on the way to 100% CommonMark + GFM-extension conformance). This supersedes the
