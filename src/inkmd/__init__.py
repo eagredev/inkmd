@@ -25,6 +25,7 @@ template evaluation. The full security posture is documented in
 
 from __future__ import annotations
 
+import unicodedata
 from pathlib import Path
 
 from inkmd.html_filter import filter_document as filter_html
@@ -122,6 +123,18 @@ def compile(
     """
     if family not in FAMILIES:
         raise ValueError(f"unknown family {family!r}; available: {tuple(FAMILIES)}")
+    # Normalize the whole markdown string to Unicode NFC at ingestion, before
+    # any parsing. This is deliberate and whole-string: NFC is idempotent and
+    # leaves ASCII untouched, so prose, URLs, structure, and code are all safe.
+    # It composes decomposed sequences (e.g. NFD "café") to their single
+    # codepoints (U+00E9) so the WinAnsi/embedded-font path renders them instead
+    # of dropping the combining mark to "?". Code blocks are composed too, which
+    # is intended (a code block holding a genuinely decomposed sequence for
+    # display is vanishingly rare and out of S4 scope). NFC ONLY -- never NFKC,
+    # which would rewrite ligatures/superscripts and change the author's
+    # characters. Conformance harnesses call parse() directly, so this stays here
+    # in compile() and leaves the spec-conformance surface byte-identical.
+    md_text = unicodedata.normalize("NFC", md_text)
     doc = parse(md_text, autolinks=autolinks, html=html)
     doc = filter_html(doc, html=html)
     doc = filter_document(doc, safe=safe)
