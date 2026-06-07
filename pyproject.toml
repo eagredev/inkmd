@@ -32,7 +32,7 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+dev = ["pytest>=7", "coverage[toml]>=7"]
 
 [project.scripts]
 inkmd = "inkmd.cli:main"
@@ -51,3 +51,15 @@ inkmd = ["py.typed", "assets/emoji/NotoColorEmoji.ttf", "assets/emoji/OFL.txt"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
+
+# Dev-only coverage config. Does NOT affect the shipped package: `coverage`
+# lives in the `dev` optional-dependencies group, never in runtime
+# `dependencies`. Branch coverage is on because the block parser is
+# branch-dense and line coverage would overstate how much of it is exercised.
+# Run with: coverage run --branch -m pytest && coverage report -m
+[tool.coverage.run]
+branch = true
+source = ["inkmd"]
+
+[tool.coverage.report]
+show_missing = true
