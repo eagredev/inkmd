@@ -689,6 +689,37 @@ class _BlockParser:
     def feed(self, line: str) -> None:
         """Process one input line."""
         self._line_num += 1
+        if self._consume_open_container(line):
+            return
+
+        # Compute the line's leading indent column. We keep two values:
+        # ``line_indent_cols`` is tab-aware (used for the >=4 indented-
+        # code-block test and list-stack column comparisons), while
+        # ``line_indent`` keeps the older space-count semantics for
+        # the marker / sibling-list logic that has not been ported to
+        # tab-aware accounting yet (list-stack alignment is space-only
+        # in practice for now).
+        stripped_line = line.lstrip(" ")
+        line_indent = len(line) - len(stripped_line)
+        line_indent_cols = _leading_indent_cols(line)
+        return self._feed_after_consume(line, line_indent, line_indent_cols)
+
+    def _consume_open_container(self, line: str) -> bool:
+        """Consume the line if an open verbatim/container state claims it.
+
+        Phase A of :meth:`feed`. A sequence of early-return guards, each handling
+        one open block-level state that takes lines verbatim or with container
+        framing: a lazy-paragraph-continuation intercept, an open fenced code
+        block, document-level and item-level raw-HTML blocks, a document-level
+        indented code block, an open GFM table, blockquote-prefix / lazy quote
+        continuation, and finally the blank-line handler.
+
+        Order is load-bearing (e.g. fenced code is checked before HTML). A guard
+        either consumes the line and returns ``True`` (the caller returns), or it
+        falls through (possibly after closing its state) so a later guard or the
+        main routing can handle the line. Returns ``True`` iff the line was fully
+        consumed here.
+        """
         # A line flagged as a lazy paragraph continuation (carried across a
         # container reparse boundary) that would otherwise open a new block
         # is forced to be paragraph content instead — it continues the open
@@ -703,7 +734,7 @@ class _BlockParser:
             and line.strip() != ""
         ):
             self._doc_paragraph_lines.append(_strip_for_hardbreak(line))
-            return
+            return True
 
         # Inside a fenced code block, lines are taken verbatim until the
         # matching close fence. Nothing else interrupts.
@@ -728,7 +759,7 @@ class _BlockParser:
                 self._close_code_fence()
             else:
                 self._code_lines.append(_strip_code_indent(line, self._code_indent))
-            return
+            return True
 
         # Block-level raw HTML (CommonMark §4.6) — document level. When a
         # block is open, lines are taken verbatim until the end condition.
@@ -737,15 +768,15 @@ class _BlockParser:
                 # End condition is a blank line, which is NOT included.
                 if line.strip() == "":
                     self._close_html_block()
-                    return
+                    return True
                 self._html_block_lines.append(line)
-                return
+                return True
             # Types 1-5: the line containing the closer IS part of the
             # block; trailing content after the closer stays in the block.
             self._html_block_lines.append(line)
             if _html_block_end_matches(line, self._html_block_type):
                 self._close_html_block()
-            return
+            return True
 
         # Block-level raw HTML inside the innermost open list item. Mirrors
         # the document-level handling but scoped to the item, with each line
@@ -767,7 +798,7 @@ class _BlockParser:
             if item.html_block_type in (6, 7):
                 if line.strip() == "":
                     self._close_item_html_block(item)
-                    return
+                    return True
                 # A dedent below the item content column or a sibling marker
                 # ends the item's HTML block; re-route the line normally.
                 if _leading_indent_cols(line) < content_col and _try_marker(line) is not None:
@@ -775,12 +806,12 @@ class _BlockParser:
                     # fall through to normal handling
                 else:
                     item.html_block_lines.append(dedented)
-                    return
+                    return True
             else:
                 item.html_block_lines.append(dedented)
                 if _html_block_end_matches(dedented, item.html_block_type):
                     self._close_item_html_block(item)
-                return
+                return True
 
         # Indented code block (CommonMark section 4.4) — document level
         # only. Active when at least 4 leading spaces AND no open
@@ -800,7 +831,7 @@ class _BlockParser:
                     self._indented_code_blank_buffer.append(_strip_leading_cols(line, 4))
                 else:
                     self._indented_code_blank_buffer.append("")
-                return
+                return True
             indent_cols = _leading_indent_cols(line)
             if indent_cols >= 4:
                 # Flush any buffered blanks as in-block blank lines, then
@@ -812,7 +843,7 @@ class _BlockParser:
                     self._indented_code_lines.extend(self._indented_code_blank_buffer)
                     self._indented_code_blank_buffer.clear()
                 self._indented_code_lines.append(_strip_leading_cols(line, 4))
-                return
+                return True
             # Non-indented non-blank: close the indented code block,
             # then fall through to handle this line normally.
             self._close_indented_code()
@@ -822,7 +853,7 @@ class _BlockParser:
         if self._in_table:
             if line.strip() == "":
                 self._close_table()
-                return
+                return True
             cells = _try_table_row(line, len(self._table_headers))
             if cells is None:
                 # GFM §4.10: the table is broken only by a blank line or the
@@ -844,13 +875,13 @@ class _BlockParser:
                     self._table_rows.append(
                         (first,) + tuple(TableCell(inlines=()) for _ in range(pad))
                     )
-                    return
+                    return True
                 # Otherwise a block-level construct → close and re-handle.
                 self._close_table()
                 # Fall through to normal handling below.
             else:
                 self._table_rows.append(cells)
-                return
+                return True
 
         # Blockquote prefix handling — top-level only for v0.1. Inside
         # lists, `>` is treated as paragraph content.
@@ -858,7 +889,7 @@ class _BlockParser:
             quote_stripped = _try_blockquote_prefix(line)
             if quote_stripped is not None:
                 self._handle_quote_line(quote_stripped)
-                return
+                return True
             if self._in_quote:
                 # Lazy continuation (CommonMark section 5.1): an
                 # unprefixed line continues an open paragraph inside
@@ -899,25 +930,47 @@ class _BlockParser:
                     # re-promoted on reparse without this flag.
                     self._quote_lazy.add(len(self._quote_lines))
                     self._quote_lines.append(line.lstrip(" "))
-                    return
+                    return True
                 # Non-quote line ends the blockquote.
                 self._close_quote()
 
         if line.strip() == "":
             self._handle_blank()
+            return True
+
+        return False
+
+    def _feed_after_consume(
+        self, line: str, line_indent: int, line_indent_cols: int
+    ) -> None:
+        """Open a doc-level block, walk the list stack, then route the line.
+
+        Continuation of :meth:`feed` once no open verbatim/container state has
+        claimed the line (phase A returned ``False``) and the line is non-blank.
+        ``line_indent`` (space-count) and ``line_indent_cols`` (tab-aware) are
+        the line's leading-indent measurements, computed once in ``feed`` and
+        threaded in because both this routine and the doc-block / list-stack
+        logic below rely on them with their existing semantics.
+        """
+        if self._open_doc_level_block(line, line_indent_cols):
             return
 
-        # Compute the line's leading indent column. We keep two values:
-        # ``line_indent_cols`` is tab-aware (used for the >=4 indented-
-        # code-block test and list-stack column comparisons), while
-        # ``line_indent`` keeps the older space-count semantics for
-        # the marker / sibling-list logic that has not been ported to
-        # tab-aware accounting yet (list-stack alignment is space-only
-        # in practice for now).
-        stripped_line = line.lstrip(" ")
-        line_indent = len(line) - len(stripped_line)
-        line_indent_cols = _leading_indent_cols(line)
+        kept, sibling = self._walk_list_stack(line, line_indent, line_indent_cols)
+        self._apply_list_walk(line, line_indent, line_indent_cols, kept, sibling)
 
+    def _open_doc_level_block(self, line: str, line_indent_cols: int) -> bool:
+        """Open a new document-level block if this line starts one.
+
+        Phase A2 of :meth:`feed`. Runs only at document level (outside lists,
+        quotes and tables). In priority order it tests for an indented code
+        block opener, a block-level raw-HTML opener, a fenced-code opener at
+        column 0, and a GFM table (one buffered paragraph line + a delimiter
+        row). The order matters: indent >= 4 is code before it can be HTML, and
+        the fence check short-circuits before list-stack walking.
+
+        Returns ``True`` when one of these openers consumed the line (the caller
+        returns); ``False`` to fall through to the list-stack walk.
+        """
         # Indented code block opener (CommonMark section 4.4). At
         # document level only; inside lists the same 4-space indent
         # belongs to the list's content column. A line indented at
@@ -932,7 +985,7 @@ class _BlockParser:
             and line_indent_cols >= 4
         ):
             self._indented_code_lines.append(_strip_leading_cols(line, 4))
-            return
+            return True
 
         # Block-level raw HTML opener (CommonMark §4.6). Document level
         # only (blockquote content is recursively re-parsed, so this fires
@@ -958,7 +1011,7 @@ class _BlockParser:
                     line, start_type
                 ):
                     self._close_html_block()
-                return
+                return True
 
         # Fence open at column 0 (no list active) — short-circuit before
         # list-stack walking. Fence-opens inside list items are handled
@@ -968,7 +1021,7 @@ class _BlockParser:
             fence_open = _try_fence_open(line)
             if fence_open is not None:
                 self._open_code_fence(fence_open)
-                return
+                return True
 
         # Table detection — at document level only. If the accumulator
         # holds exactly one paragraph line that looks like a row and this
@@ -986,18 +1039,33 @@ class _BlockParser:
                 # paragraph (GFM example 203: 2-col header, 1-col delimiter).
                 header_cells = _split_table_row(header_candidate)
                 if header_cells is not None and len(header_cells) == len(alignments):
+                    # _try_table_row re-calls the same pure _split_table_row on
+                    # header_candidate, already verified non-None above, so it
+                    # cannot return None here, so open the table unconditionally.
                     headers = _try_table_row(header_candidate, len(alignments))
-                    if headers is not None:
-                        self._doc_paragraph_lines.clear()
-                        self._open_table(headers, alignments)
-                        return
+                    self._doc_paragraph_lines.clear()
+                    self._open_table(headers, alignments)
+                    return True
 
-        # Walk the open list stack outermost-to-innermost. For each list,
-        # determine whether this line:
-        #   (a) continues an item (indent ≥ list's item content column)
-        #   (b) is a sibling marker of that list (indent == marker_indent,
-        #       marker style matches) — closes inner lists, starts new item
-        #   (c) neither — closes that list and all deeper.
+        return False
+
+    def _walk_list_stack(
+        self, line: str, line_indent: int, line_indent_cols: int
+    ) -> tuple[int, tuple[int, _MarkerInfo] | None]:
+        """Decide how this line relates to the open list stack.
+
+        Phase B of :meth:`feed`. Walks ``self.list_stack`` outermost-to-innermost
+        and, for each list, classifies the line as:
+          (a) a continuation of that list's open item (indent >= the item's
+              content column): descend inward;
+          (b) a sibling marker of that list (indent in [marker col, content col)
+              and the marker style matches): record it and stop;
+          (c) neither: this line breaks out of that list (and all deeper).
+
+        It reads state only; it does not mutate the stack. Returns ``(kept,
+        sibling)`` where ``kept`` is the number of outermost lists this line
+        stays inside and ``sibling`` is ``(idx, marker)`` when (b) fired.
+        """
         kept = 0
         sibling: tuple[int, _MarkerInfo] | None = None
         for idx, ctx in enumerate(self.list_stack):
@@ -1075,6 +1143,28 @@ class _BlockParser:
             kept = idx
             break
 
+        return kept, sibling
+
+    def _apply_list_walk(
+        self,
+        line: str,
+        line_indent: int,
+        line_indent_cols: int,
+        kept: int,
+        sibling: tuple[int, _MarkerInfo] | None,
+    ) -> None:
+        """Apply the list-stack walk's structural effects, then route the line.
+
+        Tail of :meth:`feed` after :meth:`_walk_list_stack`. Using the walk's
+        ``kept`` / ``sibling`` decision it: handles lazy continuation into a
+        nested item-blockquote or the item's own paragraph; propagates a pending
+        blank down to the surviving list (loose-list bookkeeping); closes every
+        list deeper than ``kept``; opens a new sibling item when one was found;
+        dedents the line to the inner container's column to produce ``remaining``;
+        opens/continues an item-level indented code block; and finally hands off
+        to the document-level re-checks (:meth:`_route_content_after_walk`) and
+        normal content handling.
+        """
         # Lazy continuation INTO a nested item-blockquote (CommonMark §5.1
         # + §5.2, examples 292/293). Before breaking out of the list, if the
         # innermost open item has an open blockquote whose last line is
@@ -1237,6 +1327,26 @@ class _BlockParser:
                 # through to normal content handling.
                 self._close_item_indented_code(item)
 
+        if self._route_content_after_walk(line, remaining, kept):
+            return
+
+        self._handle_content_line(remaining)
+
+    def _route_content_after_walk(
+        self, line: str, remaining: str, kept: int
+    ) -> bool:
+        """Re-check for document-level block openers the list-stack walk re-exposed.
+
+        Phase C of :meth:`feed`. When the walk closed all open lists (``kept == 0``
+        and the stack is now empty) we are back at the document level, where two
+        block openers that ``feed``'s early checks skip (because those checks are
+        gated on an empty list stack) can now fire on ``remaining``/``line``:
+        a block-level HTML start and a document-level indented code block.
+
+        Returns ``True`` when this line was consumed by one of those re-checks
+        (the caller should then return); ``False`` to fall through to normal
+        content handling via ``_handle_content_line``.
+        """
         # If the list-stack walk closed all lists and we are back at the
         # document level, re-check for a block-level HTML start (CommonMark
         # §4.6). The early check in feed() is gated on an empty list stack,
@@ -1261,7 +1371,7 @@ class _BlockParser:
                     remaining, start_type
                 ):
                     self._close_html_block()
-                return
+                return True
 
         # Likewise re-check for a document-level indented code block when the
         # list-stack walk closed all lists. The early indented-code check in
@@ -1278,9 +1388,9 @@ class _BlockParser:
             and _leading_indent_cols(line) >= 4
         ):
             self._indented_code_lines.append(_strip_leading_cols(line, 4))
-            return
+            return True
 
-        self._handle_content_line(remaining)
+        return False
 
     def finish(self) -> list[Block]:
         """Flush any in-progress state and return the top-level blocks."""
