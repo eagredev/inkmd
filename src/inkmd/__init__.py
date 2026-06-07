@@ -37,7 +37,7 @@ from inkmd.render import FAMILIES, render_document
 from inkmd.url_filter import filter_document
 
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = ["compile", "render_file", "MissingGlyphWarning", "__version__"]
 
