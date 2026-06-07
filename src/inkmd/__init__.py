@@ -28,6 +28,7 @@ from __future__ import annotations
 import unicodedata
 from pathlib import Path
 
+from inkmd.embedded import MissingGlyphWarning
 from inkmd.html_filter import filter_document as filter_html
 from inkmd.image_loader import resolve_images
 from inkmd.parser import parse
@@ -38,7 +39,7 @@ from inkmd.url_filter import filter_document
 
 __version__ = "0.3.0"
 
-__all__ = ["compile", "render_file", "__version__"]
+__all__ = ["compile", "render_file", "MissingGlyphWarning", "__version__"]
 
 
 def compile(
@@ -173,17 +174,23 @@ def compile(
         EmbeddedFontRef,
         document_uses_non_winansi,
         load_embedded_font,
+        warn_missing_glyphs,
     )
     from inkmd.render import apply_embedding
     if document_uses_non_winansi(p.runs for p in paragraphs):
         loaded = load_embedded_font(font_path)
+        # Collect every unrenderable codepoint (no base-14 byte AND no
+        # embedded glyph) so it renders as a visible [U+XXXX] marker and we
+        # raise ONE warning. ``ref`` is None in a font-less build, in which
+        # case ALL non-WinAnsi text is unrenderable and gets the marker
+        # instead of the old silent `?`.
+        missing: list[int] = []
+        ref = None
         if loaded is not None:
             font, font_bytes = loaded
             ref = EmbeddedFontRef(font=font, font_bytes=font_bytes)
-            paragraphs = apply_embedding(paragraphs, ref)
-        # When loaded is None (font-less zipapp build with no bundled font),
-        # the non-WinAnsi text falls through to the WinAnsi `?` path, exactly
-        # as before this feature existed.
+        paragraphs = apply_embedding(paragraphs, ref, missing)
+        warn_missing_glyphs(missing)
     return styled_pdf(paragraphs, page_size=page_size)
 
 

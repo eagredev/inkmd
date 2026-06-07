@@ -27,6 +27,8 @@ Two responsibilities:
 from __future__ import annotations
 
 import os
+import warnings
+from collections import Counter
 from dataclasses import replace
 from functools import lru_cache
 from pathlib import Path
@@ -49,6 +51,20 @@ _BUNDLED_FONT = os.path.join(
 _QUESTION_MARK = 0x3F
 
 
+class MissingGlyphWarning(UserWarning):
+    """A document held codepoints no available font can draw (S6).
+
+    Raised ONCE per :func:`inkmd.compile` call (not per codepoint) when the
+    document contains >= 1 codepoint that is neither base-14-representable
+    nor covered by the embedded font. Those codepoints render as visible
+    ``[U+XXXX]`` markers in the PDF; this warning is the machine-readable
+    companion signal so callers can detect + filter the condition
+    precisely (``warnings.simplefilter("ignore", MissingGlyphWarning)``).
+    Subclasses :class:`UserWarning` so it shows by default but stays
+    filterable by category.
+    """
+
+
 def is_base14_codepoint(cp: int) -> bool:
     """True if ``cp`` renders on the base-14 WinAnsi path (not embedded).
 
@@ -60,6 +76,85 @@ def is_base14_codepoint(cp: int) -> bool:
     on their own (see :func:`split_run_for_embedding`).
     """
     return cp == _QUESTION_MARK or to_winansi_byte(cp) != _QUESTION_MARK
+
+
+def is_renderable_codepoint(cp: int, embedded_font: object | None) -> bool:
+    """True iff ``cp`` can be DRAWN at all - base-14 OR an embedded glyph.
+
+    The single unifying predicate behind S6's missing-glyph marker. A
+    codepoint is drawable iff EITHER it renders on the base-14 WinAnsi path
+    (:func:`is_base14_codepoint`), OR an embedded font is present and holds
+    a real (non-``.notdef``) glyph for it.
+
+    ``embedded_font`` is the parsed :class:`~inkmd.truetype.TrueTypeFont`
+    (``EmbeddedFontRef.font``) or ``None`` in a font-less build / a document
+    with no embedded font. When ``None``, only base-14 codepoints are
+    renderable; everything else gets the marker.
+
+    Edge guard: ``cp == 0`` (NUL) legitimately maps to ``glyph_id == 0``
+    (``.notdef``), so the ``cp != 0`` clause keeps a genuine NUL from being
+    falsely flagged as missing. (NUL is base-14 anyway, so this only matters
+    if a font ever lacks gid 0 - the guard is belt-and-braces.)
+    """
+    if is_base14_codepoint(cp):
+        return True
+    if embedded_font is None:
+        return False
+    return cp != 0 and embedded_font.glyph_id(cp) != 0
+
+
+def missing_glyph_marker(cp: int) -> str:
+    """Render ``cp`` as the visible base-14 marker text ``[U+XXXX]``.
+
+    Uppercase hex, no ``0x`` prefix, minimum FOUR hex digits (the Unicode
+    ``U+`` convention for the BMP); astral codepoints (>= U+10000) widen
+    naturally to 5 or 6 digits with NO extra zero-padding beyond that
+    natural width. Every character in the result (``[ U + 0-9 A-F ]``) is
+    WinAnsi-representable, so the marker itself can never recurse into the
+    missing-glyph problem - it renders on the base-14 path even in a
+    font-less build. THAT is why the marker is ``[U+XXXX]`` and not a
+    ``.notdef`` box (needs a font) or U+FFFD (needs a glyph base-14 lacks).
+    """
+    return f"[U+{cp:04X}]"
+
+
+#: How many distinct missing codepoints to name in the warning before
+#: collapsing the rest to "(and N more)". Small so the message stays
+#: readable; the marker in the PDF is the complete record.
+_WARN_SAMPLE = 5
+
+
+def warn_missing_glyphs(missing: list[int]) -> None:
+    """Raise ONE :class:`MissingGlyphWarning` for collected missing codepoints.
+
+    ``missing`` is the flat list of unrenderable codepoint OCCURRENCES the
+    split appended (one entry per occurrence, document order). A no-op when
+    the list is empty (a fully-renderable document warns nothing).
+
+    Determinism rail: the named sample is the first :data:`_WARN_SAMPLE`
+    DISTINCT codepoints in SORTED ascending order - NOT set-iteration or
+    first-seen order - so the message is a pure function of the input. The
+    counts (distinct, total occurrences) are likewise input-determined. The
+    warning never touches the returned PDF bytes; it is the companion signal
+    to the visible ``[U+XXXX]`` markers.
+    """
+    if not missing:
+        return
+    counts = Counter(missing)
+    distinct = sorted(counts)  # sorted, deduplicated -> deterministic sample
+    total = sum(counts.values())
+    sample = distinct[:_WARN_SAMPLE]
+    sample_text = ", ".join(f"U+{cp:04X}" for cp in sample)
+    remaining = len(distinct) - len(sample)
+    noun = "codepoint" if len(distinct) == 1 else "codepoints"
+    occ = "occurrence" if total == 1 else "occurrences"
+    msg = (
+        f"{len(distinct)} {noun} ({total} {occ}) have no glyph in the "
+        f"available font and were rendered as visible [U+XXXX] markers: "
+        f"{sample_text} (and {remaining} more). Install a font pack "
+        f"covering those scripts (e.g. a CJK pack) to render them."
+    )
+    warnings.warn(msg, MissingGlyphWarning, stacklevel=2)
 
 
 def load_embedded_font(
@@ -116,22 +211,44 @@ def _load_bundled_font() -> tuple[TrueTypeFont, bytes] | None:
 
 
 def split_run_for_embedding(
-    run: Run, embedded_ref: EmbeddedFontRef
+    run: Run,
+    embedded_ref: EmbeddedFontRef | None,
+    missing: list[int] | None = None,
 ) -> list[Run]:
-    """Split one text run at WinAnsi/non-WinAnsi codepoint boundaries.
+    """Split one text run into base-14 / embedded / missing-glyph lanes.
 
-    Returns a list of consecutive runs whose texts concatenate to
-    ``run.text``: maximal base-14 spans keep the original (untagged) run,
-    and maximal non-WinAnsi spans get ``embedded=embedded_ref`` so they
-    measure + emit via the embedded font. Every other attribute is
-    preserved verbatim (``replace`` only changes ``text`` and ``embedded``).
+    Returns a list of consecutive runs whose RENDERED texts concatenate to
+    ``run.text`` with every unrenderable codepoint replaced by its visible
+    ``[U+XXXX]`` marker. Three lanes (this layers S6's marker split on top of
+    S5's base-14/embedded split):
 
-    A run already carrying ``emoji`` or ``embedded`` is returned unchanged
-    (emoji runs are images; an already-embedded run is not re-split). An
-    all-base-14 run is returned as the single original run (identity — the
+    * maximal base-14 spans keep the original (untagged) run;
+    * maximal non-WinAnsi spans the embedded font CAN draw get
+      ``embedded=embedded_ref`` so they measure + emit via that font;
+    * any codepoint that is NEITHER base-14 NOR has an embedded glyph
+      (:func:`is_renderable_codepoint` is False) is replaced by its
+      :func:`missing_glyph_marker` text and routed onto the BASE-14 lane
+      (``embedded=None``) - the marker is all base-14, so it must not carry
+      the embedded ref that just failed it. Adjacent markers + base-14 text
+      coalesce into one base-14 span.
+
+    ``embedded_ref`` may be ``None`` (font-less build / no embedded font):
+    then EVERY non-base-14 codepoint is unrenderable and becomes a marker.
+
+    ``missing`` (optional) is a list the caller passes to collect every
+    unrenderable codepoint occurrence (one append per occurrence, in
+    document order) so ``compile`` can raise ONE deterministic warning. The
+    list, not a set, is appended to here; sorting/dedup happens at the
+    warning site.
+
+    Every other attribute is preserved verbatim (``replace`` only changes
+    ``text`` and ``embedded``). A run already carrying ``emoji`` or
+    ``embedded`` is returned unchanged (emoji runs are images; an
+    already-embedded run is not re-split). An all-base-14 run with no
+    missing glyphs is returned as the single original run (identity - the
     existing all-Latin corpus stays byte-identical). Zero-width formatting
     codepoints belong to whichever span precedes them (they print nothing
-    on either path), so they never start or split a span on their own.
+    on any path), so they never start or split a span on their own.
     """
     if run.emoji is not None or run.embedded is not None:
         return [run]
@@ -139,7 +256,10 @@ def split_run_for_embedding(
     if not text:
         return [run]
 
-    # Fast path: nothing non-WinAnsi -> the run is untouched (identity).
+    embedded_font = embedded_ref.font if embedded_ref is not None else None
+
+    # Fast path: every codepoint renders on the base-14 path -> the run is
+    # untouched (identity). (No embedded span, no marker.)
     if all(
         is_base14_codepoint(ord(ch)) or is_zero_width_codepoint(ord(ch))
         for ch in text
@@ -149,6 +269,7 @@ def split_run_for_embedding(
     out: list[Run] = []
     buf: list[str] = []
     # None until the first non-zero-width char fixes the current span's lane.
+    # True = embedded lane; False = base-14 lane (plain text OR markers).
     cur_embedded: bool | None = None
 
     def flush() -> None:
@@ -164,28 +285,43 @@ def split_run_for_embedding(
     for ch in text:
         cp = ord(ch)
         if is_zero_width_codepoint(cp):
-            # Non-printing on both paths: stays with the current span rather
+            # Non-printing on every path: stays with the current span rather
             # than forcing a lane decision.
             buf.append(ch)
             continue
-        want_embedded = not is_base14_codepoint(cp)
+        if is_base14_codepoint(cp):
+            want_embedded = False
+            piece = ch
+        elif embedded_font is not None and cp != 0 and \
+                embedded_font.glyph_id(cp) != 0:
+            want_embedded = True
+            piece = ch
+        else:
+            # Unrenderable: no base-14 byte and no embedded glyph. Substitute
+            # the visible base-14 marker and route it onto the base-14 lane.
+            if missing is not None:
+                missing.append(cp)
+            want_embedded = False
+            piece = missing_glyph_marker(cp)
         if cur_embedded is None:
             cur_embedded = want_embedded
         elif want_embedded != cur_embedded:
             flush()
             cur_embedded = want_embedded
-        buf.append(ch)
+        buf.append(piece)
     flush()
     return out
 
 
 def split_runs_for_embedding(
-    runs: list[Run], embedded_ref: EmbeddedFontRef
+    runs: list[Run],
+    embedded_ref: EmbeddedFontRef | None,
+    missing: list[int] | None = None,
 ) -> list[Run]:
     """Apply :func:`split_run_for_embedding` across a list of runs."""
     out: list[Run] = []
     for run in runs:
-        out.extend(split_run_for_embedding(run, embedded_ref))
+        out.extend(split_run_for_embedding(run, embedded_ref, missing))
     return out
 
 

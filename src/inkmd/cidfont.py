@@ -263,6 +263,12 @@ def show_text_cid_hex(font: TrueTypeFont, text: str) -> bytes:
     GIDs above 0xFFFF cannot be represented in 2 bytes; v0.4 embeds the native
     GID space and a real text font's used glyphs sit well below 0x10000, so a
     GID >= 0x10000 raises rather than silently truncating.
+
+    This stays a dumb encoder: by the time text reaches here the S6 run-split
+    (``split_run_for_embedding``) has already routed any glyphless codepoint
+    onto the base-14 ``[U+XXXX]`` marker, so a SPLIT document's embedded runs
+    should hold only real glyphs - gid 0 (.notdef) should no longer occur
+    here for split text. The marker fix lives in the split, NOT this encoder.
     """
     out = bytearray()
     for ch in text:

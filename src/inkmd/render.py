@@ -319,33 +319,42 @@ def render_document(
 
 
 def apply_embedding(
-    blocks: list[RenderedBlock], embedded_ref
+    blocks: list[RenderedBlock], embedded_ref, missing: list | None = None
 ) -> list[RenderedBlock]:
     """Post-pass: split each block's runs at the WinAnsi boundary.
 
-    Non-WinAnsi spans (Cyrillic / Greek / Latin-Ext) gain ``embedded_ref``
-    so they measure + emit via the embedded font; base-14 spans are
-    untouched. Mirrors the emoji split, but runs AFTER the whole document is
-    rendered, so ``_render_inline`` stays a pure base-14 producer.
+    Non-WinAnsi spans (Cyrillic / Greek / Latin-Ext) the embedded font can
+    draw gain ``embedded_ref`` so they measure + emit via that font;
+    base-14 spans are untouched; codepoints with no glyph at all become the
+    visible ``[U+XXXX]`` marker on the base-14 lane (S6). Mirrors the emoji
+    split, but runs AFTER the whole document is rendered, so
+    ``_render_inline`` stays a pure base-14 producer.
+
+    ``embedded_ref`` may be ``None`` (font-less build / no embedded font):
+    then every non-base-14 codepoint is unrenderable and becomes a marker
+    instead of a silent ``?``. ``missing`` (optional list) collects every
+    unrenderable codepoint occurrence so the caller can raise one warning.
 
     Splits ``runs`` and ``marker_runs`` (list markers are base-14, so a
     split there is almost always a no-op, but routing them keeps a custom
-    embedded marker correct). Prepositioned table content is NOT split in
-    S5 — table column widths are computed pre-split, so embedding a table
-    cell needs the table layout itself to be embedding-aware; a non-WinAnsi
-    table cell still renders ``?`` here (logged for the manager). A
-    pure-base-14 block is returned unchanged (identity), so the all-Latin
-    corpus stays byte-identical.
+    embedded marker correct). Prepositioned table content is NOT split here
+    — table column widths are computed pre-split, so embedding/marking a
+    table cell needs the table layout itself to be embedding-aware; a
+    non-WinAnsi table cell still renders ``?`` here (logged for the manager,
+    deferred-work.md MEDIUM). A pure-base-14 block is returned unchanged
+    (identity), so the all-Latin corpus stays byte-identical.
     """
     from inkmd.embedded import split_runs_for_embedding
 
     out: list[RenderedBlock] = []
     for block in blocks:
         new_runs = tuple(
-            split_runs_for_embedding(list(block.runs), embedded_ref)
+            split_runs_for_embedding(list(block.runs), embedded_ref, missing)
         )
         new_markers = tuple(
-            split_runs_for_embedding(list(block.marker_runs), embedded_ref)
+            split_runs_for_embedding(
+                list(block.marker_runs), embedded_ref, missing
+            )
         )
         if new_runs == block.runs and new_markers == block.marker_runs:
             out.append(block)
