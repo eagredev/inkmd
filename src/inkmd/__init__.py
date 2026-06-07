@@ -113,9 +113,11 @@ def compile(
             the base-14 family. A codepoint with no glyph in the chosen
             font (e.g. CJK under the bundled DejaVuSans) renders as a
             visible ``[U+XXXX]`` marker and inkmd raises one
-            ``MissingGlyphWarning``, instead of a silent ``?``. A bad or
-            unsupported font raises a clear ``TrueTypeFontError`` rather
-            than a raw parse traceback.
+            ``MissingGlyphWarning``, instead of a silent ``?``. To silence
+            that warning when markers are expected, filter it:
+            ``warnings.simplefilter("ignore", inkmd.MissingGlyphWarning)``.
+            A bad or unsupported font raises a clear ``TrueTypeFontError``
+            rather than a raw parse traceback.
 
     Returns:
         The compiled PDF as a ``bytes`` object. Byte-identical for the
