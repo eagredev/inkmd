@@ -34,7 +34,12 @@ from inkmd.image_loader import resolve_images
 from inkmd.layout import LayoutConfig, fold_layout, _UNSET, _Unset
 from inkmd.parser import parse
 from inkmd.pdf import styled_pdf
-from inkmd.render import FAMILIES, render_document
+from inkmd.render import (
+    FAMILIES,
+    TableOverflowError,
+    TableOverflowWarning,
+    render_document,
+)
 from inkmd.url_filter import filter_document
 
 
@@ -45,8 +50,14 @@ __all__ = [
     "render_file",
     "LayoutConfig",
     "MissingGlyphWarning",
+    "TableOverflowWarning",
+    "TableOverflowError",
     "__version__",
 ]
+
+# Accepted values for the table_overflow knob (LayoutConfig field + flat
+# override). Resolved value is validated against this set in compile().
+_TABLE_OVERFLOW_MODES = frozenset({"wrap", "shrink", "warn", "error"})
 
 
 def compile(
@@ -59,6 +70,8 @@ def compile(
     font_size: float | _Unset = _UNSET,
     line_spacing: float | _Unset = _UNSET,
     orientation: str | _Unset = _UNSET,
+    table_overflow: str | _Unset = _UNSET,
+    table_panel_min_chars: int | _Unset = _UNSET,
     autolinks: bool = True,
     safe: bool = True,
     html: bool = True,
@@ -101,6 +114,25 @@ def compile(
             widens the text column. Applies to named sizes and custom
             tuples alike. Defaults to "not given" (the config's "portrait"
             applies). Keyword-only.
+        table_overflow: How to handle a table too wide for the text column.
+            One of ``"wrap"`` (default), ``"shrink"``, ``"warn"``, or
+            ``"error"``. ``"wrap"`` stacks the columns into page-width
+            panels (lossless, column 0 repeated as the key column);
+            ``"shrink"`` squeezes columns and overflows the right edge
+            silently (pre-0.5 behaviour); ``"warn"`` is ``"shrink"`` plus a
+            ``TableOverflowWarning`` naming the table; ``"error"`` raises
+            ``TableOverflowError`` on a non-fitting table. A table that
+            FITS renders byte-identically in every mode. When given,
+            overrides ``layout.table_overflow``. Keyword-only.
+        table_panel_min_chars: When a table is split into panels
+            (``table_overflow="wrap"``), each data column may be squeezed to
+            at most this many character widths before a new panel is opened;
+            smaller values pack more columns per panel (fewer, denser
+            panels), larger values keep columns wider (more panels). Default
+            8. Only affects the wrap panel packing; a fitting table or
+            shrink/warn/error mode is unchanged. Must be a positive integer.
+            When given, overrides ``layout.table_panel_min_chars``.
+            Keyword-only.
         autolinks: When True (default), GFM-style bare URLs and email
             addresses are auto-linked (``https://example.com`` and
             ``user@example.com`` become clickable). Set False for
@@ -165,11 +197,14 @@ def compile(
     Raises:
         ValueError: If ``family`` is not one of the supported families,
             ``emoji_fallback`` is not ``"name"`` or ``"drop"``,
-            ``orientation`` is not ``"portrait"`` or ``"landscape"``, or
-            a custom ``page_size`` tuple is malformed (not two values,
-            non-numeric, or not positive).
+            ``orientation`` is not ``"portrait"`` or ``"landscape"``,
+            ``table_overflow`` is not one of ``"wrap"``, ``"shrink"``,
+            ``"warn"``, ``"error"``, or a custom ``page_size`` tuple is
+            malformed (not two values, non-numeric, or not positive).
         KeyError: If ``page_size`` is a name that is not one of the
             supported sizes.
+        TableOverflowError: In ``table_overflow="error"`` mode, if a table
+            is too wide to fit the text column.
 
     Example:
         >>> import inkmd
@@ -194,8 +229,28 @@ def compile(
             "font_size": font_size,
             "line_spacing": line_spacing,
             "orientation": orientation,
+            "table_overflow": table_overflow,
+            "table_panel_min_chars": table_panel_min_chars,
         },
     )
+    # Validate the resolved table-overflow mode here (single resolution
+    # point), mirroring how S4 validates orientation. A bad value fails
+    # loudly at the API boundary rather than silently picking a fallback
+    # deep in the renderer.
+    if effective.table_overflow not in _TABLE_OVERFLOW_MODES:
+        valid = ", ".join(repr(m) for m in sorted(_TABLE_OVERFLOW_MODES))
+        raise ValueError(
+            f"table_overflow must be one of {valid}; "
+            f"got {effective.table_overflow!r}"
+        )
+    # The panel-packing floor must be a positive integer (character count).
+    # A bool is an int subclass but is never a meaningful char count, so
+    # reject it too.
+    tpmc = effective.table_panel_min_chars
+    if isinstance(tpmc, bool) or not isinstance(tpmc, int) or tpmc < 1:
+        raise ValueError(
+            f"table_panel_min_chars must be a positive integer; got {tpmc!r}"
+        )
     # Normalize the whole markdown string to Unicode NFC at ingestion, before
     # any parsing. This is deliberate and whole-string: NFC is idempotent and
     # leaves ASCII untouched, so prose, URLs, structure, and code are all safe.
@@ -223,6 +278,13 @@ def compile(
     page_dims = resolve_page_size(effective.page_size, effective.orientation)
     page_w = page_dims[0]
     content_width = page_w - 2 * effective.margin
+    # Usable vertical space = page height minus both margins (matches the
+    # paginator's top_y - bottom_y). Threaded into render so a too-wide table,
+    # when shrunk, never crushes a column so narrow that its tallest cell wraps
+    # to more lines than one (header + data) row can hold on a page -- which
+    # would strand the other cells on line 1 of a page-tall row. Letter
+    # portrait at margin 72 -> 792 - 144 = 648pt.
+    usable_height = page_dims[1] - 2 * effective.margin
     # Scope the emoji text-fallback policy to this compile (ContextVar, so
     # the render functions need no extra threading and concurrent compiles
     # don't interfere).
@@ -233,6 +295,9 @@ def compile(
             doc, family=FAMILIES[family], content_width=content_width,
             body_size=effective.font_size,
             line_spacing=effective.line_spacing,
+            table_overflow=effective.table_overflow,
+            table_panel_min_chars=effective.table_panel_min_chars,
+            usable_height=usable_height,
         )
     finally:
         reset_fallback_mode(token)
@@ -279,6 +344,8 @@ def render_file(
     font_size: float | _Unset = _UNSET,
     line_spacing: float | _Unset = _UNSET,
     orientation: str | _Unset = _UNSET,
+    table_overflow: str | _Unset = _UNSET,
+    table_panel_min_chars: int | _Unset = _UNSET,
     autolinks: bool = True,
     safe: bool = True,
     html: bool = True,
@@ -309,6 +376,11 @@ def render_file(
             :func:`compile`.
         orientation: ``"portrait"`` or ``"landscape"`` (flat override).
             See :func:`compile`.
+        table_overflow: Wide-table handling mode (flat override). One of
+            ``"wrap"``, ``"shrink"``, ``"warn"``, ``"error"``. See
+            :func:`compile`.
+        table_panel_min_chars: Panel-packing column floor in characters
+            (flat override). Default 8. See :func:`compile`.
         autolinks: GFM bare-URL/email autolinking. See :func:`compile`.
         safe: URL-scheme filter for link annotations. See
             :func:`compile`.
@@ -325,10 +397,12 @@ def render_file(
 
     Raises:
         ValueError: If ``family`` is not one of the supported families,
-            ``orientation`` is invalid, or a custom ``page_size`` tuple
-            is malformed. See :func:`compile`.
+            ``orientation`` is invalid, ``table_overflow`` is invalid, or
+            a custom ``page_size`` tuple is malformed. See :func:`compile`.
         KeyError: If ``page_size`` is a name that is not one of the
             supported sizes.
+        TableOverflowError: In ``table_overflow="error"`` mode, if a table
+            is too wide to fit the text column. See :func:`compile`.
         OSError: If ``in_path`` cannot be read or ``out_path`` cannot
             be written.
 
@@ -348,6 +422,8 @@ def render_file(
             font_size=font_size,
             line_spacing=line_spacing,
             orientation=orientation,
+            table_overflow=table_overflow,
+            table_panel_min_chars=table_panel_min_chars,
             autolinks=autolinks,
             safe=safe,
             html=html,

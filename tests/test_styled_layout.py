@@ -146,7 +146,10 @@ def test_table_with_long_codespan_stays_within_table_width():
     )
     doc = parse(md)
     table = next(b for b in doc.blocks if isinstance(b, Table))
-    rendered = _render_table(table, FAMILIES["helvetica"])
+    # Pin the shrink path explicitly (pre-0.5 behaviour, now one mode of
+    # several). _render_table returns a list of panels; shrink mode is always
+    # a single block.
+    rendered = _render_table(table, FAMILIES["helvetica"], table_overflow="shrink")[0]
 
     # Every positioned run must sit within the table's right edge.
     from inkmd.fonts import text_width as _tw
@@ -159,8 +162,9 @@ def test_table_with_long_codespan_stays_within_table_width():
         f"content right edge {max_x} exceeds table width {TABLE_AVAILABLE_WIDTH}"
     )
 
-    # And the document compiles to a valid PDF.
-    assert inkmd.compile(md)[:4] == b"%PDF"
+    # And the document compiles to a valid PDF (shrink mode, matching the
+    # path pinned above: the codespan column is wider than the page).
+    assert inkmd.compile(md, table_overflow="shrink")[:4] == b"%PDF"
 
 
 def test_wrap_runs_bold_takes_more_space_than_regular():

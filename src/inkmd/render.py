@@ -13,6 +13,7 @@ library default stays Helvetica.
 from __future__ import annotations
 
 import re
+import warnings
 from dataclasses import dataclass, replace
 
 from inkmd.ast import (
@@ -224,6 +225,10 @@ TABLE_HEADER_BG = (0.95, 0.95, 0.95)
 # A4 documents pass their own narrower width (595 - 144 = 451pt) through
 # render_document so tables and images stay inside the page margins.
 DEFAULT_CONTENT_WIDTH = 468.0
+# Default usable vertical space: letter (11in) minus two 1in margins = 648pt.
+# compile() passes the height derived from the actual page size + margin; this
+# default keeps other callers/tests (which work in width-space) unaffected.
+DEFAULT_USABLE_HEIGHT = 648.0
 # Retained as an alias for the default; the live budget is now passed in.
 TABLE_AVAILABLE_WIDTH = DEFAULT_CONTENT_WIDTH
 TABLE_LINE_HEIGHT_RATIO = 1.2
@@ -231,6 +236,50 @@ TABLE_LINE_HEIGHT_RATIO = 1.2
 # can't squeeze short columns to near-zero, jamming text against
 # borders. ~3em at body size (12pt × ~1.75).
 TABLE_MIN_CONTENT_WIDTH = 21.0
+
+# Vertical gap between stacked panels in table_overflow="wrap" (about one
+# blank body line at the default size). Applied as the space below each
+# panel except the last, on top of the paginator's default inter-block gap.
+TABLE_PANEL_GAP = 12.0
+
+# Marker text placed on its own faint line above every continuation panel
+# (panels 2..N) in wrap mode, so a reader knows the panel continues the same
+# table's columns rather than starting a new one. ASCII only.
+TABLE_CONTINUED_LABEL = "(continued)"
+
+# Default per-data-column floor, in character widths, for packing panels in
+# wrap mode (mirrors LayoutConfig.table_panel_min_chars). When deciding how
+# many columns fit a panel, each column is allowed to shrink to at most this
+# many character widths; the panel is then emitted via shrink-to-budget so its
+# cells wrap. Larger -> wider columns, more panels; smaller -> denser packing.
+TABLE_PANEL_MIN_CHARS = 8
+
+
+class TableOverflowWarning(UserWarning):
+    """A wide table could not be fit losslessly and was shrunk (S6).
+
+    Emitted once per offending table in ``table_overflow="warn"`` mode
+    (the explicit "tell me when a table overflows" mode), and also in the
+    default ``"wrap"`` mode when a table has a single column wider than the
+    text column -- an unbreakable monster cell that panel-wrapping cannot
+    split, so inkmd falls back to shrinking it and letting it overflow the
+    right edge. The message names the table by document order and first
+    header cell so the author can find it. Subclasses :class:`UserWarning`
+    so it shows by default but stays filterable
+    (``warnings.simplefilter("ignore", TableOverflowWarning)``).
+    """
+
+
+class TableOverflowError(Exception):
+    """A table is too wide to fit the text column (S6).
+
+    Raised only in ``table_overflow="error"`` mode, the CI-gate mode for
+    authors who must guarantee no table ever overflows. The message names
+    the table by document order and first header cell. Other modes never
+    raise this: ``"wrap"`` fits the table losslessly (or shrinks an
+    unbreakable single column with a :class:`TableOverflowWarning`),
+    ``"shrink"`` shrinks silently, and ``"warn"`` shrinks with a warning.
+    """
 
 
 def _widest_token_width(
@@ -325,6 +374,151 @@ def _shrink_to_budget(
     return widths
 
 
+def _cap_height_floored_mins(
+    base_mins: list[float], floored_mins: list[float], budget: float,
+) -> list[float]:
+    """Make height floors BEST-EFFORT under a hard width budget (wrap only).
+
+    ``floored_mins`` are the shrinker minimums after the height floor raised
+    some columns (possibly all the way to content_width for an irreducible
+    page-tall cell); ``base_mins`` are the same columns' minimums WITHOUT the
+    height floor (widest-token min and, where the caller works at the
+    readable floor, the readable-floor min). Both lists are elementwise
+    ``floored_mins[i] >= base_mins[i]``.
+
+    table_overflow="wrap" promises losslessness, and a min sum past the
+    budget makes ``_shrink_to_budget`` return the minimums verbatim: the
+    table overflows the right margin and glyphs land OUTSIDE the media box,
+    invisible (the x-axis twin of the S6f bug). The height floor's
+    irreducible cap-at-content_width premise ("a too-tall cell means buried
+    content") is obsolete now that S6f slices page-tall groups across pages,
+    so when the floors do not fit, the floor loses and the width budget
+    wins: every column keeps its base minimum, and the height-floored
+    columns split the LEFTOVER (budget minus the sum of base minimums)
+    proportionally to their unconstrained floors, waterfilled so no column
+    exceeds the floor it asked for (its surplus re-flows to the others) and
+    none drops below its own base minimum. A capped column wraps to more
+    lines, gets taller, and the S6f slicing carries it across pages: still
+    lossless, now visible.
+
+    No-op property (load-bearing for the frozen baseline): when
+    ``floored_mins`` already fit the budget, the SAME list object is
+    returned, so callers feed ``_shrink_to_budget`` bit-identical input and
+    output bytes cannot change. Equally a no-op when nothing was height
+    floored (the overflow then comes from base minimums: the pre-existing,
+    documented monster/giant-font overflow, which this helper must not
+    mask). Modes other than wrap never call this.
+
+    Pure + deterministic: index-order iteration, no sets/clocks.
+    """
+    if sum(floored_mins) <= budget:
+        return floored_mins
+    n = len(floored_mins)
+    bound = [i for i in range(n) if floored_mins[i] > base_mins[i]]
+    if not bound:
+        return floored_mins
+    capped = list(base_mins)
+    leftover = budget - sum(base_mins)
+    # Waterfill: give each still-active floored column a share of the
+    # leftover proportional to its unconstrained floor; a column whose share
+    # would exceed that floor is pinned AT the floor and drops out, its
+    # surplus re-flowing to the rest. Each pass pins at least one column or
+    # finishes, so this terminates in <= len(bound) passes. Not all columns
+    # can pin (that would mean the floors fit the budget, handled above).
+    active = list(bound)
+    while leftover > 0 and active:
+        weight_sum = sum(floored_mins[i] for i in active)
+        pinned = [
+            i for i in active
+            if base_mins[i] + leftover * (floored_mins[i] / weight_sum)
+            >= floored_mins[i]
+        ]
+        if not pinned:
+            for i in active:
+                capped[i] = (
+                    base_mins[i] + leftover * (floored_mins[i] / weight_sum)
+                )
+            break
+        for i in pinned:
+            capped[i] = floored_mins[i]
+            leftover -= floored_mins[i] - base_mins[i]
+        active = [i for i in active if i not in pinned]
+    return capped
+
+
+def _partition_columns(
+    natural: list[float], content_width: float, padding_x: float,
+    floor_width: float,
+) -> list[list[int]] | None:
+    """Greedily pack columns into page-width panels for table_overflow="wrap".
+
+    Panels are the last resort, so a panel packs as DENSELY as it readably
+    can: each column's packing width is ``min(natural[c], floor_width)`` --
+    a column wider than the readable floor is counted at the floor (it will
+    be shrunk + cell-wrapped when the panel is emitted), so many more columns
+    fit per panel than packing at natural width would allow. ``floor_width``
+    is ``table_panel_min_chars`` worth of an average glyph (see the caller).
+
+    ``natural`` is each column's natural content width (no padding).
+    ``content_width`` is the full text-column width a panel may occupy;
+    ``padding_x`` is the per-side cell padding. A panel of columns ``g`` fits
+    when ``sum(min(natural[c], floor_width) for c in g) + len(g)*2*padding_x
+    <= content_width``.
+
+    Column 0 is the KEY column: it leads group 1 naturally and is PREPENDED
+    to every later group as a repeated label. The key column is floored by
+    the same rule, so a pathologically wide key cannot by itself blow a panel.
+    Returns a list of column-index groups in document order (col 0 first in
+    each).
+
+    Returns ``None`` (tier 3, "panels can't help") when:
+    - the table has a single column that overflows (no data column to pair
+      with col 0), or
+    - column 0 plus any one data column still will not fit one panel even at
+      the floor (only reachable at a pathological page size or font size,
+      where a single floored glyph-width column exceeds the page).
+    The caller falls back to shrink + a warning in that case.
+
+    Pure + deterministic: iterates columns in index order, no sets/clocks.
+    """
+    n = len(natural)
+    if n <= 1:
+        # A 1-column (or 0-column) table has no data column to group with the
+        # key column; if it overflowed to reach here, panels can't help.
+        return None
+
+    def packed(c: int) -> float:
+        # A column counts at its readable floor, never wider: a too-wide
+        # column will be shrunk + cell-wrapped inside the panel.
+        return min(natural[c], floor_width)
+
+    def panel_width(col_indices: list[int]) -> float:
+        return (sum(packed(c) for c in col_indices)
+                + len(col_indices) * 2 * padding_x)
+
+    key = 0
+    groups: list[list[int]] = []
+    current = [key]
+    for c in range(1, n):
+        candidate = current + [c]
+        if panel_width(candidate) <= content_width:
+            current = candidate
+            continue
+        # ``c`` does not fit in the current group. Close the current group if
+        # it already holds a data column; otherwise (current is just [key]) a
+        # single col 0 + c won't fit even at the floor -- bail to tier 3.
+        if len(current) == 1:
+            return None
+        groups.append(current)
+        # Start a fresh group with the key column + this column. If even that
+        # floored pair overflows, panels can't place this column at all.
+        if panel_width([key, c]) > content_width:
+            return None
+        current = [key, c]
+    groups.append(current)
+    return groups
+
+
 def render_document(
     doc: Document,
     family: FontFamily = DEFAULT_FAMILY,
@@ -332,6 +526,9 @@ def render_document(
     *,
     body_size: float = BODY_SIZE,
     line_spacing: float = TABLE_LINE_HEIGHT_RATIO,
+    table_overflow: str = "wrap",
+    table_panel_min_chars: int = TABLE_PANEL_MIN_CHARS,
+    usable_height: float = DEFAULT_USABLE_HEIGHT,
 ) -> list[RenderedBlock]:
     """Lower a Document into a list of ``RenderedBlock``.
 
@@ -353,12 +550,39 @@ def render_document(
     and tests are unaffected; ``compile`` passes the resolved
     ``effective.line_spacing``. Only ``_render_table`` consumes it; the
     other helpers pass it through.
+
+    ``table_overflow`` controls what happens to a table too wide for
+    ``content_width``: ``"wrap"`` (default) stacks the columns into panels,
+    ``"shrink"`` overflows the right edge silently, ``"warn"`` shrinks with
+    a :class:`TableOverflowWarning`, and ``"error"`` raises
+    :class:`TableOverflowError`. A table that FITS renders identically in
+    every mode, so the default does not disturb existing output. Only
+    ``_render_table`` consumes it; the other helpers pass it through.
+
+    ``table_panel_min_chars`` is the per-data-column floor (in character
+    widths) used when ``table_overflow="wrap"`` packs a too-wide table into
+    panels: each column may shrink to at most this many characters before a
+    new panel opens, so smaller values pack more columns per panel. Only the
+    wrap panel-packing reads it; a fitting table and the other modes are
+    unaffected. Defaults to TABLE_PANEL_MIN_CHARS so other callers and tests
+    are unaffected; ``compile`` passes the resolved value.
+
+    ``usable_height`` is the page's usable vertical space in points (page
+    height minus both margins). A shrunk table uses it as a HEIGHT FLOOR on
+    each column's minimum width: a column is never squeezed so narrow that its
+    tallest cell wraps to more lines than one (header + data) row can hold on a
+    page. Defaults to DEFAULT_USABLE_HEIGHT (letter) so other callers and tests
+    are unaffected; ``compile`` passes the height from the actual page size.
+    Only ``_render_table`` consumes it; the other helpers pass it through.
     """
     blocks: list[RenderedBlock] = []
     for block in doc.blocks:
         blocks.extend(_render_block(
             block, family, depth=0, content_width=content_width,
             body_size=body_size, line_spacing=line_spacing,
+            table_overflow=table_overflow,
+            table_panel_min_chars=table_panel_min_chars,
+            usable_height=usable_height,
         ))
     return blocks
 
@@ -414,6 +638,9 @@ def _render_block(
     *,
     body_size: float = BODY_SIZE,
     line_spacing: float = TABLE_LINE_HEIGHT_RATIO,
+    table_overflow: str = "wrap",
+    table_panel_min_chars: int = TABLE_PANEL_MIN_CHARS,
+    usable_height: float = DEFAULT_USABLE_HEIGHT,
 ) -> list[RenderedBlock]:
     """Lower one AST block (recursively for lists) to flat RenderedBlocks."""
     if isinstance(block, Heading):
@@ -453,19 +680,28 @@ def _render_block(
         return _render_list(
             block, family, depth, content_width,
             body_size=body_size, line_spacing=line_spacing,
+            table_overflow=table_overflow,
+            table_panel_min_chars=table_panel_min_chars,
+            usable_height=usable_height,
         )
     if isinstance(block, BlockQuote):
         return _render_blockquote(
             block, family, depth, content_width,
             body_size=body_size, line_spacing=line_spacing,
+            table_overflow=table_overflow,
+            table_panel_min_chars=table_panel_min_chars,
+            usable_height=usable_height,
         )
     if isinstance(block, CodeBlock):
         return [_render_code_block(block, family, body_size=body_size)]
     if isinstance(block, Table):
-        return [_render_table(
+        return _render_table(
             block, family, content_width,
             body_size=body_size, line_spacing=line_spacing,
-        )]
+            table_overflow=table_overflow,
+            table_panel_min_chars=table_panel_min_chars,
+            usable_height=usable_height,
+        )
     if isinstance(block, ThematicBreak):
         return [_render_thematic_break()]
     if isinstance(block, PageBreak):
@@ -734,6 +970,9 @@ def _render_blockquote(
     *,
     body_size: float = BODY_SIZE,
     line_spacing: float = TABLE_LINE_HEIGHT_RATIO,
+    table_overflow: str = "wrap",
+    table_panel_min_chars: int = TABLE_PANEL_MIN_CHARS,
+    usable_height: float = DEFAULT_USABLE_HEIGHT,
 ) -> list[RenderedBlock]:
     """Flatten a BlockQuote: render inner blocks with extra indent + left rule.
 
@@ -749,6 +988,9 @@ def _render_blockquote(
         inner.extend(_render_block(
             child, family, depth, inner_width,
             body_size=body_size, line_spacing=line_spacing,
+            table_overflow=table_overflow,
+            table_panel_min_chars=table_panel_min_chars,
+            usable_height=usable_height,
         ))
     out: list[RenderedBlock] = []
     for cb in inner:
@@ -780,19 +1022,45 @@ def _render_table(
     *,
     body_size: float = BODY_SIZE,
     line_spacing: float = TABLE_LINE_HEIGHT_RATIO,
-) -> RenderedBlock:
-    """Lower a Table to a pre-positioned RenderedBlock.
+    table_overflow: str = "wrap",
+    table_panel_min_chars: int = TABLE_PANEL_MIN_CHARS,
+    usable_height: float = DEFAULT_USABLE_HEIGHT,
+) -> list[RenderedBlock]:
+    """Lower a Table to one or more pre-positioned ``RenderedBlock``s.
 
-    Strategy: compute per-column widths from natural content widths,
-    shrinking proportionally when needed; wrap each cell to its column;
-    measure row heights; lay out positions (relative to table top-left,
-    y=0 being the top); emit grid-line shapes and the header background.
-    The layout layer translates everything to absolute page coordinates
-    at pagination time.
+    Strategy: compute per-column widths from natural content widths, then
+    branch on ``table_overflow`` for a table too wide for ``content_width``:
+
+    - A table that FITS renders exactly as before, BYTE-IDENTICAL in every
+      mode -- one block over all columns at natural (slacked) widths.
+    - ``"wrap"`` (default) splits the columns into page-width groups and
+      returns ONE block PER GROUP: each is a full table strip over a subset
+      of columns, with column 0 repeated as the key column and a faint
+      ``(continued)`` marker above continuation panels. Each panel packs as
+      densely as it readably can -- columns count toward the panel budget at
+      a floor of ``table_panel_min_chars`` character widths, then each panel
+      is shrunk to fit (cells wrap), so a panel holds many more columns than
+      packing at natural width would allow. Each panel is an independent
+      block the paginator places + splits on its own, so each panel's own
+      header repeats on its own continuation page. Markdown has no notion of
+      a key column; repeating column 0 is a deliberate convention (the
+      leftmost column is the row label in most data tables).
+    - ``"shrink"`` keeps the pre-0.5 behaviour: squeeze columns toward their
+      minimum and overflow the right edge silently. ``"warn"`` does the same
+      and emits one :class:`TableOverflowWarning`. ``"error"`` raises
+      :class:`TableOverflowError`.
+    - A single column wider than the whole text column (an unbreakable
+      monster cell) cannot be wrapped into panels, so ``"wrap"`` falls back
+      to shrink + a :class:`TableOverflowWarning` for that table.
+
+    Returns a list so a multi-panel wrap flows through ``blocks.extend`` in
+    ``render_document`` with no signature change; the non-wrap cases return
+    a one-element list. The layout layer translates the relative coordinates
+    to absolute page coordinates at pagination time.
     """
     n_cols = len(table.headers)
     if n_cols == 0:
-        return RenderedBlock(runs=())
+        return [RenderedBlock(runs=())]
 
     # Lower every cell's inlines to a list of Runs. Headers are bold. Cell
     # text renders at the effective body size so a table scales with the rest
@@ -841,8 +1109,471 @@ def _render_table(
     min_widths = [_widest_token_width(header_runs[i], body_runs, i)
                   for i in range(n_cols)]
 
+    # Row leading scales with both the body size (S2) and the line-spacing
+    # multiplier (S3), so a table breathes with the same knob as prose. At
+    # the defaults (body 12, spacing 1.2) this is 14.4, exactly as before.
+    line_height = body_size * line_spacing
+
+    # Height floor on each column's minimum width. A too-wide table is fitted
+    # by shrinking columns and wrapping their cells; but if a column is shrunk
+    # so narrow that its tallest cell wraps to more lines than a page can hold,
+    # every OTHER cell in that row is stranded on line 1 of a row taller than
+    # the page -- the data reads as a tower with the rest pushed off the bottom.
+    # So no column may be shrunk narrower than the width at which its tallest
+    # cell fits the per-row line budget. The header repeats on each page-slice,
+    # so the data row only gets the lines left after the header. The line count
+    # is monotonic in width (wider -> fewer wrap lines), so the floor is found
+    # by binary search using the real wrap function. A column whose tallest
+    # cell cannot fit even at content_width (a single cell longer than a page)
+    # caps at content_width: that row genuinely exceeds a page and the S6f
+    # group slicing spills it across pages -- lossless. In wrap mode this cap
+    # is further bounded by the block's width budget at emit time
+    # (_cap_height_floored_mins), so the floor never pushes a table off the
+    # right edge of the page; shrink/warn keep the raw floored minimums.
+    def _line_count(runs: list[Run], width: float) -> int:
+        if not runs:
+            return 1
+        return len(wrap_runs(runs, max(width, 1.0))) or 1
+
+    # Budget: the header row plus ONE data row must fit one page. Either row
+    # can be driven by the same (e.g. key) column, so giving each row half the
+    # page's lines guarantees their sum fits regardless of which column is
+    # tallest -- the header-cell-is-the-tall-one case included. For ordinary
+    # tables (one-line headers, short cells) this budget is far more than
+    # needed, so the floor never binds and nothing changes.
+    #
+    # line_height can be 0 in the degenerate line_spacing=0 case; there is no
+    # meaningful "lines per page" then (a zero-height row never overflows), so
+    # skip the height floor and keep the existing token minimums.
+    apply_height_floor = line_height > 0 and usable_height > 0
+    total_lines = max(1, int(usable_height // line_height)) if apply_height_floor else 1
+    row_line_budget = max(1, total_lines // 2)
+
+    def _tallest_cell(col: int) -> list[Run]:
+        # The cell in this column that wraps to the most lines at any given
+        # width is the one with the greatest natural (unwrapped) width, since
+        # line count is monotonic in content length at a fixed width. Pick it
+        # once so the binary search re-wraps a single cell, not the whole
+        # column. Header counts as a cell (it can be the tall one, e.g. a long
+        # key header).
+        best = header_runs[col]
+        best_w = runs_natural_width(best)
+        for r in range(len(body_runs)):
+            cell = body_runs[r][col]
+            w = runs_natural_width(cell)
+            if w > best_w:
+                best, best_w = cell, w
+        return best
+
+    def _height_floor(col: int) -> float:
+        # The narrowest width at which column ``col``'s tallest cell wraps to
+        # <= row_line_budget lines. Binary-search width in [widest_token,
+        # content_width] on that one cell (line count is monotonic in width).
+        cell = _tallest_cell(col)
+        lo = min_widths[col]      # never below the widest unbreakable token
+        hi = content_width
+        # Already fits at the token min? Then no height floor is needed (the
+        # common case: short cells wrap to one line well above the budget).
+        if _line_count(cell, lo) <= row_line_budget:
+            return lo
+        # Cannot fit even at full width? Cap at content_width (irreducible
+        # case: a cell taller than a page; row-pagination handles it).
+        if _line_count(cell, hi) > row_line_budget:
+            return hi
+        # Binary search for the smallest width that fits the budget. Width is
+        # continuous; iterate to ~0.5pt precision (deterministic, bounded).
+        for _ in range(24):
+            mid = (lo + hi) / 2.0
+            if _line_count(cell, mid) <= row_line_budget:
+                hi = mid
+            else:
+                lo = mid
+            if hi - lo <= 0.5:
+                break
+        return hi
+
+    # Fold the height floor into the per-column minimum the shrinker enforces,
+    # alongside the existing widest-token minimum. Only columns that would
+    # otherwise tower are raised; a short-celled column's tallest cell already
+    # fits at its token min, so its floor stays the token min and nothing
+    # changes (a fitting table never shrinks, so it never reaches the shrinker
+    # at all -- this only affects the shrink + panel paths).
+    #
+    # base_min_widths keeps the PRE-height-floor token minimums: wrap mode
+    # needs them to cap the floors back when honoring them would push a
+    # block past the width budget (S6g, _cap_height_floored_mins). The
+    # shrink/warn paths keep using the floored min_widths untouched.
+    base_min_widths = list(min_widths)
+    if apply_height_floor:
+        min_widths = [max(min_widths[i], _height_floor(i)) for i in range(n_cols)]
+
+    PR = _PR  # local alias
+
+    def run_advance(r: Run) -> float:
+        if r.emoji is not None:
+            return emoji_box(r.size, r.emoji.aspect)[0]
+        return text_width(r.text, r.font, r.size)
+
+    def emit_block(col_indices, content_widths_local, continued, space_below):
+        """Build ONE table block over a subset of columns (a panel).
+
+        ``col_indices`` are ORIGINAL column indices in panel-display order;
+        ``content_widths_local`` is the content width for each, in the same
+        order. The cell text, alignment, and bold/regular styling come from
+        the original column; only the geometry (x positions, wrap widths) is
+        panel-local. Called with all columns + the fit/shrink content widths
+        for the normal path (byte-identical to pre-S6), and once per group
+        with full natural widths for the panel-wrap path.
+
+        ``continued`` adds a faint ``(continued)`` line above the header so a
+        reader knows this panel continues the previous one's rows (panels
+        2..N). ``space_below`` sets the block's bottom breathing room (used to
+        open the inter-panel gap). Returns a ``RenderedBlock``.
+        """
+        n_local = len(col_indices)
+        # Column widths include left + right padding; x positions are the
+        # left edge of each column relative to the panel's left edge.
+        col_widths = [w + 2 * TABLE_CELL_PADDING_X for w in content_widths_local]
+        col_x: list[float] = []
+        x = 0.0
+        for cw in col_widths:
+            col_x.append(x)
+            x += cw
+        table_width = x
+
+        # Wrap every cell to its column's content width and measure heights.
+        def wrap_cell(runs: list[Run], j: int) -> list[list[Run]]:
+            if not runs:
+                return [[]]
+            return wrap_runs(runs, content_widths_local[j]) or [[]]
+
+        header_lines = [
+            wrap_cell(header_runs[col_indices[j]], j) for j in range(n_local)
+        ]
+        body_lines = [
+            [wrap_cell(row[col_indices[j]], j) for j in range(n_local)]
+            for row in body_runs
+        ]
+
+        def row_height(cell_lines_per_col: list[list[list[Run]]]) -> float:
+            max_lines = max((len(c) for c in cell_lines_per_col), default=1)
+            return max_lines * line_height + 2 * TABLE_CELL_PADDING_Y
+
+        header_h = row_height(header_lines)
+        body_heights = [row_height(row) for row in body_lines]
+
+        # y positions (relative to panel top, y growing downward here; the
+        # layout flips when placing).
+        row_tops = [0.0]
+        row_tops.append(header_h)
+        for h in body_heights[:-1]:
+            row_tops.append(row_tops[-1] + h)
+        total_height = header_h + sum(body_heights)
+
+        def emit_cell_local(cell_lines, j, alignment, lines_out, shapes_out):
+            """Emit one cell's lines/shapes in ROW-LOCAL coords (y from row top).
+
+            ``j`` is the panel-local column position; geometry reads col_x[j]
+            and content_widths_local[j], content has already been selected.
+            """
+            x_left = col_x[j] + TABLE_CELL_PADDING_X
+            cell_content_w = content_widths_local[j]
+            baseline_y_from_top = TABLE_CELL_PADDING_Y + line_height
+            for li, line in enumerate(cell_lines):
+                line_w = sum(run_advance(r) for r in line)
+                if alignment == "center":
+                    x_start = x_left + (cell_content_w - line_w) / 2.0
+                elif alignment == "right":
+                    x_start = x_left + (cell_content_w - line_w)
+                else:
+                    x_start = x_left
+                # Left overflow is corruption (flings glyphs across the grid
+                # line); right overflow is acceptable. Clamp to the cell edge.
+                if x_start < x_left:
+                    x_start = x_left
+                runs_record: list[_PR] = []
+                cx = x_start
+                baseline = baseline_y_from_top + li * line_height
+                for run in line:
+                    if run.emoji is not None:
+                        e_w, e_h = emoji_box(run.size, run.emoji.aspect)
+                        descent = e_h * EMOJI_BASELINE_DROP
+                        rel_y_top = baseline - (e_h - descent)
+                        shapes_out.append({
+                            "kind": "image",
+                            "image_id": run.emoji.image_id,
+                            "image_data": run.emoji.image_data,
+                            "rel_y_top": rel_y_top,
+                            "x_offset": cx,
+                            "width": e_w,
+                            "height": e_h,
+                        })
+                        cx += e_w
+                        continue
+                    runs_record.append(PR(
+                        text=run.text, x_rel=cx, y_from_top=baseline,
+                        font=run.font, size=run.size, link_url=run.link_url,
+                        color=run.color, strike=run.strike, y_shift=run.y_shift,
+                        background_fill=run.background_fill,
+                        border_fill=run.border_fill, underline=run.underline,
+                    ))
+                    cx += text_width(run.text, run.font, run.size)
+                if runs_record:
+                    lines_out.append((baseline, tuple(runs_record)))
+
+        def build_group(cells_per_col, height, is_header, tint, top_rule=True):
+            """One row group (header or a body row) in row-local coordinates:
+            optional background tint, the cell content, and the top horizontal
+            rule. Vertical grid segments + the group's bottom rule are drawn by
+            the layout per page-slice (they depend on how groups stack).
+
+            ``top_rule=False`` is used by the oversized-group slicer for
+            continuation chunks: a chunk that continues a cell from the
+            previous page must not draw a horizontal rule through the middle
+            of that cell."""
+            lines_out: list = []
+            shapes_out: list = []
+            if tint is not None:
+                shapes_out.append({
+                    "kind": "fill", "rel_y_top": 0.0, "height": height,
+                    "x_offset": 0.0, "width": table_width, "fill": tint,
+                })
+            # Top horizontal rule for this group (so per-page slices get row
+            # separators without the layout knowing the table's row structure).
+            if top_rule:
+                shapes_out.append({
+                    "kind": "fill", "rel_y_top": -TABLE_GRID_WIDTH / 2.0,
+                    "height": TABLE_GRID_WIDTH, "x_offset": 0.0,
+                    "width": table_width, "fill": TABLE_GRID_FILL,
+                })
+            for j in range(n_local):
+                emit_cell_local(cells_per_col[j], j,
+                                table.alignments[col_indices[j]],
+                                lines_out, shapes_out)
+            return {
+                "height": height,
+                "is_header": is_header,
+                "lines": tuple(lines_out),
+                "shapes": tuple(shapes_out),
+            }
+
+        # Full (unchunked) groups. These are ALWAYS built: the flattened
+        # single-block view below is derived from them so its per-row rules
+        # never land mid-cell, and on the common path (nothing oversized)
+        # they are also exactly what the paginator gets.
+        header_group = build_group(header_lines, header_h, True, TABLE_HEADER_BG)
+        body_groups = [
+            build_group(body_lines[r], body_heights[r], False, None)
+            for r in range(len(body_lines))
+        ]
+
+        # --- Oversized-group slicing (S6f) ---------------------------------
+        # The paginator places header and row groups ATOMICALLY: a group
+        # taller than the room a fresh page slice can give it is drawn once
+        # and everything past the bottom edge lands outside the media box,
+        # invisible to every PDF reader. So any group that cannot fit a fresh
+        # slice is pre-split HERE, at line boundaries, into chunk groups the
+        # paginator's existing row-boundary loop handles unchanged.
+        #
+        # Cut rule: all cells in a table share one line grid (baselines at
+        # TABLE_CELL_PADDING_Y + (i+1)*line_height from the group top), so a
+        # chunk takes whole grid lines [a, b) and is rebuilt EXACTLY like a
+        # fresh row group over those lines: height (b-a)*line_height +
+        # 2*TABLE_CELL_PADDING_Y, baselines re-seated on the same grid. No
+        # glyph's ink straddles a cut because every line goes whole into one
+        # chunk, with TABLE_CELL_PADDING_Y + line_height above its first
+        # baseline (clears ascenders) and TABLE_CELL_PADDING_Y below its last
+        # (clears descenders, same clearance a normal row bottom has). The
+        # tint fill is rebuilt per chunk, so it is clipped to the chunk
+        # window for free; an emoji image shape is emitted by its line, so it
+        # goes whole into the chunk containing its top. Chunks after the
+        # first carry no top rule (no rule through the middle of a cell).
+        #
+        # Chunks are sized to fit ANY fresh slice they can land on, including
+        # the first slice of a continuation panel (which reserves one
+        # line_height above the box for the "(continued)" label), with one
+        # further line_height of headroom so a chunk never sits on an exact
+        # float boundary of the slice.
+        label_reserve = line_height if continued else 0.0
+        fresh_page_room = usable_height - label_reserve
+        slicing_on = line_height > 0 and usable_height > 0
+
+        def group_chunks(cells_per_col, height, is_header, tint, budget):
+            """One group when it fits ``budget``, else line-grid chunks that
+            each do. Returns (groups, sliced_flag)."""
+            if not slicing_on or height <= budget:
+                return (
+                    [build_group(cells_per_col, height, is_header, tint)],
+                    False,
+                )
+            # Whole lines per chunk, conservative by one line of headroom.
+            per_chunk = max(1, int(
+                (budget - 2 * TABLE_CELL_PADDING_Y - line_height)
+                // line_height
+            ))
+            n_lines = max((len(c) for c in cells_per_col), default=1)
+            chunks = []
+            for a in range(0, n_lines, per_chunk):
+                b = min(a + per_chunk, n_lines)
+                chunk_h = (b - a) * line_height + 2 * TABLE_CELL_PADDING_Y
+                chunks.append(build_group(
+                    [c[a:b] for c in cells_per_col], chunk_h, is_header,
+                    tint, top_rule=(a == 0),
+                ))
+            return chunks, True
+
+        # Header demotion is decided FIRST, so the body-row chunk budget is
+        # computed with the EFFECTIVE header height (0 when demoted) and
+        # never goes negative on small pages. A header taller than the page
+        # cannot usefully repeat per slice (re-drawing it would leave a data
+        # row no page with room, burying the data forever), so it is demoted
+        # to no-repeat: rendered ONCE as leading pseudo-row chunks carrying
+        # the header tint, sliced like any oversized row but against the full
+        # fresh-slice room since nothing repeats above them. Later pages then
+        # carry no column labels; render-once is strictly better than
+        # repeat-forever-and-bury-the-data.
+        header_repeats = (not slicing_on) or header_h <= usable_height
+        sliced = False
+        if header_repeats:
+            paginator_header = header_group
+            leading_groups: list[dict] = []
+            row_budget = fresh_page_room - header_h
+        else:
+            # Empty header group: the paginator's per-slice header redraw
+            # becomes a no-op (no lines, no shapes, zero height), so no
+            # repetition and no stray rules for the absent header.
+            paginator_header = {
+                "height": 0.0, "is_header": True, "lines": (), "shapes": (),
+            }
+            leading_groups, _ = group_chunks(
+                header_lines, header_h, True, TABLE_HEADER_BG,
+                fresh_page_room,
+            )
+            sliced = True
+            row_budget = fresh_page_room
+
+        paginator_rows: list[dict] = list(leading_groups)
+        for r in range(len(body_lines)):
+            if not slicing_on or body_heights[r] <= row_budget:
+                # Fits a fresh slice: reuse the already-built full group, so
+                # a table with nothing oversized hands the paginator the
+                # exact same objects as before (byte-identical output).
+                paginator_rows.append(body_groups[r])
+                continue
+            row_chunks, _ = group_chunks(
+                body_lines[r], body_heights[r], False, None, row_budget,
+            )
+            paginator_rows.extend(row_chunks)
+            sliced = True
+
+        # Continuation marker: a continuation panel (panels 2..N) carries a
+        # faint "(continued)" label. It is NOT folded into the table box here:
+        # the paginator draws it in the clear gap ABOVE the panel, so neither
+        # the horizontal top rule nor the vertical column rules (which span the
+        # whole table slice from its top down) can cross the word. The panel's
+        # BOX geometry (header group, row tops, total height) is therefore
+        # identical to a normal panel's; only the meta flag differs. The
+        # normal/shrink/fits path passes continued=False, so its output is
+        # untouched and a fitting table stays byte-identical.
+        table_meta = {
+            "table_width": table_width,
+            "col_x": tuple(col_x),
+            "grid_width": TABLE_GRID_WIDTH,
+            "grid_fill": TABLE_GRID_FILL,
+            "line_height": line_height,
+            "header": paginator_header,
+            "rows": tuple(paginator_rows),
+            # Whether the header group repeats per page slice. False only
+            # for a demoted (page-tall, no-repeat) header; the paginator
+            # needs no flag (the demoted header group is empty, so its
+            # per-slice redraw is a no-op), this is for introspection.
+            "header_repeats": header_repeats,
+            "continued": continued,
+            # The label the paginator draws in the gap above a continuation
+            # panel. Carried as a fully-specified run (text/font/size/colour
+            # decided here, in the render layer) plus its x offset from the
+            # panel's left edge, so the layout layer only positions it and
+            # need not import render. None for non-continuation panels.
+            "continued_label": (
+                {
+                    "text": TABLE_CONTINUED_LABEL,
+                    "font": family.regular,
+                    "size": body_size,
+                    "color": TABLE_GRID_FILL,
+                    "x_offset": TABLE_CELL_PADDING_X,
+                }
+                if continued
+                else None
+            ),
+        }
+
+        # Flattened single-block view (table-top coords) for the atomic fast
+        # path + PDF emitter. Derived from the FULL (unchunked) groups so the
+        # two views never drift and its per-row rules never land mid-cell;
+        # the layout prefers prepositioned_table when present, so the sliced
+        # groups are what actually paginate.
+        positioned_lines: list[tuple[float, tuple]] = []
+        shapes: list[dict] = []
+
+        def stack_group(group: dict, top: float) -> None:
+            for baseline, runs in group["lines"]:
+                shifted = tuple(
+                    replace(pr, y_from_top=pr.y_from_top + top) for pr in runs
+                )
+                positioned_lines.append((baseline + top, shifted))
+            for sh in group["shapes"]:
+                s = dict(sh)
+                s["rel_y_top"] = sh["rel_y_top"] + top
+                shapes.append(s)
+
+        stack_group(header_group, 0.0)
+        for r, group in enumerate(body_groups):
+            stack_group(group, row_tops[r + 1])
+
+        # Horizontal grid rules: top, below header, between & below body rows.
+        h_lines_y = [0.0, header_h]
+        cumulative = header_h
+        for h in body_heights:
+            cumulative += h
+            h_lines_y.append(cumulative)
+        for y_top in h_lines_y:
+            shapes.append({
+                "kind": "fill", "rel_y_top": y_top - TABLE_GRID_WIDTH / 2.0,
+                "height": TABLE_GRID_WIDTH, "x_offset": 0.0,
+                "width": table_width, "fill": TABLE_GRID_FILL,
+            })
+        # Vertical grid rules: left edge of each column plus the right edge.
+        for vx in list(col_x) + [table_width]:
+            shapes.append({
+                "kind": "fill", "rel_y_top": 0.0, "height": total_height,
+                "x_offset": vx - TABLE_GRID_WIDTH / 2.0,
+                "width": TABLE_GRID_WIDTH, "fill": TABLE_GRID_FILL,
+            })
+
+        return RenderedBlock(
+            runs=(),
+            space_above=6.0,
+            space_below=space_below,
+            prepositioned=True,
+            prepositioned_lines=tuple(positioned_lines),
+            prepositioned_line_heights=(line_height,) * len(positioned_lines),
+            prepositioned_shapes=tuple(shapes),
+            prepositioned_table=table_meta,
+        )
+
+    def table_label() -> str:
+        """A short identifier for warnings/errors: position + first header."""
+        head = ""
+        for r in header_runs[0]:
+            head += r.text
+        head = head.strip()
+        if head:
+            return f"table with header {head!r}"
+        return "a table"
+
     natural_sum = sum(natural)
-    if natural_sum <= content_budget or natural_sum == 0:
+    fits = natural_sum <= content_budget or natural_sum == 0
+    if fits:
         # Add small slack to each column's natural width so token-by-token
         # wrap doesn't trigger on borderline-fit content (token widths
         # measured individually sum slightly higher than the joined-string
@@ -855,204 +1586,152 @@ def _render_table(
             content_widths = [w + slack for w in natural]
         else:
             content_widths = list(natural)
-    else:
+        # Byte-identical fits path: one block over all columns, no slack to
+        # the mode (a fitting table renders the same in every mode).
+        return [emit_block(list(range(n_cols)), content_widths, False, 6.0)]
+
+    # Past here the table does NOT fit. Behaviour depends on the mode.
+    if table_overflow == "error":
+        raise TableOverflowError(
+            f"{table_label()} is too wide to fit the text column "
+            f"(natural width {natural_sum:.0f}pt exceeds the "
+            f"{content_budget:.0f}pt budget); table_overflow='error'"
+        )
+
+    def shrink_block(warn: bool):
+        """The pre-0.5 path: shrink proportionally, overflow right. One block
+        over all columns. Optionally emit a TableOverflowWarning."""
         content_widths = _shrink_to_budget(natural, content_budget, min_widths)
-    # Column widths include left + right padding.
-    col_widths = [w + 2 * TABLE_CELL_PADDING_X for w in content_widths]
-    # x positions: left edge of each column, relative to table left edge.
-    col_x: list[float] = []
-    x = 0.0
-    for cw in col_widths:
-        col_x.append(x)
-        x += cw
-    table_width = x
+        if warn:
+            overflow = sum(content_widths) - content_budget
+            warnings.warn(
+                f"{table_label()} is too wide to fit and was shrunk; it "
+                f"overflows the text column by about {max(overflow, 0.0):.0f}pt",
+                TableOverflowWarning, stacklevel=2,
+            )
+        return [emit_block(list(range(n_cols)), content_widths, False, 6.0)]
 
-    # 3. Wrap every cell to its column's content width and measure row heights.
-    def wrap_cell(runs: list[Run], col_idx: int) -> list[list[Run]]:
-        if not runs:
-            return [[]]
-        return wrap_runs(runs, content_widths[col_idx]) or [[]]
+    if table_overflow == "shrink":
+        return shrink_block(warn=False)
+    if table_overflow == "warn":
+        return shrink_block(warn=True)
 
-    header_lines = [wrap_cell(header_runs[i], i) for i in range(n_cols)]
-    body_lines = [
-        [wrap_cell(row[i], i) for i in range(n_cols)] for row in body_runs
-    ]
+    # table_overflow == "wrap". Panels are the LAST RESORT, not the first
+    # response to overflow. A table that is wider than the budget at its
+    # natural (one-line) widths can usually still be made to fit on a single
+    # strip by shrinking columns and letting the cell text wrap to more lines
+    # -- lossless in content, no clipping -- and that reads far better than
+    # stacking panels. But "fits on one strip" must mean "fits READABLY", not
+    # "fits at one character per column": a dozen-plus columns can squeak
+    # under the budget at one char each (padding eats most of the page), and
+    # crushing every column to a single glyph -- headers reading vertically,
+    # a long token wrapping to one char per line -- is technically lossless
+    # but unreadable. So gate on the same readable FLOOR that governs panel
+    # packing: each column counts at min(natural, floor) (its natural width if
+    # narrower than the floor, else the floor). table_panel_min_chars thus
+    # governs BOTH whether and how to panel -- one coherent lever.
+    #
+    # The floor uses a single representative glyph width -- the width of "0"
+    # in the body (regular) font at the body size. "0" is a deterministic,
+    # average-ish glyph (a digit is close to the mean advance for both
+    # Helvetica and Times); the exact value is not load-bearing, it only sets
+    # the floor scale, so a representative char keeps this simple and stable
+    # rather than per-column or max-char widths.
+    char_w = text_width("0", family.regular, body_size)
+    floor_width = table_panel_min_chars * char_w
+    floor_mins = [min(natural[i], floor_width) for i in range(n_cols)]
+    if sum(floor_mins) <= content_budget:
+        # Fits readably on one strip: do exactly what "shrink" mode does --
+        # one block, columns shrunk toward their minimum, cells wrapped. This
+        # keeps real-world tables (a handful of columns) rendering as a single
+        # table, byte for byte as before, instead of being split needlessly.
+        if sum(min_widths) <= content_budget:
+            return shrink_block(warn=False)
+        # The minimums only exceed the budget here when the height floor
+        # raised them (floor_mins fit by the gate above, and token mins
+        # never exceed floor mins): honoring the floor would overflow the
+        # right margin and clip glyphs off the media box. Wrap mode promises
+        # losslessness, so cap the floored columns to the leftover after
+        # every other column takes its existing minimum (token min raised to
+        # the readable floor, same basis the panel path uses). The capped
+        # cell wraps taller and the S6f slicing paginates it. shrink/warn
+        # keep the old overflow-right behaviour and never reach this.
+        strip_base = [
+            max(floor_mins[i], base_min_widths[i]) for i in range(n_cols)
+        ]
+        strip_floored = [
+            max(strip_base[i], min_widths[i]) for i in range(n_cols)
+        ]
+        capped = _cap_height_floored_mins(
+            strip_base, strip_floored, content_budget
+        )
+        content_widths = _shrink_to_budget(natural, content_budget, capped)
+        return [emit_block(list(range(n_cols)), content_widths, False, 6.0)]
 
-    # Row leading scales with both the body size (S2) and the line-spacing
-    # multiplier (S3), so a table breathes with the same knob as prose. At
-    # the defaults (body 12, spacing 1.2) this is 14.4, exactly as before.
-    line_height = body_size * line_spacing
-
-    def row_height(cell_lines_per_col: list[list[list[Run]]]) -> float:
-        max_lines = max((len(c) for c in cell_lines_per_col), default=1)
-        return max_lines * line_height + 2 * TABLE_CELL_PADDING_Y
-
-    header_h = row_height(header_lines)
-    body_heights = [row_height(row) for row in body_lines]
-
-    # 4. Compute y positions (relative to table top, y growing downward
-    #    here; we'll flip when handed to the layout).
-    row_tops = [0.0]  # header top
-    row_tops.append(header_h)  # first body row top
-    for h in body_heights[:-1]:
-        row_tops.append(row_tops[-1] + h)
-    total_height = header_h + sum(body_heights)
-
-    # 5. Emit positioned content as ROW GROUPS so the layout can split a
-    #    too-tall table across pages (repeating the header) rather than
-    #    overflow off the bottom. Each group is ROW-LOCAL: its lines/shapes
-    #    are measured from that group's own top (y=0) and it carries its own
-    #    height. The header group is flagged so pagination repeats it atop
-    #    each page-slice. A flattened table-top view is derived from the
-    #    groups for the single-page fast path and the PDF emitter, so byte
-    #    output is unchanged for tables that fit on one page.
-    PR = _PR  # local alias
-
-    def run_advance(r: Run) -> float:
-        if r.emoji is not None:
-            return emoji_box(r.size, r.emoji.aspect)[0]
-        return text_width(r.text, r.font, r.size)
-
-    def emit_cell_local(cell_lines, col_idx, alignment, lines_out, shapes_out):
-        """Emit one cell's lines/shapes in ROW-LOCAL coords (y from row top)."""
-        x_left = col_x[col_idx] + TABLE_CELL_PADDING_X
-        cell_content_w = content_widths[col_idx]
-        baseline_y_from_top = TABLE_CELL_PADDING_Y + line_height
-        for li, line in enumerate(cell_lines):
-            line_w = sum(run_advance(r) for r in line)
-            if alignment == "center":
-                x_start = x_left + (cell_content_w - line_w) / 2.0
-            elif alignment == "right":
-                x_start = x_left + (cell_content_w - line_w)
-            else:
-                x_start = x_left
-            # Left overflow is corruption (flings glyphs across the grid
-            # line); right overflow is acceptable. Clamp to the cell edge.
-            if x_start < x_left:
-                x_start = x_left
-            runs_record: list[_PR] = []
-            cx = x_start
-            baseline = baseline_y_from_top + li * line_height
-            for run in line:
-                if run.emoji is not None:
-                    e_w, e_h = emoji_box(run.size, run.emoji.aspect)
-                    descent = e_h * EMOJI_BASELINE_DROP
-                    rel_y_top = baseline - (e_h - descent)
-                    shapes_out.append({
-                        "kind": "image",
-                        "image_id": run.emoji.image_id,
-                        "image_data": run.emoji.image_data,
-                        "rel_y_top": rel_y_top,
-                        "x_offset": cx,
-                        "width": e_w,
-                        "height": e_h,
-                    })
-                    cx += e_w
-                    continue
-                runs_record.append(PR(
-                    text=run.text, x_rel=cx, y_from_top=baseline,
-                    font=run.font, size=run.size, link_url=run.link_url,
-                    color=run.color, strike=run.strike, y_shift=run.y_shift,
-                    background_fill=run.background_fill,
-                    border_fill=run.border_fill, underline=run.underline,
-                ))
-                cx += text_width(run.text, run.font, run.size)
-            if runs_record:
-                lines_out.append((baseline, tuple(runs_record)))
-
-    def build_group(cells_per_col, height, is_header, tint):
-        """One row group (header or a body row) in row-local coordinates:
-        optional background tint, the cell content, and the top horizontal
-        rule. Vertical grid segments + the group's bottom rule are drawn by
-        the layout per page-slice (they depend on how groups stack)."""
-        lines_out: list = []
-        shapes_out: list = []
-        if tint is not None:
-            shapes_out.append({
-                "kind": "fill", "rel_y_top": 0.0, "height": height,
-                "x_offset": 0.0, "width": table_width, "fill": tint,
-            })
-        # Top horizontal rule for this group (so per-page slices get row
-        # separators without the layout knowing the table's row structure).
-        shapes_out.append({
-            "kind": "fill", "rel_y_top": -TABLE_GRID_WIDTH / 2.0,
-            "height": TABLE_GRID_WIDTH, "x_offset": 0.0,
-            "width": table_width, "fill": TABLE_GRID_FILL,
-        })
-        for i in range(n_cols):
-            emit_cell_local(cells_per_col[i], i, table.alignments[i],
-                            lines_out, shapes_out)
-        return {
-            "height": height,
-            "is_header": is_header,
-            "lines": tuple(lines_out),
-            "shapes": tuple(shapes_out),
-        }
-
-    header_group = build_group(header_lines, header_h, True, TABLE_HEADER_BG)
-    body_groups = [
-        build_group(body_lines[r], body_heights[r], False, None)
-        for r in range(len(body_lines))
-    ]
-
-    table_meta = {
-        "table_width": table_width,
-        "col_x": tuple(col_x),
-        "grid_width": TABLE_GRID_WIDTH,
-        "grid_fill": TABLE_GRID_FILL,
-        "line_height": line_height,
-        "header": header_group,
-        "rows": tuple(body_groups),
-    }
-
-    # Flattened single-block view (table-top coords) for the atomic fast
-    # path + PDF emitter. Derived from the groups so the two never drift.
-    positioned_lines: list[tuple[float, tuple]] = []
-    shapes: list[dict] = []
-
-    def stack_group(group: dict, top: float) -> None:
-        for baseline, runs in group["lines"]:
-            shifted = tuple(replace(pr, y_from_top=pr.y_from_top + top) for pr in runs)
-            positioned_lines.append((baseline + top, shifted))
-        for sh in group["shapes"]:
-            s = dict(sh)
-            s["rel_y_top"] = sh["rel_y_top"] + top
-            shapes.append(s)
-
-    stack_group(header_group, 0.0)
-    for r, group in enumerate(body_groups):
-        stack_group(group, row_tops[r + 1])
-
-    # Horizontal grid rules: top, below header, between & below body rows.
-    h_lines_y = [0.0, header_h]
-    cumulative = header_h
-    for h in body_heights:
-        cumulative += h
-        h_lines_y.append(cumulative)
-    for y_top in h_lines_y:
-        shapes.append({
-            "kind": "fill", "rel_y_top": y_top - TABLE_GRID_WIDTH / 2.0,
-            "height": TABLE_GRID_WIDTH, "x_offset": 0.0,
-            "width": table_width, "fill": TABLE_GRID_FILL,
-        })
-    # Vertical grid rules: left edge of each column plus the right edge.
-    for vx in list(col_x) + [table_width]:
-        shapes.append({
-            "kind": "fill", "rel_y_top": 0.0, "height": total_height,
-            "x_offset": vx - TABLE_GRID_WIDTH / 2.0,
-            "width": TABLE_GRID_WIDTH, "fill": TABLE_GRID_FILL,
-        })
-
-    return RenderedBlock(
-        runs=(),
-        space_above=6.0,
-        space_below=6.0,
-        prepositioned=True,
-        prepositioned_lines=tuple(positioned_lines),
-        prepositioned_line_heights=(line_height,) * len(positioned_lines),
-        prepositioned_shapes=tuple(shapes),
-        prepositioned_table=table_meta,
+    # Only here -- where the table cannot fit even with every column at the
+    # readable floor -- is it genuinely un-fittable on one strip. Split its
+    # columns into page-width panels, packing each panel as densely as it
+    # readably can at the same floor, then emit each panel via shrink-to-budget
+    # so its columns actually fit and cells wrap.
+    groups = _partition_columns(
+        natural, content_width, TABLE_CELL_PADDING_X, floor_width
     )
+    if groups is None:
+        # A single column (with col 0) is itself wider than the budget even at
+        # the floor, or a 1-column table overflows. Panels can't help either,
+        # so fall back to shrink + a warning (the genuine-monster case; the
+        # warning is expected and correct here).
+        content_widths = _shrink_to_budget(natural, content_budget, min_widths)
+        warnings.warn(
+            f"{table_label()} has a column wider than the text column and "
+            f"cannot be wrapped into panels; it was shrunk and overflows",
+            TableOverflowWarning, stacklevel=2,
+        )
+        return [emit_block(list(range(n_cols)), content_widths, False, 6.0)]
+
+    blocks: list[RenderedBlock] = []
+    last = len(groups) - 1
+    for gi, col_indices in enumerate(groups):
+        # Emit each panel through the SAME shrink-to-budget the single-table
+        # overflow path uses, over this panel's own subset of columns: the
+        # panel may hold more columns than fit at natural width (that is the
+        # point of packing at the floor), so wide columns are squeezed toward
+        # the readable FLOOR and their cells wrap. The per-column minimum is
+        # the floor, so a column shrinks no smaller than min(natural, floor):
+        # a column narrower than the floor (e.g. the short key column) keeps
+        # its natural width instead of being crushed proportionally alongside
+        # the wide columns. The widest-token width is kept as a hard lower
+        # bound so a single glyph never overflows its cell. The partition
+        # packed at this same floor, so sum(floor mins) <= panel_budget by
+        # construction -- the panel fits at these widths. The panel budget is
+        # the full content width minus this panel's own padding (fewer columns
+        # than the whole table -> more room per column).
+        panel_naturals = [natural[c] for c in col_indices]
+        panel_mins = [
+            max(min(natural[c], floor_width), min_widths[c]) for c in col_indices
+        ]
+        panel_budget = content_width - len(col_indices) * 2 * TABLE_CELL_PADDING_X
+        # Height floors are best-effort inside a panel (S6g): a floor raised
+        # all the way toward content_width (irreducible page-tall cell, e.g.
+        # a giant key-column header) would otherwise push the panel past its
+        # budget and off the right edge of the media box, invisible. The
+        # capped column takes the leftover after the other columns' token +
+        # readable-floor minimums; the taller cell is carried across pages
+        # by the S6f slicing. No-op (same list back) when the floors fit, so
+        # ordinary panels are byte-identical.
+        panel_base = [
+            max(min(natural[c], floor_width), base_min_widths[c])
+            for c in col_indices
+        ]
+        panel_mins = _cap_height_floored_mins(
+            panel_base, panel_mins, panel_budget
+        )
+        widths_local = _shrink_to_budget(panel_naturals, panel_budget, panel_mins)
+        continued = gi > 0
+        # Open the inter-panel gap below every panel except the last.
+        space_below = (6.0 + TABLE_PANEL_GAP) if gi < last else 6.0
+        blocks.append(emit_block(col_indices, widths_local, continued, space_below))
+    return blocks
 
 
 # Lightweight namedtuple-ish for relative-positioned runs inside a table.
@@ -1126,6 +1805,9 @@ def _render_list(
     *,
     body_size: float = BODY_SIZE,
     line_spacing: float = TABLE_LINE_HEIGHT_RATIO,
+    table_overflow: str = "wrap",
+    table_panel_min_chars: int = TABLE_PANEL_MIN_CHARS,
+    usable_height: float = DEFAULT_USABLE_HEIGHT,
 ) -> list[RenderedBlock]:
     """Flatten a List into a sequence of RenderedBlocks.
 
@@ -1190,6 +1872,9 @@ def _render_list(
             child_blocks = _render_block(
                 child, family, depth + 1, child_width,
                 body_size=body_size, line_spacing=line_spacing,
+                table_overflow=table_overflow,
+                table_panel_min_chars=table_panel_min_chars,
+                usable_height=usable_height,
             )
             # A nested list computes its own absolute indent from its
             # deeper depth, so it must NOT have this item's indent added

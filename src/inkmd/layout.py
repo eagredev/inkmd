@@ -100,6 +100,38 @@ class LayoutConfig:
     """Line-height multiplier of font size (default 1.2). Mirrors the
     paginate_runs line_height_ratio default."""
 
+    table_overflow: str = "wrap"
+    """What to do with a table too wide to fit the text column. One of:
+
+    - ``"wrap"`` (default): split the columns into page-width groups and
+      stack them as panels, repeating column 0 as the key column and
+      marking continuation panels. Nothing is shrunk or clipped; the fit
+      is lossless. A table that already fits is rendered unchanged.
+    - ``"shrink"``: squeeze columns proportionally toward their minimum
+      width and let any remainder overflow the right edge, silently. This
+      is inkmd's pre-0.5 behaviour for wide tables.
+    - ``"warn"``: same layout as ``"shrink"`` but emit one
+      :class:`~inkmd.render.TableOverflowWarning` naming the table.
+    - ``"error"``: raise :class:`~inkmd.render.TableOverflowError` on a
+      table that does not fit -- a CI gate for authors who must guarantee
+      no overflow.
+
+    A table that FITS the column renders byte-identically in every mode;
+    the mode only changes what happens to a table that overflows. Markdown
+    has no notion of a key column, so ``"wrap"`` repeats column 0 by
+    convention (the leftmost column is the row label in the overwhelming
+    majority of data tables)."""
+
+    table_panel_min_chars: int = 8
+    """When ``table_overflow="wrap"`` splits a table into panels, each data
+    column may be squeezed to at most this many character widths before a new
+    panel is opened. Panels are the last resort: this is how densely a panel
+    packs before it gives up and starts another. Smaller values pack more
+    columns per panel (fewer, denser panels); larger values keep columns wider
+    (more panels). Default 8. Only the wrap panel-packing reads it; a table
+    that fits, or one in shrink/warn/error mode, is unaffected. Must be a
+    positive integer."""
+
 
 def fold_layout(layout, overrides):
     """Resolve the effective ``LayoutConfig`` from a config plus flat overrides.
@@ -917,9 +949,15 @@ def paginate_runs(
                 return y_cursor - bottom_y
 
             # If the header + at least one row can't fit in the remaining
-            # space (and the page already has content), start fresh first.
+            # space (and the page already has content), start fresh first. A
+            # continuation panel also needs room for its "(continued)" label
+            # line above the box, so the label stays bound to its panel rather
+            # than orphaned at the foot of the previous page.
             first_row_h = tbl["rows"][0]["height"] if tbl["rows"] else 0.0
-            need = header_h + first_row_h
+            label_reserve = (
+                tbl["line_height"] if tbl.get("continued_label") is not None else 0.0
+            )
+            need = label_reserve + header_h + first_row_h
             page_has_content = bool(
                 current_lines or current_shapes or current_annotations
             )
@@ -929,6 +967,40 @@ def paginate_runs(
                 current_shapes = []
                 current_annotations = []
                 y_cursor = top_y
+
+            # Continuation marker: on a panel that continues the table above
+            # (table_overflow="wrap" splits a too-wide table into stacked
+            # panels), draw a faint "(continued)" label in the clear gap ABOVE
+            # the table box, then drop the cursor by one line so the box -- and
+            # its grid -- starts below the label. Because the label sits above
+            # slice_top, draw_slice_grid (which spans from slice_top down) never
+            # crosses it, horizontally or vertically. Drawn ONCE here, before
+            # the slicing loop, so a panel that itself spans pages shows the
+            # marker only on its first slice (the header still repeats per slice
+            # via place_group below); it is a one-time "this continues the table
+            # above" note, not a per-page header.
+            label_spec = tbl.get("continued_label")
+            if label_spec is not None:
+                line_h = tbl["line_height"]
+                # The box (and its grid, incl. the header's top horizontal
+                # rule which straddles box_top) starts one line_height below
+                # the gap top. Sit the label's baseline above box_top by a
+                # gap big enough that even its parentheses' descenders clear
+                # the rule, while its ascenders still stay within the strip:
+                # baseline = box_top + 0.4*line_h leaves a descender margin
+                # below and an ascender margin above at the default size.
+                box_top = y_cursor - line_h
+                current_lines.append(StyledLine((
+                    PositionedRun(
+                        text=label_spec["text"],
+                        x=prepos_x0 + label_spec["x_offset"],
+                        y=box_top + line_h * 0.4,
+                        font=label_spec["font"],
+                        size=label_spec["size"],
+                        color=label_spec["color"],
+                    ),
+                )))
+                y_cursor = box_top
 
             # Place header + rows, slicing across pages. slice_top is the y
             # of the current slice's top; slice_h accumulates placed height

@@ -319,7 +319,10 @@ def test_compile_narrow_topic_column_does_not_crush():
         "| Second | another long row |\n"
         "| Third | x |\n"
     )
-    out = inkmd.compile(md)
+    # Pin the shrink path: this regression is about the shrink fallback not
+    # crushing a narrow column. The Description column is wider than the page,
+    # so wrap mode would fall back to shrink anyway; shrink makes it explicit.
+    out = inkmd.compile(md, table_overflow="shrink")
     # Just check it produces a valid PDF — the visual check is in
     # /tmp/inkmd-narrow-table-v2.pdf. The previous (broken) version
     # produced a crushed Topic column but the PDF was still structurally
@@ -353,7 +356,7 @@ def test_compile_alignment_affects_x_position():
 # --- Inline decorations inside table cells (red-team family, 15 findings) ---
 
 
-def _table_cell_runs(md: str):
+def _table_cell_runs(md: str, table_overflow: str = "wrap"):
     """Paginate a table and return all positioned runs across pages."""
     from inkmd.render import render_document, FAMILIES
     from inkmd.html_filter import filter_document as fh
@@ -365,7 +368,7 @@ def _table_cell_runs(md: str):
     doc = fh(doc, html=True)
     doc = fu(doc, safe=True)
     doc = ri(doc, base_dir=None, allow_remote=False)
-    blocks = render_document(doc, FAMILIES["helvetica"])
+    blocks = render_document(doc, FAMILIES["helvetica"], table_overflow=table_overflow)
     pages = paginate_runs(blocks, page_width=612, page_height=792)
     return [r for pg in pages for ln in pg.lines for r in ln.runs]
 
@@ -425,7 +428,7 @@ def test_table_fits_within_a4_margins():
 # --- Column-width fallback + alignment clamp (red-team batch 3) -------------
 
 
-def _table_cell_runs_sized(md: str, page="letter"):
+def _table_cell_runs_sized(md: str, page="letter", table_overflow: str = "wrap"):
     """Like _table_cell_runs but threads the real page content width so
     column-budget behaviour matches a live ``compile`` call."""
     from inkmd.render import render_document, FAMILIES
@@ -441,7 +444,9 @@ def _table_cell_runs_sized(md: str, page="letter"):
     doc = fh(doc, html=True)
     doc = fu(doc, safe=True)
     doc = ri(doc, base_dir=None, allow_remote=False)
-    blocks = render_document(doc, FAMILIES["helvetica"], content_width=cw)
+    blocks = render_document(
+        doc, FAMILIES["helvetica"], content_width=cw, table_overflow=table_overflow
+    )
     pages = paginate_runs(blocks, page_width=pw, page_height=ph)
     return [r for pg in pages for ln in pg.lines for r in ln.runs], pw, ph
 
@@ -457,7 +462,9 @@ def test_right_aligned_narrow_cell_does_not_escape_left():
         "| a | b |\n|--:|--:|\n"
         "| " + "Q" * 100 + " | @ |"
     )
-    runs, pw, _ = _table_cell_runs_sized(md)
+    # Shrink path: the 100-Q column is an unbreakable monster wider than the
+    # page, so this exercises the shrink fallback's alignment clamp.
+    runs, pw, _ = _table_cell_runs_sized(md, table_overflow="shrink")
     # Padding inside the table puts the leftmost legitimate content a few
     # points inside the margin; nothing may sit at or left of the margin.
     assert runs, "expected positioned runs"
@@ -473,7 +480,9 @@ def test_single_wide_glyph_neighbour_not_crushed_below_glyph():
     from inkmd.layout import DEFAULT_MARGIN
 
     md = "| a | b |\n|---|---|\n| " + "x" * 300 + " | — |"
-    runs, pw, _ = _table_cell_runs_sized(md)
+    # Shrink path: the 300-x column is an unbreakable monster, so this checks
+    # the shrink fallback keeps the neighbour at least one glyph wide.
+    runs, pw, _ = _table_cell_runs_sized(md, table_overflow="shrink")
     limit = pw - DEFAULT_MARGIN
     for r in runs:
         assert r.x + text_width(r.text, r.font, r.size) <= limit + 0.5
@@ -549,12 +558,15 @@ def test_emoji_in_table_cell_renders_as_image():
 # genuinely multi-line (naturally-wrapped) cell top-aligns its short sibling.
 
 
-def _run_at_text(md, content_width=468.0):
+def _run_at_text(md, content_width=468.0, table_overflow="wrap"):
     """Map first-word-of-run text -> rounded baseline y, across the table."""
     from inkmd.render import render_document, FAMILIES
     from inkmd.layout import paginate_runs, StyledLine
 
-    blocks = render_document(parse(md), FAMILIES["helvetica"], content_width=content_width)
+    blocks = render_document(
+        parse(md), FAMILIES["helvetica"], content_width=content_width,
+        table_overflow=table_overflow,
+    )
     pages = paginate_runs(blocks, page_width=612, page_height=792)
     out: dict[str, float] = {}
     for pg in pages:
@@ -586,7 +598,9 @@ def test_naturally_wrapped_cell_top_aligns_short_sibling():
         "| ColumnA | ColumnB |\n|---|---|\n"
         "| alpha beta gamma delta epsilon zeta eta | Short |"
     )
-    ys = _run_at_text(md, content_width=260.0)
+    # Shrink path: at this narrow width Col A is wider than the budget, so this
+    # exercises the shrink fallback's in-cell wrap + top-alignment.
+    ys = _run_at_text(md, content_width=260.0, table_overflow="shrink")
     # Col A's first word and the short sibling share the row's top baseline.
     assert ys["alpha"] == ys["Short"]
     # And Col A genuinely wrapped to a lower line (proving multi-line).
@@ -715,7 +729,9 @@ def test_giant_single_row_degrades_without_crash():
     # A single row taller than a whole page can't be split further; it
     # places atomically (and may overflow) but must not crash compile().
     md = "| H |\n|---|\n| " + ("word " * 4000) + " |"
-    pdf = inkmd.compile(md)
+    # A single-column giant row can't be panel-split; pin shrink to test the
+    # atomic-degrade path directly (wrap would fall back here with a warning).
+    pdf = inkmd.compile(md, table_overflow="shrink")
     assert pdf[:4] == b"%PDF"
 
 
