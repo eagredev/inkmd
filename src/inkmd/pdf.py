@@ -46,12 +46,87 @@ FONT_SLOTS: dict[str, str] = {
 }
 
 
-# PDF uses points throughout. 1 inch = 72 points. A4 and Letter are the
-# two page sizes we'll ship in v0.1.
+# PDF uses points throughout. 1 inch = 72 points. Values are the
+# conventional 72-dpi points for each named size, in portrait orientation
+# (height >= width); landscape is produced by swapping at resolution time,
+# never pre-swapped here. Keys are lowercase so name lookup can normalise
+# the caller's spelling (resolve_page_size lowercases the input), which is
+# why "letter"/"a4" both resolve regardless of case. The historical
+# "letter" and "A4" spellings keep working because lookup is case-folded.
 PAGE_SIZES = {
-    "A4": (595, 842),
-    "letter": (612, 792),
+    "letter": (612, 792),    # 8.5 x 11 in
+    "legal": (612, 1008),    # 8.5 x 14 in
+    "tabloid": (792, 1224),  # 11 x 17 in
+    "a3": (842, 1191),       # 297 x 420 mm
+    "a4": (595, 842),        # 210 x 297 mm
+    "a5": (420, 595),        # 148 x 210 mm
 }
+
+
+def resolve_page_size(page_size, orientation="portrait"):
+    """Resolve a page-size spec + orientation to a (width, height) point pair.
+
+    ``page_size`` is either a known size NAME (case-insensitive str) or a
+    custom ``(width, height)`` tuple of two positive numbers in points.
+    ``orientation`` is ``"portrait"`` (default) or ``"landscape"`` (also
+    case-insensitive); landscape swaps the resolved pair so width > height.
+    The swap is applied AFTER the base size is resolved, so it works for
+    both named sizes and custom tuples.
+
+    Raises:
+        KeyError: an unknown size name (preserves the documented
+            ``compile`` contract; the message lists the valid names).
+        ValueError: a malformed custom size (not two values, non-numeric,
+            or <= 0) or an invalid orientation string.
+    """
+    # Custom size: a sequence of exactly two positive numbers. A bare str is
+    # never a custom size (it is a name), so exclude it before the length
+    # check; bool is an int subclass but a True/False dimension is nonsense,
+    # so reject it as non-numeric.
+    if not isinstance(page_size, str) and isinstance(page_size, (tuple, list)):
+        if len(page_size) != 2:
+            raise ValueError(
+                f"custom page_size must be (width, height); got {page_size!r}"
+            )
+        w, h = page_size
+        for value in (w, h):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(
+                    f"custom page_size dimensions must be numbers; got {page_size!r}"
+                )
+            if value <= 0:
+                raise ValueError(
+                    f"custom page_size dimensions must be positive; got {page_size!r}"
+                )
+        width, height = float(w), float(h)
+    elif isinstance(page_size, str):
+        key = page_size.lower()
+        try:
+            width, height = PAGE_SIZES[key]
+        except KeyError:
+            valid = ", ".join(sorted(PAGE_SIZES))
+            raise KeyError(
+                f"unknown page_size {page_size!r}; valid names: {valid} "
+                "(or pass a (width, height) tuple in points)"
+            ) from None
+    else:
+        raise ValueError(
+            f"page_size must be a name (str) or a (width, height) tuple; "
+            f"got {type(page_size).__name__}"
+        )
+
+    if not isinstance(orientation, str):
+        raise ValueError(
+            f"orientation must be 'portrait' or 'landscape'; got {orientation!r}"
+        )
+    orient = orientation.lower()
+    if orient == "portrait":
+        return (width, height)
+    if orient == "landscape":
+        return (height, width)
+    raise ValueError(
+        f"orientation must be 'portrait' or 'landscape'; got {orientation!r}"
+    )
 
 
 @dataclass
@@ -153,7 +228,7 @@ def hello_world_pdf(text: str = "Hello, world!", page_size: str = "letter") -> b
     switching, no Unicode beyond ASCII. It exists to prove the byte
     pipeline works end-to-end.
     """
-    width, height = PAGE_SIZES[page_size]
+    width, height = resolve_page_size(page_size)
     writer = PDFWriter()
 
     # Object 1 — Catalog: the document root. Points at the pages tree.
@@ -343,7 +418,7 @@ def text_pdf(text: str, page_size: str = "letter") -> bytes:
     column (page width minus 1-inch margins) and paginated. Helvetica
     12pt is the only font in milestone 0.0.2.
     """
-    width, height = PAGE_SIZES[page_size]
+    width, height = resolve_page_size(page_size)
     paragraphs = split_paragraphs(text)
     pages = paginate(paragraphs, page_width=width, page_height=height)
 
@@ -502,6 +577,7 @@ def styled_pdf(
     *,
     margin: float = DEFAULT_MARGIN,
     line_height_ratio: float = 1.2,  # mirrors the paginate_runs default
+    page_dims: tuple[float, float] | None = None,
 ) -> bytes:
     """Emit a multi-page PDF from styled paragraph runs.
 
@@ -512,8 +588,17 @@ def styled_pdf(
     the historical 72pt (1 inch) on all four sides. ``line_height_ratio``
     is the leading multiplier (line height = ratio * font size), passed
     through to pagination; the default matches the historical 1.2.
+
+    ``page_dims`` is the already-resolved ``(width, height)`` in points.
+    When given it sets the page dimensions directly (used by
+    :func:`inkmd.compile`, which resolves the name/custom-size + orientation
+    once). When None, the dimensions come from looking up ``page_size``
+    (case-insensitive), so existing direct callers keep working unchanged.
     """
-    width, height = PAGE_SIZES[page_size]
+    if page_dims is not None:
+        width, height = page_dims
+    else:
+        width, height = resolve_page_size(page_size)
     pages = paginate_runs(
         paragraphs, page_width=width, page_height=height, margin=margin,
         line_height_ratio=line_height_ratio,

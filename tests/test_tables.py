@@ -404,11 +404,11 @@ def test_table_fits_within_a4_margins():
     from inkmd.render import render_document, FAMILIES
     from inkmd.layout import paginate_runs, DEFAULT_MARGIN
     from inkmd.fonts import text_width
-    from inkmd.pdf import PAGE_SIZES
+    from inkmd.pdf import resolve_page_size
 
     md = ("| Setting | Value |\n|---|---|\n"
           "| `application.feature.flag.enabled` | `org.example.module.Sub` |")
-    pw, ph = PAGE_SIZES["A4"]
+    pw, ph = resolve_page_size("A4")
     cw = pw - 2 * DEFAULT_MARGIN
     blocks = render_document(parse(md), FAMILIES["helvetica"], content_width=cw)
     pages = paginate_runs(blocks, page_width=pw, page_height=ph)

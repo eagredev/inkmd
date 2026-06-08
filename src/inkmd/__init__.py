@@ -51,13 +51,14 @@ __all__ = [
 
 def compile(
     md_text: str,
-    page_size: str | _Unset = _UNSET,
+    page_size: str | tuple[float, float] | _Unset = _UNSET,
     family: str = "helvetica",
     *,
     layout: LayoutConfig | None = None,
     margin: float | _Unset = _UNSET,
     font_size: float | _Unset = _UNSET,
     line_spacing: float | _Unset = _UNSET,
+    orientation: str | _Unset = _UNSET,
     autolinks: bool = True,
     safe: bool = True,
     html: bool = True,
@@ -70,9 +71,12 @@ def compile(
 
     Args:
         md_text: The markdown source to compile. UTF-8 text.
-        page_size: Page size identifier. Accepts ``"letter"`` (8.5x11
-            inches, default) or ``"A4"`` (210x297 mm). When omitted, the
-            value comes from ``layout`` (whose own default is ``"letter"``).
+        page_size: Page size. A name (case-insensitive) -- ``"letter"``
+            (8.5x11 in, default), ``"legal"`` (8.5x14 in), ``"tabloid"``
+            (11x17 in), ``"a3"`` (297x420 mm), ``"a4"`` (210x297 mm), or
+            ``"a5"`` (148x210 mm) -- or a custom ``(width, height)`` tuple
+            of two positive numbers in points. When omitted, the value
+            comes from ``layout`` (whose own default is ``"letter"``).
         family: Font family for body text. Accepts ``"helvetica"``
             (sans-serif, default) or ``"times"`` (serif). Code blocks
             and inline code always render in Courier regardless.
@@ -91,6 +95,12 @@ def compile(
         line_spacing: Line-height multiplier of font size. When given,
             overrides ``layout.line_spacing``. Defaults to "not given"
             (the config's 1.2 applies). Keyword-only.
+        orientation: ``"portrait"`` (default) or ``"landscape"``. When
+            given, overrides ``layout.orientation``. Landscape swaps the
+            resolved page width and height (so width > height), which
+            widens the text column. Applies to named sizes and custom
+            tuples alike. Defaults to "not given" (the config's "portrait"
+            applies). Keyword-only.
         autolinks: When True (default), GFM-style bare URLs and email
             addresses are auto-linked (``https://example.com`` and
             ``user@example.com`` become clickable). Set False for
@@ -154,8 +164,12 @@ def compile(
 
     Raises:
         ValueError: If ``family`` is not one of the supported families,
-            or ``emoji_fallback`` is not ``"name"`` or ``"drop"``.
-        KeyError: If ``page_size`` is not one of the supported sizes.
+            ``emoji_fallback`` is not ``"name"`` or ``"drop"``,
+            ``orientation`` is not ``"portrait"`` or ``"landscape"``, or
+            a custom ``page_size`` tuple is malformed (not two values,
+            non-numeric, or not positive).
+        KeyError: If ``page_size`` is a name that is not one of the
+            supported sizes.
 
     Example:
         >>> import inkmd
@@ -179,6 +193,7 @@ def compile(
             "margin": margin,
             "font_size": font_size,
             "line_spacing": line_spacing,
+            "orientation": orientation,
         },
     )
     # Normalize the whole markdown string to Unicode NFC at ingestion, before
@@ -201,8 +216,12 @@ def compile(
     # Threaded into render so tables and block images are sized to the
     # actual page (A4 is narrower than letter and would otherwise overflow,
     # and a non-default margin narrows or widens the column to match).
-    from inkmd.pdf import PAGE_SIZES
-    page_w = PAGE_SIZES[effective.page_size][0]
+    # resolve_page_size folds the name/custom-size + orientation into one
+    # (width, height); the resolved WIDTH drives the column (so landscape
+    # gives a wider column) and the resolved pair sets the MediaBox below.
+    from inkmd.pdf import resolve_page_size
+    page_dims = resolve_page_size(effective.page_size, effective.orientation)
+    page_w = page_dims[0]
     content_width = page_w - 2 * effective.margin
     # Scope the emoji text-fallback policy to this compile (ContextVar, so
     # the render functions need no extra threading and concurrent compiles
@@ -243,21 +262,23 @@ def compile(
         paragraphs = apply_embedding(paragraphs, ref, missing)
         warn_missing_glyphs(missing)
     return styled_pdf(
-        paragraphs, page_size=effective.page_size, margin=effective.margin,
+        paragraphs, margin=effective.margin,
         line_height_ratio=effective.line_spacing,
+        page_dims=page_dims,
     )
 
 
 def render_file(
     in_path: str | Path,
     out_path: str | Path,
-    page_size: str | _Unset = _UNSET,
+    page_size: str | tuple[float, float] | _Unset = _UNSET,
     family: str = "helvetica",
     *,
     layout: LayoutConfig | None = None,
     margin: float | _Unset = _UNSET,
     font_size: float | _Unset = _UNSET,
     line_spacing: float | _Unset = _UNSET,
+    orientation: str | _Unset = _UNSET,
     autolinks: bool = True,
     safe: bool = True,
     html: bool = True,
@@ -277,7 +298,8 @@ def render_file(
         in_path: Path to the markdown source file. Read as UTF-8.
         out_path: Path the compiled PDF will be written to. Overwrites
             any existing file.
-        page_size: Page size identifier. See :func:`compile`.
+        page_size: Page size name or custom ``(width, height)`` tuple.
+            See :func:`compile`.
         family: Font family for body text. See :func:`compile`.
         layout: Grouped layout knobs. See :func:`compile`.
         margin: Page margin in points (flat override). See :func:`compile`.
@@ -285,6 +307,8 @@ def render_file(
             :func:`compile`.
         line_spacing: Line-height multiplier (flat override). See
             :func:`compile`.
+        orientation: ``"portrait"`` or ``"landscape"`` (flat override).
+            See :func:`compile`.
         autolinks: GFM bare-URL/email autolinking. See :func:`compile`.
         safe: URL-scheme filter for link annotations. See
             :func:`compile`.
@@ -300,8 +324,11 @@ def render_file(
         None. The PDF is written to ``out_path`` as a side effect.
 
     Raises:
-        ValueError: If ``family`` is not one of the supported families.
-        KeyError: If ``page_size`` is not one of the supported sizes.
+        ValueError: If ``family`` is not one of the supported families,
+            ``orientation`` is invalid, or a custom ``page_size`` tuple
+            is malformed. See :func:`compile`.
+        KeyError: If ``page_size`` is a name that is not one of the
+            supported sizes.
         OSError: If ``in_path`` cannot be read or ``out_path`` cannot
             be written.
 
@@ -320,6 +347,7 @@ def render_file(
             margin=margin,
             font_size=font_size,
             line_spacing=line_spacing,
+            orientation=orientation,
             autolinks=autolinks,
             safe=safe,
             html=html,

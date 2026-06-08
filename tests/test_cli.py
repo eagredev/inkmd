@@ -97,11 +97,12 @@ def test_invalid_page_size_exits_with_error(
 ) -> None:
     src = tmp_path / "in.md"
     src.write_text("x\n", encoding="utf-8")
+    dst = tmp_path / "out.pdf"
     with pytest.raises(SystemExit) as exc:
-        main([str(src), "--page-size", "tabloid"])
+        main([str(src), "-o", str(dst), "--page-size", "foolscap"])
     assert exc.value.code == 2
     err = capsys.readouterr().err
-    assert "tabloid" in err or "invalid choice" in err
+    assert "foolscap" in err or "invalid choice" in err
 
 
 def test_invalid_family_exits_with_error(

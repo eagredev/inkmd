@@ -28,6 +28,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--page-size",
+        type=str.lower,
         choices=sorted(PAGE_SIZES),
         default="letter",
         help="page size (default: letter)",

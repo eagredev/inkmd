@@ -80,8 +80,15 @@ class LayoutConfig:
     ``dataclasses.replace(cfg, margin=54)`` rather than mutating in place.
     """
 
-    page_size: str = "letter"
-    """Page size identifier. ``"letter"`` (default) or ``"A4"``."""
+    page_size: str | tuple[float, float] = "letter"
+    """Page size. A name (case-insensitive: ``"letter"`` default, ``"legal"``,
+    ``"tabloid"``, ``"a3"``, ``"a4"``, ``"a5"``) or a custom ``(width, height)``
+    tuple of two positive numbers in points."""
+
+    orientation: str = "portrait"
+    """Page orientation: ``"portrait"`` (default) or ``"landscape"``.
+    Landscape swaps the resolved width/height so width > height; it applies
+    to named sizes and custom tuples alike."""
 
     margin: float = 72.0
     """Page margin in points (default 72.0 = 1 inch). Mirrors DEFAULT_MARGIN."""
