@@ -31,6 +31,7 @@ from pathlib import Path
 from inkmd.embedded import MissingGlyphWarning
 from inkmd.html_filter import filter_document as filter_html
 from inkmd.image_loader import resolve_images
+from inkmd.layout import LayoutConfig, fold_layout, _UNSET, _Unset
 from inkmd.parser import parse
 from inkmd.pdf import styled_pdf
 from inkmd.render import FAMILIES, render_document
@@ -39,14 +40,24 @@ from inkmd.url_filter import filter_document
 
 __version__ = "0.4.0"
 
-__all__ = ["compile", "render_file", "MissingGlyphWarning", "__version__"]
+__all__ = [
+    "compile",
+    "render_file",
+    "LayoutConfig",
+    "MissingGlyphWarning",
+    "__version__",
+]
 
 
 def compile(
     md_text: str,
-    page_size: str = "letter",
+    page_size: str | _Unset = _UNSET,
     family: str = "helvetica",
     *,
+    layout: LayoutConfig | None = None,
+    margin: float | _Unset = _UNSET,
+    font_size: float | _Unset = _UNSET,
+    line_spacing: float | _Unset = _UNSET,
     autolinks: bool = True,
     safe: bool = True,
     html: bool = True,
@@ -60,10 +71,26 @@ def compile(
     Args:
         md_text: The markdown source to compile. UTF-8 text.
         page_size: Page size identifier. Accepts ``"letter"`` (8.5x11
-            inches, default) or ``"A4"`` (210x297 mm).
+            inches, default) or ``"A4"`` (210x297 mm). When omitted, the
+            value comes from ``layout`` (whose own default is ``"letter"``).
         family: Font family for body text. Accepts ``"helvetica"``
             (sans-serif, default) or ``"times"`` (serif). Code blocks
             and inline code always render in Courier regardless.
+        layout: A :class:`LayoutConfig` grouping the layout knobs
+            (``page_size``, ``margin``, ``font_size``, ``line_spacing``).
+            When None (default), a default ``LayoutConfig()`` is used,
+            which reproduces inkmd's current output exactly. The flat
+            keyword overrides below win over the matching field on this
+            config when both are given.
+        margin: Page margin in points. When given, overrides
+            ``layout.margin``. Defaults to "not given" (the config's 72.0
+            applies). Keyword-only.
+        font_size: Body text size in points. When given, overrides
+            ``layout.font_size``. Defaults to "not given" (the config's
+            12.0 applies). Keyword-only.
+        line_spacing: Line-height multiplier of font size. When given,
+            overrides ``layout.line_spacing``. Defaults to "not given"
+            (the config's 1.2 applies). Keyword-only.
         autolinks: When True (default), GFM-style bare URLs and email
             addresses are auto-linked (``https://example.com`` and
             ``user@example.com`` become clickable). Set False for
@@ -138,6 +165,21 @@ def compile(
     """
     if family not in FAMILIES:
         raise ValueError(f"unknown family {family!r}; available: {tuple(FAMILIES)}")
+    # Resolve the effective layout: start from the supplied config (or the
+    # default), then let any flat keyword override that was actually passed
+    # win over the config's value for that field. S0 reads page_size from the
+    # result; margin/font_size/line_spacing ride in the config and are wired to
+    # the renderer by later v0.5 streams (their defaults already match today's
+    # hardcoded values, so a default config changes no output).
+    effective = fold_layout(
+        layout,
+        {
+            "page_size": page_size,
+            "margin": margin,
+            "font_size": font_size,
+            "line_spacing": line_spacing,
+        },
+    )
     # Normalize the whole markdown string to Unicode NFC at ingestion, before
     # any parsing. This is deliberate and whole-string: NFC is idempotent and
     # leaves ASCII untouched, so prose, URLs, structure, and code are all safe.
@@ -159,7 +201,7 @@ def compile(
     # actual page (A4 is narrower than letter and would otherwise overflow).
     from inkmd.pdf import PAGE_SIZES
     from inkmd.layout import DEFAULT_MARGIN
-    page_w = PAGE_SIZES[page_size][0]
+    page_w = PAGE_SIZES[effective.page_size][0]
     content_width = page_w - 2 * DEFAULT_MARGIN
     # Scope the emoji text-fallback policy to this compile (ContextVar, so
     # the render functions need no extra threading and concurrent compiles
@@ -197,15 +239,19 @@ def compile(
             ref = EmbeddedFontRef(font=font, font_bytes=font_bytes)
         paragraphs = apply_embedding(paragraphs, ref, missing)
         warn_missing_glyphs(missing)
-    return styled_pdf(paragraphs, page_size=page_size)
+    return styled_pdf(paragraphs, page_size=effective.page_size)
 
 
 def render_file(
     in_path: str | Path,
     out_path: str | Path,
-    page_size: str = "letter",
+    page_size: str | _Unset = _UNSET,
     family: str = "helvetica",
     *,
+    layout: LayoutConfig | None = None,
+    margin: float | _Unset = _UNSET,
+    font_size: float | _Unset = _UNSET,
+    line_spacing: float | _Unset = _UNSET,
     autolinks: bool = True,
     safe: bool = True,
     html: bool = True,
@@ -227,6 +273,12 @@ def render_file(
             any existing file.
         page_size: Page size identifier. See :func:`compile`.
         family: Font family for body text. See :func:`compile`.
+        layout: Grouped layout knobs. See :func:`compile`.
+        margin: Page margin in points (flat override). See :func:`compile`.
+        font_size: Body text size in points (flat override). See
+            :func:`compile`.
+        line_spacing: Line-height multiplier (flat override). See
+            :func:`compile`.
         autolinks: GFM bare-URL/email autolinking. See :func:`compile`.
         safe: URL-scheme filter for link annotations. See
             :func:`compile`.
@@ -258,6 +310,10 @@ def render_file(
             md,
             page_size=page_size,
             family=family,
+            layout=layout,
+            margin=margin,
+            font_size=font_size,
+            line_spacing=line_spacing,
             autolinks=autolinks,
             safe=safe,
             html=html,

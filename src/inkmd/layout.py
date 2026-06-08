@@ -19,6 +19,7 @@ Coordinate system is PDF-native: origin bottom-left, y increases up.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from enum import Enum
 
 from inkmd.fonts import text_width
 from inkmd.embedded_metrics import embedded_text_width
@@ -27,7 +28,7 @@ from inkmd.embedded_metrics import embedded_text_width
 # Default layout constants — fine-tuned in later milestones.
 DEFAULT_FONT = "Helvetica"
 DEFAULT_FONT_SIZE = 12.0
-DEFAULT_LINE_HEIGHT = 14.4  # 1.2x font size — typical reading leading
+DEFAULT_LINE_HEIGHT = 14.4  # 1.2x font size, a typical reading leading
 DEFAULT_MARGIN = 72.0  # 1 inch on all sides
 
 # Deeply nested lists and blockquotes accumulate body_indent per level
@@ -50,6 +51,63 @@ EMOJI_BOX_RATIO = 1.2
 # glyph's visual centre aligns with the surrounding lowercase text rather
 # than sitting on the baseline like a capital letter.
 EMOJI_BASELINE_DROP = 0.2
+
+
+# Sentinel for "this flat override was not passed". A single-member Enum gives
+# a singleton with a real type (``_Unset``), so flat-override parameters can be
+# annotated ``T | _Unset`` and a type checker still narrows ``value is not
+# _UNSET`` to ``T``. Distinct from any legal field value (including None and the
+# field's own default), so the folding layer can tell "caller omitted it" from
+# "caller passed the default".
+class _Unset(Enum):
+    token = 0
+
+
+_UNSET = _Unset.token
+
+
+@dataclass(frozen=True)
+class LayoutConfig:
+    """Grouped layout knobs for a compile, frozen so a shared config is safe.
+
+    Every field's default reproduces inkmd's current hardcoded value, so a
+    default-constructed ``LayoutConfig()`` renders byte-identically to passing
+    no config at all. Pass one to group settings, or override a single knob
+    with the matching flat keyword on :func:`inkmd.compile` /
+    :func:`inkmd.render_file` (the flat keyword wins over the config's value).
+
+    The object is immutable and hashable; build a varied config with
+    ``dataclasses.replace(cfg, margin=54)`` rather than mutating in place.
+    """
+
+    page_size: str = "letter"
+    """Page size identifier. ``"letter"`` (default) or ``"A4"``."""
+
+    margin: float = 72.0
+    """Page margin in points (default 72.0 = 1 inch). Mirrors DEFAULT_MARGIN."""
+
+    font_size: float = 12.0
+    """Body text size in points (default 12.0). Mirrors render.BODY_SIZE."""
+
+    line_spacing: float = 1.2
+    """Line-height multiplier of font size (default 1.2). Mirrors the
+    paginate_runs line_height_ratio default."""
+
+
+def fold_layout(layout, overrides):
+    """Resolve the effective ``LayoutConfig`` from a config plus flat overrides.
+
+    ``layout`` is the caller's ``LayoutConfig`` or None (None means all
+    defaults). ``overrides`` maps field name to value for the flat keyword
+    arguments; any value that is the ``_UNSET`` sentinel was not passed by the
+    caller and is ignored. Precedence: a flat override that WAS passed wins
+    over the config's value for that field. Returns a new ``LayoutConfig``.
+    """
+    base = layout if layout is not None else LayoutConfig()
+    given = {name: value for name, value in overrides.items() if value is not _UNSET}
+    if not given:
+        return base
+    return replace(base, **given)
 
 
 @dataclass(frozen=True)
