@@ -14,6 +14,7 @@ import zlib
 from dataclasses import dataclass, field
 
 from inkmd.layout import (
+    DEFAULT_MARGIN,
     ImagePlacement,
     Page,
     PositionedRun,
@@ -498,15 +499,21 @@ def _fmt(n: float) -> str:
 def styled_pdf(
     paragraphs: list[list[Run]],
     page_size: str = "letter",
+    *,
+    margin: float = DEFAULT_MARGIN,
 ) -> bytes:
     """Emit a multi-page PDF from styled paragraph runs.
 
     Each paragraph is a list of ``Run`` objects. The eight supported
     fonts (Helvetica family, Times family, Courier) are each declared
-    as a font resource on every page.
+    as a font resource on every page. ``margin`` is the symmetric page
+    margin in points, passed through to pagination; the default matches
+    the historical 72pt (1 inch) on all four sides.
     """
     width, height = PAGE_SIZES[page_size]
-    pages = paginate_runs(paragraphs, page_width=width, page_height=height)
+    pages = paginate_runs(
+        paragraphs, page_width=width, page_height=height, margin=margin
+    )
 
     if not pages:
         pages = [Page(lines=(), width=width, height=height)]

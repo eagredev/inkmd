@@ -196,13 +196,13 @@ def compile(
     doc = filter_html(doc, html=html)
     doc = filter_document(doc, safe=safe)
     doc = resolve_images(doc, base_dir=base_dir, allow_remote=allow_remote_images)
-    # Text-column width = page width minus both default 1in (72pt) margins.
+    # Text-column width = page width minus both margins (default 72pt each).
     # Threaded into render so tables and block images are sized to the
-    # actual page (A4 is narrower than letter and would otherwise overflow).
+    # actual page (A4 is narrower than letter and would otherwise overflow,
+    # and a non-default margin narrows or widens the column to match).
     from inkmd.pdf import PAGE_SIZES
-    from inkmd.layout import DEFAULT_MARGIN
     page_w = PAGE_SIZES[effective.page_size][0]
-    content_width = page_w - 2 * DEFAULT_MARGIN
+    content_width = page_w - 2 * effective.margin
     # Scope the emoji text-fallback policy to this compile (ContextVar, so
     # the render functions need no extra threading and concurrent compiles
     # don't interfere).
@@ -239,7 +239,9 @@ def compile(
             ref = EmbeddedFontRef(font=font, font_bytes=font_bytes)
         paragraphs = apply_embedding(paragraphs, ref, missing)
         warn_missing_glyphs(missing)
-    return styled_pdf(paragraphs, page_size=effective.page_size)
+    return styled_pdf(
+        paragraphs, page_size=effective.page_size, margin=effective.margin
+    )
 
 
 def render_file(
