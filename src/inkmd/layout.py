@@ -672,6 +672,7 @@ class _BlockParts:
     marker_runs: tuple[Run, ...]
     marker_x: float
     compact: bool  # if True, suppress the default paragraph_spacing gap before this block
+    page_break: bool  # if True, a content-free forced page break (CSS page-break div)
     left_rules: tuple[float, ...]
     left_rule_fill: tuple[float, float, float]
     background_fill: tuple[float, float, float] | None
@@ -703,6 +704,7 @@ def _block_parts(block) -> _BlockParts:
             marker_runs=tuple(getattr(block, "marker_runs", ())),
             marker_x=float(getattr(block, "marker_x", 0.0)),
             compact=bool(getattr(block, "compact", False)),
+            page_break=bool(getattr(block, "page_break", False)),
             left_rules=tuple(float(r) for r in rules),
             left_rule_fill=tuple(getattr(block, "left_rule_fill", (0.6, 0.6, 0.6))),
             background_fill=tuple(bg) if bg is not None else None,
@@ -722,6 +724,7 @@ def _block_parts(block) -> _BlockParts:
         marker_runs=(),
         marker_x=0.0,
         compact=False,
+        page_break=False,
         left_rules=(),
         left_rule_fill=(0.6, 0.6, 0.6),
         background_fill=None,
@@ -779,6 +782,26 @@ def paginate_runs(
 
     for p_idx, raw_block in enumerate(paragraphs):
         parts = _block_parts(raw_block)
+
+        # Forced page break (CSS page-break div): close the current page and
+        # start a fresh one, then place no content for this block (it has
+        # none). Flush only when the current page already holds content, so
+        # a leading break emits no blank first page, two consecutive breaks
+        # collapse to one, and a trailing break leaves no empty page (the
+        # final flush_page below skips an empty page). Reuses the same
+        # flush_page + accumulator reset the overflow path uses.
+        if parts.page_break:
+            page_has_content = bool(
+                current_lines or current_shapes or current_annotations
+            )
+            if page_has_content:
+                flush_page()
+                current_lines = []
+                current_shapes = []
+                current_annotations = []
+                y_cursor = top_y
+            continue
+
         if p_idx > 0 and parts.space_above and current_lines:
             y_cursor -= parts.space_above
 

@@ -33,6 +33,7 @@ from inkmd.ast import (
     List,
     ListItem,
     Mark,
+    PageBreak,
     Paragraph,
     Strikethrough,
     Strong,
@@ -147,6 +148,10 @@ class RenderedBlock:
     marker_runs: tuple[Run, ...] = ()
     marker_x: float = 0.0
     compact: bool = False  # if True, suppress inter-block paragraph_spacing before this block
+    # Forced page break: when True the block carries no content and the
+    # paginator starts the next block on a fresh page (from a CSS page-break
+    # div). Default False so every other construction is unaffected.
+    page_break: bool = False
     # Blockquote support: each entry is an x offset (relative to the
     # left margin) where a thin vertical rule should be drawn for every
     # line of this block. Nested blockquotes accumulate rules so each
@@ -463,6 +468,10 @@ def _render_block(
         )]
     if isinstance(block, ThematicBreak):
         return [_render_thematic_break()]
+    if isinstance(block, PageBreak):
+        # An empty block carrying only the page-break signal: no runs, no
+        # spacing, no shapes. The paginator reads page_break and flushes.
+        return [RenderedBlock(runs=(), page_break=True)]
     if isinstance(block, HtmlBlock):
         return _render_html_block(block, family, body_size=body_size)
     raise NotImplementedError(f"render: unsupported block {type(block).__name__}")

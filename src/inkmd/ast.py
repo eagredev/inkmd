@@ -277,6 +277,21 @@ class ThematicBreak:
 
 
 @dataclass(frozen=True)
+class PageBreak:
+    """A forced page break from a CSS page-break div.
+
+    Emitted by the HTML filter when it sees a block-level ``<div>`` whose
+    style declares ``page-break-after: always`` / ``break-after: page``
+    (or the ``-before`` synonyms). Carries no content; the paginator reads
+    it as a single instruction to start the next block on a fresh page.
+    The before/after distinction is not preserved: a break is a break for
+    the single-flush model. ``---`` stays a ThematicBreak (a rule), never
+    this.
+    """
+    pass
+
+
+@dataclass(frozen=True)
 class HtmlBlock:
     """A block-level raw HTML passthrough region (CommonMark §4.6).
 
@@ -313,7 +328,8 @@ class Table:
 
 
 Block = Union[
-    Paragraph, Heading, List, BlockQuote, CodeBlock, Table, ThematicBreak, HtmlBlock
+    Paragraph, Heading, List, BlockQuote, CodeBlock, Table, ThematicBreak,
+    PageBreak, HtmlBlock,
 ]
 
 

@@ -47,6 +47,7 @@ from inkmd.ast import (
     List,
     ListItem,
     Mark,
+    PageBreak,
     Paragraph,
     Strikethrough,
     Strong,
@@ -230,10 +231,49 @@ def _html_block_first_tag(raw: str) -> str | None:
     return "".join(name).lower() if name else None
 
 
+# CSS page-break declarations that force a page break, normalised to the
+# whitespace-free, lowercase form _is_page_break_div tests against. The
+# legacy ``page-break-*`` properties and the modern ``break-*`` synonyms
+# both appear in the wild; before/after are treated identically (a break is
+# a break for our single-flush model).
+_PAGE_BREAK_DECLS = (
+    "page-break-after:always",
+    "page-break-before:always",
+    "break-after:page",
+    "break-before:page",
+)
+
+
+def _is_page_break_div(raw: str) -> bool:
+    """True when a raw HTML block is a forced-page-break div.
+
+    Matches a block whose first tag is ``div`` and whose ``style`` attribute
+    declares a page break (``page-break-after: always`` / ``break-after:
+    page`` or the ``-before`` synonyms). Lenient on whitespace, trailing
+    semicolons, and case: the style value is lowercased and all whitespace
+    removed before substring-testing the known declarations. A plain
+    ``<div>`` with no such declaration is not matched, so it stays an
+    HtmlBlock and degrades to text exactly as before.
+    """
+    if _html_block_first_tag(raw) != "div":
+        return False
+    style = _open_tag_attrs(raw).get("style")
+    if not style:
+        return False
+    norm = "".join(style.lower().split())
+    return any(decl in norm for decl in _PAGE_BREAK_DECLS)
+
+
 def _filter_block(block):
     if isinstance(block, Paragraph):
         return Paragraph(inlines=_filter_inlines(block.inlines))
     if isinstance(block, HtmlBlock):
+        # A div carrying a CSS page-break style is a forced page break, not
+        # document content. Intercept it before any other block-HTML
+        # disposition so it becomes a PageBreak the paginator can act on
+        # rather than degrading to empty text.
+        if _is_page_break_div(block.raw):
+            return PageBreak()
         # PDF-only promotion: a block-level <img>/<p> region carries the
         # same allow-list semantics as inline HTML. Re-parse its raw as
         # inline content and run the allow-list, yielding a Paragraph the
