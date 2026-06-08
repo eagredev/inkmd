@@ -98,8 +98,15 @@ BODY_SIZE = 12.0
 BODY_FONT = DEFAULT_FAMILY.regular
 
 
-# Heading size table (level 1..6). Values chosen for visual hierarchy at
-# typical document scale; bold across the board.
+# Heading size table (level 1..6) at the default body size (BODY_SIZE).
+# Values chosen for visual hierarchy at typical document scale; bold across
+# the board. These are NOT a clean multiple of body: H1 is 2.0x body, H2
+# 1.5x, H3 14/12, H4 13/12, H5 1.0x, H6 11/12.
+#
+# Headings scale with the effective body size: _heading_size(level, body)
+# returns body / BODY_SIZE * HEADING_SIZES[level]. At body == BODY_SIZE the
+# factor is exactly 1.0, so every level reproduces its value here bit for bit
+# (byte-identical default); at body == 24 each heading is exactly doubled.
 HEADING_SIZES: dict[int, float] = {
     1: 24.0,
     2: 18.0,
@@ -108,6 +115,16 @@ HEADING_SIZES: dict[int, float] = {
     5: 12.0,
     6: 11.0,
 }
+
+
+def _heading_size(level: int, body_size: float) -> float:
+    """Heading point size for ``level`` at the given effective ``body_size``.
+
+    Scales the default-size heading (HEADING_SIZES[level]) by the body ratio
+    body_size / BODY_SIZE. At body_size == BODY_SIZE the ratio is exactly 1.0,
+    so the result is the original float unchanged.
+    """
+    return body_size / BODY_SIZE * HEADING_SIZES[level]
 
 
 @dataclass(frozen=True)
@@ -183,6 +200,10 @@ QUOTE_RULE_FILL = (0.7, 0.7, 0.7)
 # Code block layout.
 CODE_BG_FILL = (0.95, 0.95, 0.95)
 CODE_PADDING_PT = 4.0
+# Fenced-code font size at the default body size. Fenced code scales with the
+# effective body size via the ratio CODE_FONT_SIZE / BODY_SIZE (0.875), so it
+# stays slightly smaller than body at every size; at body == BODY_SIZE the
+# rendered size is exactly this value. Inline code uses the body size directly.
 CODE_FONT_SIZE = 10.5
 
 # Link styling.
@@ -303,6 +324,8 @@ def render_document(
     doc: Document,
     family: FontFamily = DEFAULT_FAMILY,
     content_width: float = DEFAULT_CONTENT_WIDTH,
+    *,
+    body_size: float = BODY_SIZE,
 ) -> list[RenderedBlock]:
     """Lower a Document into a list of ``RenderedBlock``.
 
@@ -311,10 +334,18 @@ def render_document(
     to it so they stay within the page margins. Defaults to the letter
     content width; ``compile`` passes the width derived from the actual
     page size so A4 documents do not overflow.
+
+    ``body_size`` is the effective body font size in points. Body text,
+    list markers, table cells, and captions render at this size; headings
+    scale off it via _heading_size. Defaults to BODY_SIZE so other callers
+    and tests are unaffected; ``compile`` passes the resolved
+    ``effective.font_size``.
     """
     blocks: list[RenderedBlock] = []
     for block in doc.blocks:
-        blocks.extend(_render_block(block, family, depth=0, content_width=content_width))
+        blocks.extend(_render_block(
+            block, family, depth=0, content_width=content_width, body_size=body_size,
+        ))
     return blocks
 
 
@@ -364,11 +395,14 @@ def apply_embedding(
 
 
 def _render_block(
-    block, family: FontFamily, depth: int, content_width: float = DEFAULT_CONTENT_WIDTH
+    block, family: FontFamily, depth: int,
+    content_width: float = DEFAULT_CONTENT_WIDTH,
+    *,
+    body_size: float = BODY_SIZE,
 ) -> list[RenderedBlock]:
     """Lower one AST block (recursively for lists) to flat RenderedBlocks."""
     if isinstance(block, Heading):
-        return [_render_heading(block, family)]
+        return [_render_heading(block, family, body_size=body_size)]
     if isinstance(block, Paragraph):
         # An image-only paragraph (modulo whitespace text) becomes a
         # block-level image. Mixed-with-text images stay inline and use
@@ -378,7 +412,9 @@ def _render_block(
         if single_image is not None:
             if isinstance(single_image.resolved, ImageData):
                 return [_render_image_block(single_image, content_width)]
-            return [RenderedBlock(runs=tuple(_render_paragraph(block, family)))]
+            return [RenderedBlock(runs=tuple(
+                _render_paragraph(block, family, body_size=body_size)
+            ))]
         # Figure idiom: a lead image plus a caption (`<img><br>caption`).
         # Render the image as a block, the caption as a following paragraph.
         # Only split when the image actually embeds; otherwise fall through
@@ -386,7 +422,7 @@ def _render_block(
         figure = _paragraph_as_figure(block)
         if figure is not None and isinstance(figure[0].resolved, ImageData):
             image, caption_inlines = figure
-            caption_runs = _flatten(caption_inlines, family, family.regular, BODY_SIZE)
+            caption_runs = _flatten(caption_inlines, family, family.regular, body_size)
             blocks = [_render_image_block(image, content_width)]
             if caption_runs:
                 blocks.append(RenderedBlock(
@@ -395,19 +431,23 @@ def _render_block(
                     space_below=_IMAGE_SPACE_BELOW,
                 ))
             return blocks
-        return [RenderedBlock(runs=tuple(_render_paragraph(block, family)))]
+        return [RenderedBlock(runs=tuple(
+            _render_paragraph(block, family, body_size=body_size)
+        ))]
     if isinstance(block, List):
-        return _render_list(block, family, depth, content_width)
+        return _render_list(block, family, depth, content_width, body_size=body_size)
     if isinstance(block, BlockQuote):
-        return _render_blockquote(block, family, depth, content_width)
+        return _render_blockquote(
+            block, family, depth, content_width, body_size=body_size,
+        )
     if isinstance(block, CodeBlock):
-        return [_render_code_block(block, family)]
+        return [_render_code_block(block, family, body_size=body_size)]
     if isinstance(block, Table):
-        return [_render_table(block, family, content_width)]
+        return [_render_table(block, family, content_width, body_size=body_size)]
     if isinstance(block, ThematicBreak):
         return [_render_thematic_break()]
     if isinstance(block, HtmlBlock):
-        return _render_html_block(block, family)
+        return _render_html_block(block, family, body_size=body_size)
     raise NotImplementedError(f"render: unsupported block {type(block).__name__}")
 
 
@@ -455,7 +495,9 @@ def _html_block_to_text(raw: str) -> str:
     return s
 
 
-def _render_html_block(block: HtmlBlock, family: FontFamily) -> list[RenderedBlock]:
+def _render_html_block(
+    block: HtmlBlock, family: FontFamily, *, body_size: float = BODY_SIZE,
+) -> list[RenderedBlock]:
     """Render a block-level raw HTML region as extracted readable text.
 
     Emits nothing when the region carries no document text (a pure
@@ -465,7 +507,9 @@ def _render_html_block(block: HtmlBlock, family: FontFamily) -> list[RenderedBlo
     if not text:
         return []
     para = Paragraph(inlines=(Text(content=text),))
-    return [RenderedBlock(runs=tuple(_render_paragraph(para, family)))]
+    return [RenderedBlock(runs=tuple(
+        _render_paragraph(para, family, body_size=body_size)
+    ))]
 
 
 def _paragraph_as_image(p: Paragraph) -> "Image | None":
@@ -661,6 +705,8 @@ _COLUMN_WIDTH_FALLBACK = 468.0
 def _render_blockquote(
     quote: BlockQuote, family: FontFamily, depth: int,
     content_width: float = DEFAULT_CONTENT_WIDTH,
+    *,
+    body_size: float = BODY_SIZE,
 ) -> list[RenderedBlock]:
     """Flatten a BlockQuote: render inner blocks with extra indent + left rule.
 
@@ -673,7 +719,7 @@ def _render_blockquote(
     inner_width = max(1.0, content_width - QUOTE_INDENT_PT)
     inner: list[RenderedBlock] = []
     for child in quote.blocks:
-        inner.extend(_render_block(child, family, depth, inner_width))
+        inner.extend(_render_block(child, family, depth, inner_width, body_size=body_size))
     out: list[RenderedBlock] = []
     for cb in inner:
         # Our new rule sits at the outermost x relative to inner blocks.
@@ -700,7 +746,9 @@ def _render_blockquote(
 
 
 def _render_table(
-    table: Table, family: FontFamily, content_width: float = DEFAULT_CONTENT_WIDTH
+    table: Table, family: FontFamily, content_width: float = DEFAULT_CONTENT_WIDTH,
+    *,
+    body_size: float = BODY_SIZE,
 ) -> RenderedBlock:
     """Lower a Table to a pre-positioned RenderedBlock.
 
@@ -715,12 +763,14 @@ def _render_table(
     if n_cols == 0:
         return RenderedBlock(runs=())
 
-    # Lower every cell's inlines to a list of Runs. Headers are bold.
+    # Lower every cell's inlines to a list of Runs. Headers are bold. Cell
+    # text renders at the effective body size so a table scales with the rest
+    # of the document.
     def cell_runs(cell: TableCell, bold: bool) -> list[Run]:
         font = family.bold if bold else family.regular
         runs: list[Run] = []
         for inline in cell.inlines:
-            runs.extend(_render_inline(inline, family, font=font))
+            runs.extend(_render_inline(inline, family, font=font, size=body_size))
         return runs
 
     header_runs = [cell_runs(c, bold=True) for c in table.headers]
@@ -797,7 +847,7 @@ def _render_table(
         [wrap_cell(row[i], i) for i in range(n_cols)] for row in body_runs
     ]
 
-    line_height = BODY_SIZE * TABLE_LINE_HEIGHT_RATIO
+    line_height = body_size * TABLE_LINE_HEIGHT_RATIO
 
     def row_height(cell_lines_per_col: list[list[list[Run]]]) -> float:
         max_lines = max((len(c) for c in cell_lines_per_col), default=1)
@@ -992,8 +1042,17 @@ class _PR:
     underline: bool = False
 
 
-def _render_code_block(cb: CodeBlock, family: FontFamily) -> RenderedBlock:
-    """Lower a CodeBlock to a RenderedBlock with monospace + background fill."""
+def _render_code_block(
+    cb: CodeBlock, family: FontFamily, *, body_size: float = BODY_SIZE,
+) -> RenderedBlock:
+    """Lower a CodeBlock to a RenderedBlock with monospace + background fill.
+
+    Fenced code renders at ``body_size / BODY_SIZE * CODE_FONT_SIZE`` so it
+    scales with the effective body size while keeping the 0.875 ratio that
+    makes it slightly smaller than body. At body_size == BODY_SIZE the ratio
+    is exactly 1.0, so the size is exactly CODE_FONT_SIZE (byte-identical).
+    """
+    code_size = body_size / BODY_SIZE * CODE_FONT_SIZE
     # The paginator uses `preserve_lines=True` to split runs on '\n' rather
     # than wrapping. Emoji are the documented exception to the WinAnsi-`?`
     # rule and must render even in a code block, so route each source line
@@ -1010,9 +1069,9 @@ def _render_code_block(cb: CodeBlock, family: FontFamily) -> RenderedBlock:
     run_list: list[Run] = []
     for idx, line_text in enumerate(line_texts):
         if idx > 0:
-            run_list.append(Run(text="\n", font=family.monospace, size=CODE_FONT_SIZE))
+            run_list.append(Run(text="\n", font=family.monospace, size=code_size))
         run_list.extend(split_text_into_runs(
-            line_text, font=family.monospace, size=CODE_FONT_SIZE,
+            line_text, font=family.monospace, size=code_size,
             link_url=None, color=None, strike=False,
         ))
     runs = tuple(run_list)
@@ -1030,13 +1089,16 @@ def _render_code_block(cb: CodeBlock, family: FontFamily) -> RenderedBlock:
 def _render_list(
     lst: List, family: FontFamily, depth: int,
     content_width: float = DEFAULT_CONTENT_WIDTH,
+    *,
+    body_size: float = BODY_SIZE,
 ) -> list[RenderedBlock]:
     """Flatten a List into a sequence of RenderedBlocks.
 
     Each item's first body-block carries the marker prefix and the
     item's body_indent. Subsequent body-blocks of the same item share
     the body_indent but have no marker. Nested lists recurse at deeper
-    indent.
+    indent. Markers render at the effective body size so they scale with
+    the item text.
     """
     out: list[RenderedBlock] = []
     marker_x = LIST_INDENT_PT * depth
@@ -1050,7 +1112,7 @@ def _render_list(
     default_indent = LIST_INDENT_PT * (depth + 1)
     if lst.ordered and lst.items:
         widest_marker = f"{lst.start + len(lst.items) - 1}. "
-        marker_w = text_width(widest_marker, family.regular, BODY_SIZE)
+        marker_w = text_width(widest_marker, family.regular, body_size)
         indent_for_items = max(default_indent, marker_x + marker_w + MARKER_BODY_GAP)
     else:
         indent_for_items = default_indent
@@ -1067,7 +1129,7 @@ def _render_list(
             marker_text = "[x] "
         else:
             marker_text = "[ ] "
-        marker_runs = (Run(text=marker_text, font=family.regular, size=BODY_SIZE),)
+        marker_runs = (Run(text=marker_text, font=family.regular, size=body_size),)
 
         if not item.blocks:
             # An empty item still gets a marker-only line so it doesn't
@@ -1090,7 +1152,9 @@ def _render_list(
         first_of_item = True
         for sub_idx, child in enumerate(item.blocks):
             child_width = max(1.0, content_width - indent_for_items)
-            child_blocks = _render_block(child, family, depth + 1, child_width)
+            child_blocks = _render_block(
+                child, family, depth + 1, child_width, body_size=body_size,
+            )
             # A nested list computes its own absolute indent from its
             # deeper depth, so it must NOT have this item's indent added
             # on top. Every other child block (paragraph, code, image,
@@ -1132,17 +1196,26 @@ def _marker_text(lst: List, item_idx: int) -> str:
     return "• "
 
 
-def _render_paragraph(p: Paragraph, family: FontFamily) -> list[Run]:
-    """Turn a Paragraph's inlines into a list of Runs."""
+def _render_paragraph(
+    p: Paragraph, family: FontFamily, *, body_size: float = BODY_SIZE,
+) -> list[Run]:
+    """Turn a Paragraph's inlines into a list of Runs at the body size."""
     runs: list[Run] = []
     for inline in p.inlines:
-        runs.extend(_render_inline(inline, family, font=family.regular))
+        runs.extend(_render_inline(inline, family, font=family.regular, size=body_size))
     return runs
 
 
-def _render_heading(h: Heading, family: FontFamily) -> RenderedBlock:
-    """Lower a Heading: bold face at the level-specific size, with spacing."""
-    size = HEADING_SIZES[h.level]
+def _render_heading(
+    h: Heading, family: FontFamily, *, body_size: float = BODY_SIZE,
+) -> RenderedBlock:
+    """Lower a Heading: bold face at the level-specific size, with spacing.
+
+    The heading size scales off ``body_size`` via _heading_size, so a larger
+    body font enlarges headings by the same ratio. The 0.6/0.25 spacing
+    factors derive from the resolved heading size and so follow automatically.
+    """
+    size = _heading_size(h.level, body_size)
     runs: list[Run] = []
     for inline in h.inlines:
         runs.extend(_render_inline(inline, family, font=family.bold, size=size))
