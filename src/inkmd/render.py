@@ -326,6 +326,7 @@ def render_document(
     content_width: float = DEFAULT_CONTENT_WIDTH,
     *,
     body_size: float = BODY_SIZE,
+    line_spacing: float = TABLE_LINE_HEIGHT_RATIO,
 ) -> list[RenderedBlock]:
     """Lower a Document into a list of ``RenderedBlock``.
 
@@ -340,11 +341,19 @@ def render_document(
     scale off it via _heading_size. Defaults to BODY_SIZE so other callers
     and tests are unaffected; ``compile`` passes the resolved
     ``effective.font_size``.
+
+    ``line_spacing`` is the leading multiplier for table rows (row line
+    height = body_size * line_spacing), so tables breathe with the same
+    knob as prose. Defaults to TABLE_LINE_HEIGHT_RATIO so other callers
+    and tests are unaffected; ``compile`` passes the resolved
+    ``effective.line_spacing``. Only ``_render_table`` consumes it; the
+    other helpers pass it through.
     """
     blocks: list[RenderedBlock] = []
     for block in doc.blocks:
         blocks.extend(_render_block(
-            block, family, depth=0, content_width=content_width, body_size=body_size,
+            block, family, depth=0, content_width=content_width,
+            body_size=body_size, line_spacing=line_spacing,
         ))
     return blocks
 
@@ -399,6 +408,7 @@ def _render_block(
     content_width: float = DEFAULT_CONTENT_WIDTH,
     *,
     body_size: float = BODY_SIZE,
+    line_spacing: float = TABLE_LINE_HEIGHT_RATIO,
 ) -> list[RenderedBlock]:
     """Lower one AST block (recursively for lists) to flat RenderedBlocks."""
     if isinstance(block, Heading):
@@ -435,15 +445,22 @@ def _render_block(
             _render_paragraph(block, family, body_size=body_size)
         ))]
     if isinstance(block, List):
-        return _render_list(block, family, depth, content_width, body_size=body_size)
+        return _render_list(
+            block, family, depth, content_width,
+            body_size=body_size, line_spacing=line_spacing,
+        )
     if isinstance(block, BlockQuote):
         return _render_blockquote(
-            block, family, depth, content_width, body_size=body_size,
+            block, family, depth, content_width,
+            body_size=body_size, line_spacing=line_spacing,
         )
     if isinstance(block, CodeBlock):
         return [_render_code_block(block, family, body_size=body_size)]
     if isinstance(block, Table):
-        return [_render_table(block, family, content_width, body_size=body_size)]
+        return [_render_table(
+            block, family, content_width,
+            body_size=body_size, line_spacing=line_spacing,
+        )]
     if isinstance(block, ThematicBreak):
         return [_render_thematic_break()]
     if isinstance(block, HtmlBlock):
@@ -707,6 +724,7 @@ def _render_blockquote(
     content_width: float = DEFAULT_CONTENT_WIDTH,
     *,
     body_size: float = BODY_SIZE,
+    line_spacing: float = TABLE_LINE_HEIGHT_RATIO,
 ) -> list[RenderedBlock]:
     """Flatten a BlockQuote: render inner blocks with extra indent + left rule.
 
@@ -719,7 +737,10 @@ def _render_blockquote(
     inner_width = max(1.0, content_width - QUOTE_INDENT_PT)
     inner: list[RenderedBlock] = []
     for child in quote.blocks:
-        inner.extend(_render_block(child, family, depth, inner_width, body_size=body_size))
+        inner.extend(_render_block(
+            child, family, depth, inner_width,
+            body_size=body_size, line_spacing=line_spacing,
+        ))
     out: list[RenderedBlock] = []
     for cb in inner:
         # Our new rule sits at the outermost x relative to inner blocks.
@@ -749,6 +770,7 @@ def _render_table(
     table: Table, family: FontFamily, content_width: float = DEFAULT_CONTENT_WIDTH,
     *,
     body_size: float = BODY_SIZE,
+    line_spacing: float = TABLE_LINE_HEIGHT_RATIO,
 ) -> RenderedBlock:
     """Lower a Table to a pre-positioned RenderedBlock.
 
@@ -847,7 +869,10 @@ def _render_table(
         [wrap_cell(row[i], i) for i in range(n_cols)] for row in body_runs
     ]
 
-    line_height = body_size * TABLE_LINE_HEIGHT_RATIO
+    # Row leading scales with both the body size (S2) and the line-spacing
+    # multiplier (S3), so a table breathes with the same knob as prose. At
+    # the defaults (body 12, spacing 1.2) this is 14.4, exactly as before.
+    line_height = body_size * line_spacing
 
     def row_height(cell_lines_per_col: list[list[list[Run]]]) -> float:
         max_lines = max((len(c) for c in cell_lines_per_col), default=1)
@@ -1091,6 +1116,7 @@ def _render_list(
     content_width: float = DEFAULT_CONTENT_WIDTH,
     *,
     body_size: float = BODY_SIZE,
+    line_spacing: float = TABLE_LINE_HEIGHT_RATIO,
 ) -> list[RenderedBlock]:
     """Flatten a List into a sequence of RenderedBlocks.
 
@@ -1153,7 +1179,8 @@ def _render_list(
         for sub_idx, child in enumerate(item.blocks):
             child_width = max(1.0, content_width - indent_for_items)
             child_blocks = _render_block(
-                child, family, depth + 1, child_width, body_size=body_size,
+                child, family, depth + 1, child_width,
+                body_size=body_size, line_spacing=line_spacing,
             )
             # A nested list computes its own absolute indent from its
             # deeper depth, so it must NOT have this item's indent added

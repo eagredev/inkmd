@@ -167,9 +167,10 @@ def compile(
         raise ValueError(f"unknown family {family!r}; available: {tuple(FAMILIES)}")
     # Resolve the effective layout: start from the supplied config (or the
     # default), then let any flat keyword override that was actually passed
-    # win over the config's value for that field. page_size, margin, and
-    # font_size are read from the result below and threaded to the renderer;
-    # line_spacing rides in the config but is not yet consumed. Every default
+    # win over the config's value for that field. page_size, margin,
+    # font_size, and line_spacing are all read from the result below and
+    # threaded to the renderer (line_spacing drives prose leading via
+    # styled_pdf and table-row leading via render_document). Every default
     # matches today's hardcoded value, so a default config changes no output.
     effective = fold_layout(
         layout,
@@ -212,6 +213,7 @@ def compile(
         paragraphs = render_document(
             doc, family=FAMILIES[family], content_width=content_width,
             body_size=effective.font_size,
+            line_spacing=effective.line_spacing,
         )
     finally:
         reset_fallback_mode(token)
@@ -241,7 +243,8 @@ def compile(
         paragraphs = apply_embedding(paragraphs, ref, missing)
         warn_missing_glyphs(missing)
     return styled_pdf(
-        paragraphs, page_size=effective.page_size, margin=effective.margin
+        paragraphs, page_size=effective.page_size, margin=effective.margin,
+        line_height_ratio=effective.line_spacing,
     )
 
 

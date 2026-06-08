@@ -501,6 +501,7 @@ def styled_pdf(
     page_size: str = "letter",
     *,
     margin: float = DEFAULT_MARGIN,
+    line_height_ratio: float = 1.2,  # mirrors the paginate_runs default
 ) -> bytes:
     """Emit a multi-page PDF from styled paragraph runs.
 
@@ -508,11 +509,14 @@ def styled_pdf(
     fonts (Helvetica family, Times family, Courier) are each declared
     as a font resource on every page. ``margin`` is the symmetric page
     margin in points, passed through to pagination; the default matches
-    the historical 72pt (1 inch) on all four sides.
+    the historical 72pt (1 inch) on all four sides. ``line_height_ratio``
+    is the leading multiplier (line height = ratio * font size), passed
+    through to pagination; the default matches the historical 1.2.
     """
     width, height = PAGE_SIZES[page_size]
     pages = paginate_runs(
-        paragraphs, page_width=width, page_height=height, margin=margin
+        paragraphs, page_width=width, page_height=height, margin=margin,
+        line_height_ratio=line_height_ratio,
     )
 
     if not pages:
