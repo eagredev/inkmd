@@ -5,10 +5,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        Before filing, please check the roadmap in `README.md` and the
-        v0.3 / v0.4 tier lists in `docs/conformance.md`. If your idea is
-        already planned, a comment on the relevant issue (or a PR
-        implementing it) is more useful than a duplicate.
+        Before filing, please check the roadmap in `README.md`. If your
+        idea is already planned, a comment on the relevant issue (or a
+        PR implementing it) is more useful than a duplicate.
 
   - type: textarea
     id: feature

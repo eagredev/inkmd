@@ -1,6 +1,6 @@
 # Color emoji rendering: implementation plan
 
-Status: PLAN (awaiting review). Decided 2026-05-30. Escalated to v0.2.
+Status: implemented (shipped in v0.2; kept as the design record). Decided 2026-05-30.
 
 ## Goal
 

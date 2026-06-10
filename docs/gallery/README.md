@@ -34,6 +34,7 @@ committed PDF is exactly reproducible from its source.
 | `08-code-density.md` | Code blocks with extreme indentation, very long lines, mixed languages |
 | `09-mid-paragraph-rules.md` | Thematic-break interactions with surrounding content |
 | `10-link-edge-cases.md` | Links with brackets in text, parentheses in URLs, nested formatting |
+| `11-wide-tables-and-page-breaks.md` | v0.5 layout behavior: a too-wide table that shrinks and wraps losslessly, a 24-column table that splits into key-repeating column panels, and forced page breaks via the CSS break div |
 
 ## What's NOT here
 

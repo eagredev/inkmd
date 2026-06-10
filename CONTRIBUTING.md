@@ -47,9 +47,8 @@ ambiguous work is best discussed in an issue first.
 
 ## Filing feature requests
 
-The roadmap in `README.md` and `docs/conformance.md` lists what is
-already planned for v0.3 and v0.4. If your idea is already on the
-list, a comment on an existing issue (or a PR implementing it) is
+The roadmap in `README.md` lists what is already planned for
+upcoming releases. If your idea is already on the list, a comment on an existing issue (or a PR implementing it) is
 more useful than a duplicate request.
 
 ## Licence

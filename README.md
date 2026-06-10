@@ -23,8 +23,9 @@ That's the whole install. No system packages, no system fonts, no Chrome binary,
 - **Faithful CommonMark plus the parts of GFM people actually use:** tables, autolinks, strikethrough, fenced code with language tags. The [supported features](#supported-markdown) section has the full matrix.
 - **Color emoji that render anywhere.** 🚀 ✅ 🇯🇵 👍🏽 single emoji, flags, skin tones, and ZWJ sequences (families, the rainbow flag) all render as color glyphs, inline and in table cells, from a bundled font. No system emoji font required.
 - **PDFs that look right.** Real AFM-driven kerning emitted via TJ arrays, clickable links, tinted code-block backgrounds, blockquote rules that stack for nested quotes, table alignment, headings that breathe.
+- **Layout you control.** Margins, body size (the whole type scale follows), line spacing, six named page sizes or custom dimensions, landscape, and forced page breaks. Wide tables fit the page losslessly: cells wrap, and a table too wide even for that splits into column panels instead of clipping.
 - **Byte-identical output for the same input.** No clocks, no random IDs. Useful for version control, signed PDFs, audit trails, reproducible CI.
-- **Two layers of API:** a CLI and a `compile()` / `render_file()` library function. The whole public surface is two functions.
+- **Two layers of API:** a CLI and a `compile()` / `render_file()` library function. The whole public surface is two functions and one optional config object.
 
 ## Benchmarks
 
@@ -37,7 +38,7 @@ Measured against `WeasyPrint + markdown` (the closest pure-Python alternative) o
 | Peak RSS, ~11 pages | 20 MB | 122 MB | 6.2x lower |
 | Install size (venv) | 22.3 MB | 74.6 MB | 3.3x smaller, zero system deps |
 
-WeasyPrint produces slightly smaller PDFs for documents over a few pages (it compresses content streams; inkmd does not). WeasyPrint also supports full Unicode, page-splitting tables, and CSS, which inkmd does not. inkmd does support images (PNG and JPEG embedding). The right tool depends on your input and your environment; the [comparisons doc](docs/comparisons.md) has the full picture.
+WeasyPrint produces slightly smaller PDFs for documents over a few pages (it compresses content streams; inkmd does not). WeasyPrint also supports full Unicode and CSS theming, which inkmd does not. inkmd does support images (PNG and JPEG embedding). The right tool depends on your input and your environment; the [comparisons doc](docs/comparisons.md) has the full picture.
 
 ## Why this exists
 
@@ -66,7 +67,7 @@ For the longer, honest version of how inkmd compares against every realistic alt
 
 ## Status
 
-**v0.4, MIT-licensed.** 955 tests across 42 files. Stdlib-only, Python 3.9+. Byte-deterministic output.
+**v0.5, MIT-licensed.** 1177 tests across 49 files. Stdlib-only, Python 3.9+. Byte-deterministic output.
 
 Conformance against the public spec suites, as shipped in this release: CommonMark 0.31.2 at 652/652 (100%); GFM extensions at 28/28 (100%). The full per-section breakdown is in [`docs/conformance.md`](docs/conformance.md). Threat model in [`docs/security.md`](docs/security.md). Spec-edge render samples in [`docs/gallery/`](docs/gallery/), and a real-world rendering gallery (the Ruff README, a Rust Book chapter, a Simon Willison TIL, a non-Latin scripts showcase, and inkmd's own README) in [`docs/gallery/real-world/`](docs/gallery/real-world/).
 
@@ -80,7 +81,7 @@ From PyPI:
 pip install inkmd
 ```
 
-Or grab the single-file zipapp (no `pip` install required). Each tagged release attaches an `inkmd.pyz` of around 170 KB that you can drop anywhere Python 3.9+ is available:
+Or grab the single-file zipapp (no `pip` install required). Each tagged release attaches an `inkmd.pyz` of around 230 KB that you can drop anywhere Python 3.9+ is available:
 
 ```sh
 curl -L -o inkmd.pyz https://github.com/eagredev/inkmd/releases/latest/download/inkmd.pyz
@@ -123,7 +124,7 @@ inkmd.render_file("in.md", "out.pdf")
 # Options (same on both functions)
 pdf_bytes = inkmd.compile(
     md_text,
-    page_size="A4",          # or "letter" (default)
+    page_size="A4",          # letter (default), legal, tabloid, a3, a4, a5, or a (w, h) tuple in points
     family="times",          # or "helvetica" (default)
     autolinks=False,         # opt out of GFM bare-URL/email detection
     safe=True,               # URL scheme allow-list (default True)
@@ -133,13 +134,42 @@ pdf_bytes = inkmd.compile(
 )
 ```
 
+### Layout control
+
+Every layout knob is a plain keyword argument, and a `LayoutConfig` groups them when several call sites share a house style. The flat keyword always wins over the config, so a shared style can be overridden per call:
+
+```python
+import inkmd
+
+# Individual knobs
+pdf = inkmd.compile(md_text, margin=54, font_size=11, line_spacing=1.3,
+                    page_size="a4", orientation="landscape")
+
+# A shared house style, overridable per call
+HOUSE = inkmd.LayoutConfig(page_size="a4", margin=54, font_size=11)
+pdf = inkmd.compile(md_text, layout=HOUSE)
+pdf = inkmd.compile(md_text, layout=HOUSE, margin=72)   # flat argument wins
+```
+
+The defaults reproduce inkmd's classic output exactly: a call that passes no layout options renders byte-identically to earlier versions.
+
+**Forced page breaks** use the standard CSS break div, the same convention browsers, Pandoc, and print stylesheets honor (and GitHub renders as nothing):
+
+```html
+<div style="page-break-after: always"></div>
+```
+
+**Wide tables** fit the page losslessly by default: columns shrink and cell text wraps, and a table too wide even for that splits into column panels, each repeating the first column as the key and continuing the full row set below. The `table_overflow` knob selects the behavior: `"wrap"` (default), `"shrink"` (the pre-0.5 squeeze, which can clip), `"warn"` (shrink plus a `TableOverflowWarning`), or `"error"` (raise, for CI gates). `table_panel_min_chars` sets the narrowest a data column may go before a new panel opens (default 8). A table that fits renders identically in all four modes.
+
 Emoji render as color glyphs out of the box (the font is bundled). Set the
 `INKMD_NO_EMOJI=1` environment variable to disable emoji rendering; emoji
 then take the `emoji_fallback` path (`"name"` gives a `[rocket]`-style label, or
-`"drop"`). The single-file zipapp build ships without the font and behaves
-the same way.
+`"drop"`). The single-file zipapp build ships without the emoji font and
+behaves the same way. The zipapp also omits the bundled text font, so
+non-Latin scripts render as `[U+XXXX]` markers there; use the pip install
+(or `font_path=`) when you need them.
 
-The public API is intentionally narrow: two functions, no classes to instantiate, no state to manage. The CLI is a thin argparse wrapper around `compile()`.
+The public API is intentionally narrow: two functions, one optional config object, no state to manage. The CLI is a thin argparse wrapper around `compile()`.
 
 ## Supported markdown
 
@@ -213,7 +243,7 @@ The public API is intentionally narrow: two functions, no classes to instantiate
 ### Typography
 
 - Helvetica family (default) or Times family. Code uses Courier.
-- Standard PDF letter and A4 page sizes.
+- Letter, legal, tabloid, A3, A4, and A5 page sizes, custom dimensions, portrait or landscape, with configurable margins, body size (headings, lists, tables, and code scale with it), and line spacing.
 - WinAnsi character encoding: em-dash, en-dash, curly quotes, ellipsis, most Western European glyphs.
 - **Color emoji** render as inline images from a bundled font: single emoji, presentation selectors, regional-indicator flags, skin-tone modifiers, ZWJ sequences (families, the rainbow flag), and keycaps, inline and in table cells. (Bitmaps scaled to text size; they soften slightly at very large heading sizes.)
 - Non-Latin scripts (Cyrillic, Greek, Latin-Extended) render through an embedded font (the bundled DejaVuSans, or any TrueType font via `font_path=`). A codepoint no available font covers (e.g. CJK, which the bundled font lacks) renders a visible `[U+XXXX]` marker rather than a silent `?`, and inkmd emits a warning. CJK full rendering is a planned later font pack.
@@ -228,12 +258,10 @@ If you hash the markdown and the PDF, the relationship is stable forever. Useful
 
 | Feature | When | Why |
 |---------|------|-----|
-| Non-Latin text (Cyrillic, Greek, Latin-Extended) | v0.4 | inkmd uses PDF's 14 base fonts for text (WinAnsi), so characters outside that set used to render as `?`. v0.4 adds text-font embedding from a bundled font, which makes these scripts render. A codepoint the bundled font lacks (e.g. CJK) shows a visible `[U+XXXX]` marker; a CJK font pack is planned for a later release |
+| CJK text | later | v0.4's text-font embedding made Cyrillic, Greek, and Latin-Extended render, but the bundled font has no CJK glyphs, so CJK codepoints show a visible `[U+XXXX]` marker. A CJK font pack is planned for a later release |
 | Right-to-left and complex scripts (Arabic, Hebrew, Indic) | v1.0 | Correct bidirectional layout and shaping. Shaping ships as an optional `inkmd[shaping]` add-on (the one part of inkmd that uses a dependency, because it needs one) |
 | Headers, footers, page numbers | v0.6 | Needs a per-page chrome system on top of a look-ahead paginator |
 | Table of contents, bookmarks, working internal links | v0.6 | Generated from heading structure once the paginator can resolve page positions |
-| Wide-table column fitting | v0.5 | A table **taller** than a page already splits across pages, repeating the header. A table with too many **columns** to fit even at minimum legible width still overflows the right edge. Horizontal fitting (auto-shrink / landscape) is queued |
-| Margin, font-size, line-spacing, page-size control | v0.5 | Currently fixed; being exposed through the API |
 | Syntax highlighting, footnotes, callouts, captions | v0.8 | Document constructs the docs and report use cases expect |
 | RGBA PNG embedding | v0.9 | inkmd supports RGB, grayscale, and **indexed** PNG (with `tRNS` transparency); full RGBA alpha is queued |
 | GIF image support | v0.9 | LZW decoder + palette resolution |
@@ -281,7 +309,7 @@ The release tiers are about **what a real user sees**, not about chasing a perce
 - **v0.2:** Most sane use cases work; remaining failures are rare and defensible. CommonMark 85%, GFM extensions 71%. Adds reference links, images (PNG + JPEG + indexed PNG with transparency), **color emoji** (single, flags, skin tones, ZWJ sequences, keycaps, inline and in tables), task lists, inline HTML allow-list, hard line breaks, indented code blocks (including inside list items), URL scheme filter, tab preservation, image-inside-link.
 - **v0.3:** 100% CommonMark and 100% GFM extensions. The long-tail spec-corner cases, including block-level raw HTML pass-through and HTML blocks inside list items.
 - **v0.4:** Text-font embedding. Non-Latin scripts (Cyrillic, Greek, Latin-Extended) render through a bundled embedded font instead of falling back to `?`, and the embedded font makes a document look the same in every viewer. A codepoint the bundled font does not cover (e.g. CJK) shows a visible `[U+XXXX]` marker; CJK full rendering is a planned later font pack. **Shipped.**
-- **v0.5:** Page and layout control. Margins, font size, line spacing, page size and orientation, forced page breaks, and horizontal fitting for very wide tables.
+- **v0.5:** Page and layout control. Margins, font size (the whole type scale follows it), line spacing, six named page sizes plus custom dimensions, landscape orientation, forced page breaks via the standard CSS break div, and lossless fitting for very wide tables (cells wrap; a table too wide even at minimum widths splits into column panels with the key column repeated, governed by a `table_overflow` knob that also keeps the old shrink behavior available). **Shipped.**
 - **v0.6:** Multi-page document structure. Running headers, footers, and page numbers; a generated table of contents; PDF bookmarks; and working internal links.
 - **v0.7:** Pipeline features. Document metadata, basic frontmatter parsing, clear errors instead of tracebacks, a strict mode that reports failed images, configurable URL and HTML schemes, path and resource limits, and opt-in output compression.
 - **v0.8:** Document constructs. Syntax highlighting, footnotes, GitHub-style callouts, figure and table captions, and definition lists.
@@ -292,7 +320,7 @@ The release tiers are about **what a real user sees**, not about chasing a perce
 
 MIT. See [LICENSE](LICENSE).
 
-The bundled color-emoji font is **Noto Color Emoji** (© Google), distributed under the [SIL Open Font License 1.1](src/inkmd/assets/emoji/OFL.txt), a separate permissive licence from inkmd's own MIT code. It is shipped unmodified.
+The bundled color-emoji font is **Noto Color Emoji** (© Google), distributed under the [SIL Open Font License 1.1](src/inkmd/assets/emoji/OFL.txt), a separate permissive licence from inkmd's own MIT code. It is shipped unmodified. The bundled text font for non-Latin scripts is **DejaVu Sans**, under its own permissive licence ([src/inkmd/assets/fonts/DejaVuSans-LICENSE.txt](src/inkmd/assets/fonts/DejaVuSans-LICENSE.txt)), also shipped unmodified.
 
 ## Acknowledgements
 

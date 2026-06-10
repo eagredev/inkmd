@@ -17,9 +17,9 @@ get if they pointed the tool at a document from their own life.
 |----------|--------|-------|-------|
 | [Simon Willison TIL](simonw-til/) | `simonw/til` | 4 | Clean render; longform blog post with code blocks |
 | [Rust Book §1.3 "Hello, Cargo!"](rust-book-ch1-3-hello-cargo/) | `rust-lang/book` | 5 | Clean render; multi-page technical book chapter |
-| [inkmd's own README](inkmd-self-render/) | This repo | 12 | Dogfood; the centred `<p align><img>` hero renders, image embedded |
+| [inkmd's own README](inkmd-self-render/) | This repo | 14 | Dogfood; the centred `<p align><img>` hero renders, image embedded |
 | [Ruff README](ruff-readme/) | `astral-sh/ruff` | 11 | Mixed; color emoji render, SVG badges fall back to alt-text |
-| [Non-Latin scripts](nonlatin-scripts/) | Constructed showcase | 3 | Non-Latin scripts: Cyrillic, Greek, and Latin-Extended render via the embedded font; unsupported codepoints (e.g. CJK) show a visible `[U+XXXX]` marker. Table cells still render `?` (known limitation) |
+| [Non-Latin scripts](nonlatin-scripts/) | Constructed showcase | 2 | Non-Latin scripts: Cyrillic, Greek, and Latin-Extended render via the embedded font; unsupported codepoints (e.g. CJK) show a visible `[U+XXXX]` marker. Table cells still render `?` (known limitation) |
 
 Each subdirectory contains:
 

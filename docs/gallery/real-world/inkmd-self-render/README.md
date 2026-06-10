@@ -4,7 +4,7 @@ The repository's own README, compiled by the tool it describes.
 
 - Source: `README.md` at the root of this repository
 - Licence: MIT (same as the rest of inkmd)
-- Rendered: 18,223 bytes of markdown to 12 pages of PDF
+- Rendered: 22,944 bytes of markdown to 14 pages of PDF
 - Rendered from the repository root (as `inkmd README.md` would be), so the
   README's relative image paths (the hero) resolve and embed.
 

@@ -28,7 +28,16 @@ The current security-relevant findings:
    safe-subset HTML passthrough (see `docs/design/html-passthrough.md`)
    with a fixed allow-list of tags that have defined, statically-
    resolved PDF rendering: no script interpretation, no CSS, no
-   resource fetching, no JavaScript form fields.
+   resource fetching, no JavaScript form fields. v0.5 additionally
+   recognises a `<div>` whose `style` attribute declares a page break
+   as a forced page break. Four declarations match
+   (`page-break-after: always`, `page-break-before: always`,
+   `break-after: page`, `break-before: page`); the check is a
+   whitespace-and-case-normalised substring test inside the style
+   value, not a CSS parse, so the declaration may sit alongside
+   others. Any content inside such a div is discarded from the PDF
+   (the whole block becomes the break). Style attributes on every
+   other element are still dropped.
 
 The known *non-issues*, things people might expect to be problems
 that are not:

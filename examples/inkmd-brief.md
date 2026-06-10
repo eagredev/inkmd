@@ -18,7 +18,7 @@ These are real costs. A Lambda function that pulls down Chrome at cold-start pay
 
 ## The pitch
 
-`inkmd` is the tool you would write yourself with a free weekend and no patience for browser dependencies. The whole compiler is around 3,500 lines of pure-Python logic. There is nothing to install at the system level. The wheel installs in under a second. Every PDF it produces is byte-identical for the same input.
+`inkmd` is the tool you would write yourself with a free weekend and no patience for browser dependencies. The whole compiler is around 11,000 lines of pure-Python logic. There is nothing to install at the system level. The wheel installs in under a second. Every PDF it produces is byte-identical for the same input.
 
 That last property is the one most worth dwelling on. If you hash the markdown and the PDF, the relationship is stable forever: same input, same output, on every platform, every Python version, every run. Useful for version-controlled documents, signed audit trails, reproducible CI builds, and any workflow where "the document changed" needs to mean something more rigorous than a fresh timestamp.
 
@@ -44,9 +44,9 @@ The output uses real AFM kerning emitted via TJ arrays, blue underlined links th
 
 ## What it does not do, yet
 
-> v0.1 is feature-complete for the markdown subset above. It does not yet embed fonts (so codepoints outside WinAnsi render as a fallback character), embed images, or split oversized tables across pages. These are v0.2 work, planned next.
+> v0.5 is feature-complete for the markdown subset above. It does not yet render CJK text (the bundled font lacks those glyphs; Cyrillic, Greek, and Latin-Extended render through an embedded font), and running headers, footers, and page numbers are still ahead.
 
-The full roadmap is at https://github.com/eagredev/inkmd. v0.2 ships TTF font embedding for full Unicode, image embedding, page-splitting for oversized tables, headers, footers, and page numbers. v0.3 brings tagged PDF and accessibility work. None of these are blocked on dependencies that would compromise the zero-install premise.
+The full roadmap is at https://github.com/eagredev/inkmd. v0.6 ships running headers, footers, and page numbers, a generated table of contents, and PDF bookmarks. Further out sit syntax highlighting and footnotes, then right-to-left scripts and tagged-PDF accessibility at 1.0. None of these are blocked on dependencies that would compromise the zero-install premise.
 
 ## Where it fits
 

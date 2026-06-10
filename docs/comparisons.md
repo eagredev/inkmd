@@ -129,10 +129,10 @@ If you're already using one of these parsers for markdown-to-HTML elsewhere in y
 
 ## Where inkmd is worse
 
-- **No CSS theming.** inkmd's typography is fixed (Helvetica or Times, two page sizes, set spacing rules). If you need custom fonts, colours, layouts, you're better off with WeasyPrint.
+- **No CSS theming.** inkmd's page geometry is configurable (margins, body size, line spacing, six named page sizes or custom dimensions, landscape), but fonts and colours are fixed (Helvetica or Times, set colour rules) and there is no stylesheet language. If you need custom fonts, colours, or arbitrary CSS layouts, you're better off with WeasyPrint.
 - **No headers, footers, page numbers.** Tracked for v0.6.
 - **No full Unicode text.** inkmd supports WinAnsi (Western European) for text, plus **color emoji** from a bundled font, plus Cyrillic, Greek, and Latin-Extended through an embedded font. CJK is not yet covered: the bundled font has no CJK glyphs, so CJK codepoints show a visible `[U+XXXX]` marker, and a CJK font pack is planned for a later release. WeasyPrint handles all of it out of the box.
-- **Partial table fitting.** A table **taller** than one page splits across pages, repeating the header. A table with too many **columns** to fit even at minimum legible width (~25+) still overflows the right edge rather than crushing columns into illegible slivers. Horizontal column fitting (auto-shrink / landscape) is v0.5.
+- **Plain table rendering.** Tables fit the page automatically (tall tables split across pages repeating the header; wide tables wrap cell text and, past the point where even that cannot fit, split into column panels with the key column repeated), but there is no column-span, row-span, or per-cell styling. WeasyPrint renders whatever table CSS you give it.
 - **No accessibility / tagged PDF.** v1.0+.
 
 If any of these matter, use a different tool; that's what they're for.

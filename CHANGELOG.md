@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-10
+
+**The author can shape the page.** Margins, font size, line spacing, page size and orientation become public API, forced page breaks land, and wide tables now fit the page losslessly by default. The four-layer pipeline and the determinism property are unchanged, and the defaults reproduce 0.4.0's output exactly: a document whose tables fit the page renders byte-identically at the defaults. Only tables that previously could not fit render differently (see Changed).
+
+### Added
+
+- **`LayoutConfig` and flat layout overrides.** A frozen `LayoutConfig` dataclass groups the layout knobs (`page_size`, `margin`, `font_size`, `line_spacing`, `orientation`, `table_overflow`, `table_panel_min_chars`), and every knob is also a plain keyword argument on `compile()` and `render_file()`. Both forms are permanent peers; when both are given, the flat argument wins, so a shared house-style config can be overridden per call.
+- **Configurable margins, body font size, and line spacing.** The whole type scale follows the body size: headings, list markers, table cells, and code all scale proportionally. Line spacing applies to prose, tables, and code alike.
+- **More page sizes, custom dimensions, and landscape.** `legal`, `tabloid`, `a3`, and `a5` join `letter` and `a4` (names now case-insensitive), `page_size` also accepts a custom `(width, height)` tuple in points, and `orientation="landscape"` swaps any size. The CLI `--page-size` flag gains the new names.
+- **Forced page breaks** via the standard CSS break div: `<div style="page-break-after: always"></div>` (and the `break-after: page` synonym) starts a new page. The pattern is the one browsers, Pandoc, and print stylesheets honor, and GitHub renders it as nothing, so a document carrying it stays portable. `---` remains a thematic break. Leading, trailing, and doubled break divs do not produce blank pages.
+- **Lossless wide-table fitting, the new default (`table_overflow="wrap"`).** A table wider than the page first shrinks its columns to a readable floor and wraps cell text; a table that cannot fit even then splits into column panels, each repeating the first column as the key and marked "(continued)". `table_panel_min_chars` (default 8) sets the readable floor. The other modes: `"shrink"` (the pre-0.5 squeeze), `"warn"` (shrink plus a `TableOverflowWarning`), and `"error"` (raise `TableOverflowError`, for CI gates). Both classes are exported. A table that fits renders byte-identically in all four modes.
+- **Page-tall table content is sliced, not lost.** A row group taller than one page is split across pages at line boundaries, and a header taller than the usable page renders once instead of repeating, so every cell's text stays on a visible page. Wrap mode also guarantees a table never draws past the right margin.
+
+### Changed
+
+- **Default behavior for tables too wide for the page.** Previously columns squeezed toward minimum widths and a table with too many columns overflowed the right page edge, clipping content. Under the new `wrap` default that content now wraps or panels and stays visible. The pre-0.5 output remains available verbatim via `table_overflow="shrink"`.
+
+Parsing is untouched: conformance is unchanged at CommonMark 652/652 (100%) and the GFM extensions unchanged. 1177 tests across 49 files.
+
 ## [0.4.0] - 2026-06-08
 
 **Non-Latin text renders.** inkmd now embeds a font for text the 14 base PDF fonts cannot represent, so Cyrillic, Greek, and Latin-Extended scripts render as real glyphs instead of falling back to `?`. The 0.3.0 entry promised this ("Still ahead: text-font embedding for non-Latin scripts"); 0.4 delivers it. The four-layer pipeline, public API, and determinism property are unchanged: the same input still produces byte-identical output.
@@ -244,7 +263,8 @@ These are documented v0.1 constraints, not bugs. See the [roadmap](README.md#roa
 
 501 tests across 24 files, all passing. End-to-end PDF validity verified via `qpdf --check`.
 
-[Unreleased]: https://github.com/eagredev/inkmd/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/eagredev/inkmd/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/eagredev/inkmd/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/eagredev/inkmd/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/eagredev/inkmd/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/eagredev/inkmd/compare/v0.2.0...v0.2.1

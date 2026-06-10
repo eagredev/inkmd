@@ -1,8 +1,8 @@
 """inkmd: pure-Python markdown to PDF compiler.
 
 inkmd compiles markdown text into PDF bytes with zero runtime
-dependencies and byte-deterministic output. Two public functions form
-the entire API:
+dependencies and byte-deterministic output. Two public functions (plus
+one optional :class:`LayoutConfig` object) form the entire API:
 
 * :func:`compile` accepts markdown text and returns PDF bytes.
 * :func:`render_file` reads a markdown file and writes a PDF file.
@@ -94,7 +94,8 @@ def compile(
             (sans-serif, default) or ``"times"`` (serif). Code blocks
             and inline code always render in Courier regardless.
         layout: A :class:`LayoutConfig` grouping the layout knobs
-            (``page_size``, ``margin``, ``font_size``, ``line_spacing``).
+            (``page_size``, ``margin``, ``font_size``, ``line_spacing``,
+            ``orientation``, ``table_overflow``, ``table_panel_min_chars``).
             When None (default), a default ``LayoutConfig()`` is used,
             which reproduces inkmd's current output exactly. The flat
             keyword overrides below win over the matching field on this
