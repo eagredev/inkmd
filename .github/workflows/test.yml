@@ -25,6 +25,9 @@ jobs:
       - name: Install pytest
         run: python -m pip install --upgrade pip pytest
 
+      - name: Install PDF verification tools (qpdf, pdftotext)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq qpdf poppler-utils
+
       - name: Run unit tests
         run: python -m pytest tests/ --ignore=tests/conformance -q
 
