@@ -10,7 +10,7 @@ inkmd in.md -o out.pdf
 That's the whole install. No system packages, no system fonts, no Chrome binary, no `apt-get`. Works the same on macOS, Linux, Windows, Alpine, AWS Lambda, a locked-down CI runner, or a Steam Deck. Color emoji are bundled, so they render anywhere without a system emoji font.
 
 <p align="center">
-  <img src="docs/images/hero-sample.png" alt="A quarterly report rendered by inkmd, showing headings, a styled paragraph with strikethrough, a blockquote, a right-aligned table with tinted header, a bulleted list, and a fenced Python code block with a grey background." width="640">
+  <img src="https://raw.githubusercontent.com/eagredev/inkmd/v0.5.0/docs/images/hero-sample.png" alt="A quarterly report rendered by inkmd, showing headings, a styled paragraph with strikethrough, a blockquote, a right-aligned table with tinted header, a bulleted list, and a fenced Python code block with a grey background." width="640">
   <br>
   <em><a href="examples/hero-sample.md">examples/hero-sample.md</a> rendered through inkmd: headings, inline styles, strikethrough, blockquote, GFM table, list, fenced code, autolinked URL and email all in one page.</em>
   <br>
