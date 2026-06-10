@@ -1,0 +1,3 @@
+graft tests
+include scripts/build_zipapp.py
+global-exclude __pycache__ *.py[cod]
