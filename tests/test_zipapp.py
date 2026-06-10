@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -120,8 +121,12 @@ def test_zipapp_matches_module_byte_for_byte(
         [sys.executable, str(built_zipapp), str(src), "-o", str(via_zipapp)],
         check=True,
     )
+    env = os.environ.copy()
+    src_dir = str(REPO_ROOT / "src")
+    env["PYTHONPATH"] = src_dir + os.pathsep + env.get("PYTHONPATH", "")
     subprocess.run(
         [sys.executable, "-m", "inkmd.cli", str(src), "-o", str(via_module)],
         check=True,
+        env=env,
     )
     assert via_zipapp.read_bytes() == via_module.read_bytes()

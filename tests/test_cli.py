@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import io
 import subprocess
 import sys
@@ -133,14 +134,23 @@ def test_version_flag(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 def test_subprocess_module_invocation(tmp_path: Path) -> None:
-    """`python -m inkmd.cli` should work as a script too."""
+    """`python -m inkmd.cli` should work as a script too.
+
+    The child interpreter does not inherit conftest's sys.path insert,
+    so hand it the src tree on PYTHONPATH; the test then passes whether
+    or not the package is installed (CI runs it uninstalled).
+    """
     src = tmp_path / "in.md"
     src.write_text("# Smoke\n", encoding="utf-8")
     dst = tmp_path / "out.pdf"
+    env = os.environ.copy()
+    src_dir = str(Path(__file__).resolve().parent.parent / "src")
+    env["PYTHONPATH"] = src_dir + os.pathsep + env.get("PYTHONPATH", "")
     result = subprocess.run(
         [sys.executable, "-m", "inkmd.cli", str(src), "-o", str(dst)],
         capture_output=True,
         check=True,
+        env=env,
     )
     assert result.returncode == 0
     assert dst.read_bytes().startswith(b"%PDF-1.5\n")
