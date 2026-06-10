@@ -1,5 +1,19 @@
 # Cyclomatic complexity audit, v0.3
 
+> **Update 2026-06-10, re-measured at v0.5.0** (same command, same exclusion):
+> 338 functions, 8,238 NLOC, average CCN 7.0 (was 7.5), 35 functions over the
+> CCN-15 warn threshold (was 27). The growth is accounted for: the refactored
+> `feed` is gone from the list and its named phase methods now appear
+> individually (`_consume_open_container` 49, `_apply_list_walk` 45); the v0.4
+> font work added the TrueType glyph parsers (`_parse_simple_glyph` 27,
+> `_parse_composite_glyph` 18); and v0.5's pagination and wide-table fitting
+> moved `paginate_runs` from 58 to 64 (269 to 535 NLOC, now carrying forced
+> breaks and oversized-group slicing), `_render_table` from 25 to 30 (with a
+> nested `emit_block` helper at 21), and `styled_pdf` from 26 to 37 (page
+> geometry threading). `paginate_runs` remains the standing refactor
+> candidate. Safety net at measurement: 1,177 tests across 49 files, both
+> conformance suites, and the byte-for-byte corpus baseline.
+
 > **Update 2026-06-07:** `_BlockParser.feed` has since been refactored from CCN
 > 145 to CCN 2, split into a short driver plus named phase methods
 > (open-container consumption, document-level openers, list-stack walk, post-walk
